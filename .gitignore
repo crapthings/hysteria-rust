@@ -1,0 +1,32 @@
+/target/
+**/target/
+/build/
+/.tmp/
+__pycache__/
+*.py[cod]
+
+# Local Hysteria configuration and generated credentials/state.
+/config.yaml
+/config.yml
+/server.crt
+/server.key
+/acme/
+/geoip.dat
+/geosite.dat
+/*.dat.*.tmp
+.env
+.env.*
+
+# Profiling and coverage output.
+*.profraw
+*.profdata
+perf.data
+perf.data.old
+/flamegraph.svg
+
+# Editors and operating systems.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

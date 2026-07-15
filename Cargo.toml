@@ -1,0 +1,104 @@
+[workspace]
+members = [
+    "crates/hysteria",
+    "crates/hysteria-obfs",
+    "crates/hysteria-protocol",
+    "crates/hysteria-realm",
+    "crates/hysteria-transport",
+    "vendor/rustls-acme",
+]
+exclude = [
+    "vendor/netdev",
+    "vendor/quinn-proto",
+    "vendor/rustls",
+    "vendor/wfp",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+repository = "https://github.com/crapthings/hysteria-rust"
+rust-version = "1.88"
+version = "0.1.0-rc.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[workspace.dependencies]
+async-trait = "0.1.89"
+axum = "0.8.8"
+base64 = "0.22.1"
+blake2 = "0.10.6"
+bytes = "1.10.1"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+clap = "4.6.0"
+getrandom = "0.3.4"
+futures = "0.3.31"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+humantime = "2.3.0"
+hickory-resolver = "0.26.1"
+http = "1.3.1"
+http-body-util = "0.1.3"
+httpdate = "1.0.3"
+hyper = { version = "=1.9.0", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1.20", features = ["server-auto", "service", "tokio"] }
+idna = "1.1.0"
+igd-next = { version = "0.17.1", features = ["aio_tokio"] }
+quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+quinn-proto = { version = "0.11.13", default-features = false }
+prost = "0.13.5"
+percent-encoding = "2.3.2"
+portable-atomic = "1.13.1"
+qrcode = { version = "0.14.1", default-features = false }
+netstack-smoltcp = "0.2.4"
+natpmp = "0.5.0"
+netlink-packet-core = "0.8.1"
+netlink-packet-route = "0.28.0"
+netlink-sys = "0.8.8"
+regex = "1.11.1"
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls-no-provider", "stream"] }
+route_manager = "0.2.12"
+rustls = { version = "0.23.31", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls-acme = { version = "0.15.3", default-features = false, features = ["aws-lc-rs", "webpki-roots"] }
+rustls-native-certs = "0.8.3"
+rustls-pemfile = "2.2.0"
+serde = "1.0.228"
+serde_yaml_ng = "0.10.0"
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+socket2 = { version = "0.6.5", features = ["all"] }
+tokio = "1.47.1"
+tokio-stream = "0.1.17"
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "tls12"] }
+time = "=0.3.47"
+tokio-tfo = "0.4.3"
+tun-rs = { version = "=2.7.6", features = ["async_tokio"] }
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { version = "0.6.6", features = ["fs"] }
+url = "2.5.8"
+wfp = "0.0.7"
+x509-parser = "0.18.1"
+thiserror = "2.0.17"
+
+[workspace.dependencies.nix]
+version = "0.30.1"
+features = ["net", "socket", "uio"]
+
+[patch.crates-io]
+netdev = { path = "vendor/netdev" }
+quinn-proto = { path = "vendor/quinn-proto" }
+rustls-acme = { path = "vendor/rustls-acme" }
+rustls = { path = "vendor/rustls" }
+wfp = { path = "vendor/wfp" }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

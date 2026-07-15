@@ -1,0 +1,24 @@
+# Replace the certificate paths and password before starting the server.
+listen: :443
+
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+auth:
+  type: password
+  password: CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD
+
+masquerade:
+  type: string
+  string:
+    content: Not Found
+    headers:
+      content-type: text/plain; charset=utf-8
+    statusCode: 404
+
+# Optional defense against requests to private destination addresses.
+# This downloads geoip.dat when the server starts.
+# acl:
+#   inline:
+#     - reject(geoip:private)

@@ -1,0 +1,242 @@
+name: "CI"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  quality:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Check format
+        run: cargo fmt --all -- --check
+
+      - name: Check vendored WFP format
+        run: cargo fmt --manifest-path vendor/wfp/Cargo.toml -- --check
+
+      - name: Check vendored netdev format
+        run: cargo fmt --manifest-path vendor/netdev/Cargo.toml -- --check
+
+      - name: Check FreeBSD ARMv7 sysroot extractor format
+        run: cargo fmt --manifest-path scripts/cross/freebsd-armv7/ufs-extract/Cargo.toml -- --check
+
+      - name: Lint
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Lint FreeBSD ARMv7 sysroot extractor
+        run: cargo clippy --manifest-path scripts/cross/freebsd-armv7/ufs-extract/Cargo.toml --all-targets -- -D warnings
+
+  test-and-package:
+    name: Test and package (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            variant: baseline
+          - label: linux-x64-avx
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            variant: avx
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            variant: baseline
+          - label: macos-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            variant: baseline
+          - label: macos-x64-avx
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            variant: avx
+          - label: macos-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            variant: baseline
+          - label: windows-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            variant: baseline
+          - label: windows-x64-avx
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            variant: avx
+          - label: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            variant: baseline
+          - label: windows-x86
+            runner: windows-latest
+            target: i686-pc-windows-msvc
+            variant: baseline
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy
+          targets: ${{ matrix.target }}
+
+      - name: Test
+        run: cargo test --locked --workspace
+
+      - name: Lint Windows WFP wrapper
+        if: runner.os == 'Windows'
+        run: cargo clippy --manifest-path vendor/wfp/Cargo.toml --lib -- -D warnings
+
+      - name: Package native binary
+        run: python scripts/package_rust.py --target ${{ matrix.target }} --variant ${{ matrix.variant }}
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: hysteria-rust-${{ matrix.label }}
+          path: build/rust/*
+
+  cross-package:
+    name: Cross-package (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86
+            target: i686-unknown-linux-gnu
+            toolchain: 1.88.0
+          - label: linux-arm
+            target: armv7-unknown-linux-gnueabihf
+            toolchain: 1.88.0
+          - label: linux-armv5
+            target: armv5te-unknown-linux-gnueabi
+            toolchain: 1.88.0
+          - label: linux-s390x
+            target: s390x-unknown-linux-gnu
+            toolchain: 1.88.0
+          - label: linux-mipsle
+            target: mipsel-unknown-linux-gnu
+            toolchain: nightly-2026-07-15
+          - label: linux-mipsle-softfloat
+            target: mipsel-unknown-linux-musl
+            toolchain: nightly-2026-07-15
+          - label: linux-riscv64
+            target: riscv64gc-unknown-linux-gnu
+            toolchain: 1.88.0
+          - label: linux-loong64
+            target: loongarch64-unknown-linux-gnu
+            toolchain: 1.88.0
+          - label: android-x86
+            target: i686-linux-android
+            toolchain: 1.88.0
+          - label: android-x64
+            target: x86_64-linux-android
+            toolchain: 1.88.0
+          - label: android-armv7
+            target: armv7-linux-androideabi
+            toolchain: 1.88.0
+          - label: android-arm64
+            target: aarch64-linux-android
+            toolchain: 1.88.0
+          - label: freebsd-x86
+            target: i686-unknown-freebsd
+            toolchain: 1.88.0
+          - label: freebsd-x64
+            target: x86_64-unknown-freebsd
+            toolchain: 1.88.0
+          - label: freebsd-x64-avx
+            target: x86_64-unknown-freebsd
+            toolchain: 1.88.0
+            variant: avx
+          - label: freebsd-arm64
+            target: aarch64-unknown-freebsd
+            toolchain: nightly-2026-07-15
+          - label: freebsd-armv7
+            target: armv7-unknown-freebsd
+            toolchain: nightly-2026-07-15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Setup nightly with rust-src
+        if: startsWith(matrix.toolchain, 'nightly')
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-07-15
+          components: rust-src
+
+      - name: Install pinned Cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev 154b4ead7e639c7597d9e4e626b9c1c1e37608c0 --locked
+
+      - name: Package cross-compiled binary
+        run: python scripts/package_rust.py --builder cross --toolchain ${{ matrix.toolchain }} --target ${{ matrix.target }} --variant ${{ matrix.variant || 'baseline' }}
+
+      - name: Upload cross-compiled binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: hysteria-rust-${{ matrix.label }}
+          path: build/rust/*
+
+  interoperability:
+    name: Go/Rust interoperability
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Rust implementation
+        uses: actions/checkout@v7
+
+      - name: Check out pinned Go implementation
+        uses: actions/checkout@v7
+        with:
+          repository: apernet/hysteria
+          ref: f2ad1de5da52a1da9622285a1d61553ddaa41f21
+          path: upstream-go
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.25.1
+          cache-dependency-path: upstream-go/app/go.sum
+
+      - name: Build pinned Go binary
+        working-directory: upstream-go/app
+        run: go build -trimpath -o "${RUNNER_TEMP}/hysteria-go" .
+
+      - name: Test both client/server directions
+        env:
+          HYSTERIA_GO_BIN: ${{ runner.temp }}/hysteria-go
+          HYSTERIA_DISABLE_UPDATE_CHECK: "1"
+        run: cargo test --locked --package hysteria-cli --test go_interop -- --nocapture
+
+  security:
+    name: Dependency security audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Audit Cargo.lock
+        uses: rustsec/audit-check@v2

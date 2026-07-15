@@ -1,0 +1,31 @@
+[package]
+name = "hysteria-transport"
+version.workspace = true
+description = "QUIC and HTTP/3 transport for Hysteria 2"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+http.workspace = true
+httpdate.workspace = true
+portable-atomic.workspace = true
+hysteria-protocol = { path = "../hysteria-protocol" }
+hysteria-obfs = { path = "../hysteria-obfs" }
+hysteria-realm = { path = "../hysteria-realm" }
+quinn.workspace = true
+quinn-proto.workspace = true
+rustls.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+rcgen = "0.13.2"
+
+[lints]
+workspace = true

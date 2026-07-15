@@ -1,0 +1,81 @@
+[package]
+name = "hysteria-cli"
+version.workspace = true
+description = "Runnable Hysteria 2 client and server"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hysteria"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+humantime.workspace = true
+hickory-resolver.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+idna.workspace = true
+hysteria-protocol = { path = "../hysteria-protocol" }
+hysteria-realm = { path = "../hysteria-realm" }
+hysteria-transport = { path = "../hysteria-transport" }
+percent-encoding.workspace = true
+quinn.workspace = true
+quinn-proto.workspace = true
+rcgen = "0.13.2"
+prost.workspace = true
+qrcode.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-acme.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_yaml_ng.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+socket2.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream.workspace = true
+tokio-rustls.workspace = true
+time.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+url.workspace = true
+x509-parser.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
+tokio-tfo.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+netstack-smoltcp.workspace = true
+route_manager.workspace = true
+tun-rs.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-packet-core.workspace = true
+netlink-packet-route.workspace = true
+netlink-sys.workspace = true
+nix.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wfp.workspace = true
+
+[lints]
+workspace = true

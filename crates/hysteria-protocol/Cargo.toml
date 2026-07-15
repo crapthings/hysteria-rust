@@ -1,0 +1,12 @@
+[package]
+name = "hysteria-protocol"
+version.workspace = true
+description = "Wire types and codecs for the Hysteria 2 protocol"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

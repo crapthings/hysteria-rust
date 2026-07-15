@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+exec clang \
+    --target=armv7-unknown-freebsd14.3-gnueabihf \
+    --sysroot=/opt/freebsd-armv7 \
+    -fuse-ld=lld \
+    -Qunused-arguments \
+    -mfloat-abi=hard \
+    "$@"

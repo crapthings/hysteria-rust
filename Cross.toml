@@ -1,0 +1,22 @@
+[target.mipsel-unknown-linux-gnu]
+# Rust no longer ships a precompiled standard library for this Tier 3 target.
+# Cross builds it from rust-src so the Go release matrix's MIPS little-endian
+# target remains buildable on the current toolchain.
+build-std = true
+
+[target.mipsel-unknown-linux-musl]
+# Go's linux/mipsle-sf artifact uses the soft-float ABI. Rust's musl target
+# selects +soft-float, but Cross currently disables its default image while
+# cross-rs/cross#1422 is unresolved, so pin the published image explicitly.
+image = "ghcr.io/cross-rs/mipsel-unknown-linux-musl:main"
+build-std = true
+
+[target.aarch64-unknown-freebsd]
+# FreeBSD/ARM64 is also Tier 3 and requires a source-built standard library.
+build-std = true
+
+[target.armv7-unknown-freebsd]
+# FreeBSD publishes ARMv7 as a UFS disk image and Cross has no stock image for
+# this Tier 3 target. Build a verified sysroot and Clang/LLD toolchain locally.
+dockerfile = { file = "scripts/cross/freebsd-armv7/Dockerfile", context = "scripts/cross/freebsd-armv7" }
+build-std = true

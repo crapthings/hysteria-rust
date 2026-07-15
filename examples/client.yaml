@@ -1,0 +1,12 @@
+# Replace the server name and password before starting the client.
+server: example.com:443
+auth: CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD
+
+tls:
+  sni: example.com
+
+socks5:
+  listen: 127.0.0.1:1080
+
+http:
+  listen: 127.0.0.1:8080
