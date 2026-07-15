@@ -252,7 +252,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          args=(--verify-tag --generate-notes --title "${GITHUB_REF_NAME}")
+          args=(--repo "${GITHUB_REPOSITORY}" --verify-tag --generate-notes --title "${GITHUB_REF_NAME}")
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             args+=(--prerelease)
           fi
