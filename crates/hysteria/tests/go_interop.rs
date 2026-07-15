@@ -157,7 +157,14 @@ fn run_direction(direction: Direction<'_>) {
 }
 
 fn generate_ech_key(path: &Path) -> String {
-    let suite = rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES[0];
+    // The upstream Go implementation's ECH key format and handshake tests use
+    // DHKEM(X25519, HKDF-SHA256). Select it explicitly instead of relying on
+    // provider ordering, which differs between platforms.
+    let suite = rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES
+        .iter()
+        .copied()
+        .find(|suite| u16::from(suite.suite().kem) == 0x0020)
+        .expect("AWS-LC provider must support X25519 HPKE");
     let (public_key, private_key) = suite.generate_key_pair().unwrap();
     let suite_id = suite.suite();
     let public_name = b"public.example.com";

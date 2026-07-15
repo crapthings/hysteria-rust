@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::*;
+    use super::{Arc, CliError, ClientHandle, Result, TransparentTcpConfig, TransparentUdpConfig};
     use crate::runtime::{normalize_listen, resolve_one};
     use nix::sys::socket::{
         ControlMessageOwned, MsgFlags, SockaddrIn, SockaddrIn6, SockaddrStorage, recvmsg,
@@ -344,7 +344,7 @@ pub(crate) fn serve_udp_tproxy(
     std::future::ready(Err(CliError::new("udpTProxy is only supported on Linux")))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "linux")))]
 mod tests {
     use super::*;
 
