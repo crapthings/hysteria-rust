@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Hysteria 2 Rust — a high-performance, independent Rust implementation of Hysteria 2." />
+  <meta name="theme-color" content="#024ad8" />
+  <link rel="canonical" href="https://crapthings.github.io/hysteria-rust/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://crapthings.github.io/hysteria-rust/" />
+  <meta property="og:title" content="Hysteria 2 Rust — Fast by design" />
+  <meta property="og:description" content="An independent Hysteria 2 implementation in Rust. QUIC transport, TCP/UDP proxying, ECH, ACME, TUN, Realm, and more." />
+  <meta property="og:site_name" content="Hysteria 2 Rust" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Hysteria 2 Rust — Fast by design" />
+  <meta name="twitter:description" content="A cross-platform Hysteria 2 client and server built in Rust." />
+  <title>Hysteria 2 Rust — Fast by design</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { --blue:#024ad8; --blue-deep:#0e3191; --ink:#1a1a1a; --cloud:#f7f7f7; --fog:#e8e8e8; --line:#e8e8e8; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:#fff; font-family:Inter,Arial,sans-serif; line-height:1.4; }
+    ::selection { background:#c9e0fc; color:var(--ink); }
+    .container { width:min(1366px, calc(100% - 48px)); margin:auto; }
+    .display { font-weight:500; line-height:1; letter-spacing:-.035em; }
+    .chevron { position:absolute; width:144px; height:100%; background:var(--blue); clip-path:polygon(0 0,100% 0,58% 50%,100% 100%,0 100%,42% 50%); opacity:.96; }
+    .chevron.left { left:-72px; top:0; }
+    .chevron.right { right:-72px; top:0; transform:scaleX(-1); }
+    .btn { display:inline-flex; align-items:center; justify-content:center; height:44px; padding:12px 24px; border-radius:4px; font-size:14px; font-weight:600; letter-spacing:.7px; text-transform:uppercase; transition:background .2s,transform .2s; }
+    .btn:hover { transform:translateY(-2px); }
+    .btn-primary { color:#fff; background:var(--blue); }
+    .btn-primary:hover { background:var(--blue-deep); }
+    .btn-outline { color:var(--blue); border:1px solid var(--blue); background:#fff; }
+    .btn-outline:hover { background:#c9e0fc; }
+    .card { border:1px solid var(--line); border-radius:16px; background:#fff; box-shadow:0 2px 8px rgba(26,26,26,.08); }
+    .card-flat { border-radius:16px; background:var(--cloud); }
+    .code-panel { overflow:hidden; border-radius:16px; background:#1a1a1a; color:#fff; box-shadow:0 2px 8px rgba(26,26,26,.08); }
+    .code-panel pre { overflow-x:auto; padding:24px; font-size:13px; line-height:1.75; }
+    .code-key { color:#8ebdff; }
+    .code-value { color:#d6e5ff; }
+    .copy-button { border:1px solid rgba(255,255,255,.22); border-radius:4px; padding:5px 9px; color:rgba(255,255,255,.75); font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
+    .copy-button:hover { border-color:#8ebdff; color:#fff; }
+    details summary { list-style:none; cursor:pointer; }
+    details summary::-webkit-details-marker { display:none; }
+    details summary::after { content:'+'; margin-left:auto; color:var(--blue); font-size:24px; font-weight:400; }
+    details[open] summary::after { content:'−'; }
+    .link { color:var(--blue); font-weight:500; text-decoration:none; }
+    .link:hover { color:var(--blue-deep); text-decoration:underline; text-underline-offset:4px; }
+    .fade-up { animation:fade .7s ease both; }
+    @keyframes fade { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+    @media (prefers-reduced-motion:reduce) { *,html { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+    @media (max-width:760px) { .container { width:min(100% - 32px,1366px); } .chevron { display:none; } }
+  </style>
+</head>
+<body>
+  <div class="bg-[#1a1a1a] text-white"><div class="container flex h-9 items-center justify-between text-xs"><span>HYSTERIA / RUST</span><span class="hidden sm:inline">Independent implementation · v0.1.0-rc.1</span><a href="https://github.com/crapthings/hysteria-rust" class="text-white hover:text-[#c9e0fc]">GitHub ↗</a></div></div>
+  <header class="sticky top-0 z-20 border-b border-[#e8e8e8] bg-white/95 backdrop-blur"><div class="container flex h-16 items-center justify-between"><a href="#top" class="text-2xl font-medium tracking-[-.06em]">Hysteria<span class="text-[#024ad8]">/</span>Rust</a><nav class="hidden items-center gap-1 lg:flex"><a class="rounded-full px-4 py-2 text-sm hover:bg-[#f7f7f7]" href="#why">Why Rust</a><a class="rounded-full px-4 py-2 text-sm hover:bg-[#f7f7f7]" href="#features">Features</a><a class="rounded-full px-4 py-2 text-sm hover:bg-[#f7f7f7]" href="#install">Install</a><a class="rounded-full px-4 py-2 text-sm hover:bg-[#f7f7f7]" href="#platforms">Platforms</a><a class="rounded-full px-4 py-2 text-sm hover:bg-[#f7f7f7]" href="#configuration">Configuration</a></nav><div class="flex items-center gap-2"><button id="menu-button" class="btn btn-outline !h-10 !px-3 !text-xs lg:hidden" type="button" aria-expanded="false" aria-controls="mobile-menu">Menu</button><a href="https://github.com/crapthings/hysteria-rust" class="btn btn-outline !hidden !h-10 !px-4 !text-xs sm:inline-flex">View source ↗</a></div></div><nav id="mobile-menu" class="container hidden border-t border-[#e8e8e8] py-3 lg:hidden"><a class="block rounded-lg px-3 py-2 text-sm hover:bg-[#f7f7f7]" href="#features">Features</a><a class="block rounded-lg px-3 py-2 text-sm hover:bg-[#f7f7f7]" href="#install">Install</a><a class="block rounded-lg px-3 py-2 text-sm hover:bg-[#f7f7f7]" href="#platforms">Platforms</a><a class="block rounded-lg px-3 py-2 text-sm hover:bg-[#f7f7f7]" href="#configuration">Configuration</a><a class="block rounded-lg px-3 py-2 text-sm hover:bg-[#f7f7f7]" href="#faq">FAQ</a><a class="block rounded-lg px-3 py-2 text-sm text-[#024ad8] hover:bg-[#f7f7f7]" href="https://github.com/crapthings/hysteria-rust">GitHub ↗</a></nav></header>
+
+  <main id="top">
+    <section class="container overflow-hidden py-12 sm:py-20"><div class="relative min-h-[510px] overflow-hidden rounded-2xl bg-[#f7f7f7] px-7 py-12 sm:px-14 sm:py-16"><span class="chevron left"></span><span class="chevron right"></span><div class="relative z-10 max-w-2xl fade-up"><p class="mb-6 text-sm font-medium text-[#024ad8]">QUIC transport · built in Rust</p><h1 class="display text-6xl sm:text-7xl lg:text-[88px]">Move fast.<br /><span class="text-[#024ad8]">Stay in control.</span></h1><p class="mt-8 max-w-lg text-lg text-[#3d3d3d]">Hysteria 2, rebuilt in Rust. High-speed TCP and UDP proxying over QUIC, with a safer core and a full cross-platform toolkit.</p><div class="mt-8 flex flex-wrap gap-3"><a href="#start" class="btn btn-primary">Get started ↘</a><a href="#features" class="btn btn-outline">Explore features</a></div></div><div class="absolute bottom-8 right-8 z-10 hidden w-64 rounded-2xl bg-white p-5 shadow-[0_8px_24px_rgba(26,26,26,.12)] sm:block"><div class="mb-4 flex justify-between text-xs text-[#636363]"><span>RUNTIME STATUS</span><span class="text-[#024ad8]">● online</span></div><div class="font-mono text-xs leading-6 text-[#3d3d3d]">QUIC initialized<br />TLS 1.3 ready<br />0.0.0.0:443</div></div></div></section>
+
+    <section id="why" class="border-y border-[#e8e8e8] bg-white"><div class="container grid gap-12 py-20 lg:grid-cols-[.7fr_1.3fr] lg:py-24"><div><p class="text-sm font-medium text-[#024ad8]">01 / The premise</p><h2 class="display mt-5 max-w-md text-5xl sm:text-6xl">Performance<br />without baggage.</h2></div><div><p class="max-w-2xl text-xl leading-relaxed text-[#3d3d3d]">An independent Rust port targeting compatibility with the original <a class="link" href="https://v2.hysteria.network/">Hysteria 2 project ↗</a> and its upstream Go implementation — while taking advantage of Rust’s ecosystem and compile-time guarantees.</p><a class="link mt-7 inline-block" href="https://github.com/crapthings/hysteria-rust#readme">Read the project README →</a></div></div></section>
+
+    <section id="features" class="bg-[#f7f7f7]"><div class="container py-20 lg:py-24"><div class="mb-12 flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><p class="text-sm font-medium text-[#024ad8]">02 / Capability matrix</p><h2 class="display mt-5 text-5xl sm:text-6xl">The whole toolkit.</h2></div><span class="rounded-lg border border-[#1a1a1a] px-3 py-1.5 text-sm">Rust 1.88 · MIT</span></div><div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"><article class="card p-6"><div class="mb-12 text-sm font-medium text-[#024ad8]">01 / NETWORK</div><h3 class="text-2xl font-medium">TCP / UDP proxying</h3><p class="mt-3 text-[#636363]">High-speed traffic forwarding over a modern QUIC transport.</p></article><article class="card p-6"><div class="mb-12 text-sm font-medium text-[#024ad8]">02 / PRIVACY</div><h3 class="text-2xl font-medium">Salamander + Gecko</h3><p class="mt-3 text-[#636363]">Obfuscation options for networks that fight back.</p></article><article class="card p-6"><div class="mb-12 text-sm font-medium text-[#024ad8]">03 / ROUTING</div><h3 class="text-2xl font-medium">ACL + Realm</h3><p class="mt-3 text-[#636363]">Flexible outbounds, port mapping, and punching.</p></article><article class="card p-6"><div class="mb-12 text-sm font-medium text-[#024ad8]">04 / SYSTEM</div><h3 class="text-2xl font-medium">TUN + transparent</h3><p class="mt-3 text-[#636363]">Platform-aware modes for deeper system integration.</p></article><article class="card p-6"><div class="mb-12 text-sm font-medium text-[#024ad8]">05 / TLS</div><h3 class="text-2xl font-medium">ECH + ACME</h3><p class="mt-3 text-[#636363]">Encrypted ClientHello and automated certificates.</p></article><article class="card p-6"><div class="mb-12 text-sm font-medium text-[#024ad8]">06 / OPERATIONS</div><h3 class="text-2xl font-medium">Stats + speed tests</h3><p class="mt-3 text-[#636363]">Know what your connection is actually doing.</p></article></div></div></section>
+
+    <section id="install" class="border-y border-[#e8e8e8] bg-white"><div class="container py-20 lg:py-24"><div class="grid gap-12 lg:grid-cols-[.8fr_1.2fr]"><div><p class="text-sm font-medium text-[#024ad8]">03 / Install</p><h2 class="display mt-5 text-5xl sm:text-6xl">One binary.<br />No runtime.</h2><p class="mt-7 max-w-md text-lg text-[#3d3d3d]">Download the binary for your platform, verify the adjacent SHA-256 checksum, then run it directly. Rust and Go are not required.</p><div class="mt-8 flex flex-wrap gap-3"><a class="btn btn-primary" href="https://github.com/crapthings/hysteria-rust/releases/tag/v0.1.0-rc.1">Download v0.1.0-rc.1 ↗</a><a class="btn btn-outline" href="https://github.com/crapthings/hysteria-rust/releases">All releases</a></div></div><div class="grid gap-4 sm:grid-cols-3"><article class="card p-6"><p class="text-sm font-medium text-[#024ad8]">LINUX</p><h3 class="mt-8 text-2xl font-medium">x64 · ARM · more</h3><p class="mt-3 text-sm text-[#636363]">GNU/Linux, Android, MIPS, RISC-V, s390x, and LoongArch builds.</p></article><article class="card p-6"><p class="text-sm font-medium text-[#024ad8]">MACOS</p><h3 class="mt-8 text-2xl font-medium">Intel · Apple</h3><p class="mt-3 text-sm text-[#636363]">Native x86-64 and Apple Silicon release binaries.</p></article><article class="card p-6"><p class="text-sm font-medium text-[#024ad8]">WINDOWS</p><h3 class="mt-8 text-2xl font-medium">x86 · x64 · ARM64</h3><p class="mt-3 text-sm text-[#636363]">Standalone executables with TUN and WFP support.</p></article></div></div></div></section>
+
+    <section id="platforms" class="bg-[#f7f7f7]"><div class="container py-20 lg:py-24"><div class="mb-10 flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><p class="text-sm font-medium text-[#024ad8]">04 / Platforms</p><h2 class="display mt-5 text-5xl sm:text-6xl">27 release targets.</h2></div><a class="link" href="https://github.com/crapthings/hysteria-rust/blob/main/PORT_STATUS.md">Full compatibility report ↗</a></div><div class="overflow-x-auto rounded-2xl border border-[#e8e8e8] bg-white"><table class="w-full min-w-[720px] text-left"><thead class="border-b border-[#e8e8e8] text-xs uppercase tracking-wider text-[#636363]"><tr><th class="px-6 py-4 font-medium">Platform</th><th class="px-6 py-4 font-medium">Architectures</th><th class="px-6 py-4 font-medium">Proxy modes</th><th class="px-6 py-4 font-medium">System integration</th></tr></thead><tbody class="divide-y divide-[#e8e8e8] text-sm"><tr><td class="px-6 py-5 font-medium">Linux</td><td class="px-6 py-5 text-[#636363]">x86, x64, ARM, MIPS, RISC-V, s390x, LoongArch</td><td class="px-6 py-5">SOCKS5 · HTTP · Forwarding</td><td class="px-6 py-5 text-[#024ad8]">TUN · TProxy · Redirect</td></tr><tr><td class="px-6 py-5 font-medium">macOS</td><td class="px-6 py-5 text-[#636363]">x64 · ARM64</td><td class="px-6 py-5">SOCKS5 · HTTP · Forwarding</td><td class="px-6 py-5 text-[#024ad8]">TUN</td></tr><tr><td class="px-6 py-5 font-medium">Windows</td><td class="px-6 py-5 text-[#636363]">x86 · x64 · ARM64</td><td class="px-6 py-5">SOCKS5 · HTTP · Forwarding</td><td class="px-6 py-5 text-[#024ad8]">TUN · WFP strict route</td></tr><tr><td class="px-6 py-5 font-medium">Android / FreeBSD</td><td class="px-6 py-5 text-[#636363]">x86, x64, ARMv7, ARM64</td><td class="px-6 py-5">Core client / server modes</td><td class="px-6 py-5 text-[#636363]">Platform dependent</td></tr></tbody></table></div><p class="mt-5 text-sm text-[#636363]">Core QUIC, TCP/UDP, TLS, obfuscation, ACL, and Realm capabilities are shared across supported targets. Low-level routing features depend on operating-system APIs.</p></div></section>
+
+    <section class="bg-[#1a1a1a] text-white"><div class="container grid gap-12 py-20 lg:grid-cols-[.8fr_1.2fr] lg:py-24"><div><p class="text-sm font-medium text-[#296ef9]">Built for real deployments</p><h2 class="display mt-5 text-5xl sm:text-6xl">Ship anywhere.<br />Stay precise.</h2></div><div class="rounded-2xl bg-[#292929] p-7"><div class="grid gap-5 text-sm text-white/75 sm:grid-cols-2"><div><span class="text-[#296ef9]">TARGETS</span><p class="mt-2">Linux · macOS · Windows<br />Release binaries included</p></div><div><span class="text-[#296ef9]">GUARANTEES</span><p class="mt-2">Memory-safe core<br />Unknown fields rejected</p></div></div><a href="https://github.com/crapthings/hysteria-rust/releases" class="btn mt-8 bg-[#296ef9] text-white hover:bg-[#024ad8]">See releases ↗</a></div></div></section>
+
+    <section id="configuration" class="bg-white"><div class="container py-20 lg:py-24"><div class="mb-12 max-w-3xl"><p class="text-sm font-medium text-[#024ad8]">05 / Configuration</p><h2 class="display mt-5 text-5xl sm:text-6xl">Two files.<br />One shared secret.</h2><p class="mt-7 text-lg text-[#3d3d3d]">Start with these minimal YAML files. Replace the domain, certificate paths, and password before running them.</p></div><div class="grid gap-6 lg:grid-cols-2"><article><div class="mb-4 flex items-center justify-between"><h3 class="text-2xl font-medium">Server</h3><a class="link text-sm" href="https://github.com/crapthings/hysteria-rust/blob/main/examples/server.yaml">Full example ↗</a></div><div class="code-panel"><div class="flex items-center justify-between border-b border-white/10 px-6 py-3 text-xs text-white/50"><span>server.yaml</span><button class="copy-button" type="button" data-copy-target="server-config">Copy</button></div><pre><code id="server-config"><span class="code-key">listen:</span> <span class="code-value">:443</span>
+
+<span class="code-key">tls:</span>
+  <span class="code-key">cert:</span> <span class="code-value">/etc/hysteria/server.crt</span>
+  <span class="code-key">key:</span> <span class="code-value">/etc/hysteria/server.key</span>
+
+<span class="code-key">auth:</span>
+  <span class="code-key">type:</span> <span class="code-value">password</span>
+  <span class="code-key">password:</span> <span class="code-value">CHANGE_ME</span></code></pre></div></article><article><div class="mb-4 flex items-center justify-between"><h3 class="text-2xl font-medium">Client</h3><a class="link text-sm" href="https://github.com/crapthings/hysteria-rust/blob/main/examples/client.yaml">Full example ↗</a></div><div class="code-panel"><div class="flex items-center justify-between border-b border-white/10 px-6 py-3 text-xs text-white/50"><span>client.yaml</span><button class="copy-button" type="button" data-copy-target="client-config">Copy</button></div><pre><code id="client-config"><span class="code-key">server:</span> <span class="code-value">example.com:443</span>
+<span class="code-key">auth:</span> <span class="code-value">CHANGE_ME</span>
+
+<span class="code-key">tls:</span>
+  <span class="code-key">sni:</span> <span class="code-value">example.com</span>
+
+<span class="code-key">socks5:</span>
+  <span class="code-key">listen:</span> <span class="code-value">127.0.0.1:1080</span>
+
+<span class="code-key">http:</span>
+  <span class="code-key">listen:</span> <span class="code-value">127.0.0.1:8080</span></code></pre></div></article></div><div class="mt-8 grid gap-px overflow-hidden rounded-2xl border border-[#e8e8e8] bg-[#e8e8e8] sm:grid-cols-2 lg:grid-cols-4"><div class="bg-white p-5"><code class="text-sm text-[#024ad8]">listen</code><p class="mt-2 text-sm text-[#636363]">Server bind address and UDP port.</p></div><div class="bg-white p-5"><code class="text-sm text-[#024ad8]">tls.cert / key</code><p class="mt-2 text-sm text-[#636363]">PEM certificate and private key paths.</p></div><div class="bg-white p-5"><code class="text-sm text-[#024ad8]">auth</code><p class="mt-2 text-sm text-[#636363]">Must use the same password on both ends.</p></div><div class="bg-white p-5"><code class="text-sm text-[#024ad8]">tls.sni</code><p class="mt-2 text-sm text-[#636363]">Should match the certificate domain.</p></div></div><div class="mt-6 rounded-2xl bg-[#c9e0fc] p-6"><p class="font-medium">Security note</p><p class="mt-2 text-sm text-[#3d3d3d]">Never deploy the example password. Use a long random secret, keep the private key readable only by the service account, and verify that the certificate covers the client SNI.</p></div></div></section>
+
+    <section id="start" class="bg-[#e8e8e8]"><div class="container py-20 lg:py-24"><div class="grid gap-12 lg:grid-cols-[.8fr_1.2fr]"><div><p class="text-sm font-medium text-[#024ad8]">06 / First run</p><h2 class="display mt-5 text-5xl sm:text-6xl">Ready when<br />you are.</h2><p class="mt-7 max-w-md text-lg text-[#3d3d3d]">Save the configurations, then start the server and client in their respective environments.</p></div><div class="space-y-4"><div class="card flex flex-wrap items-center justify-between gap-4 p-6"><div><p class="mb-4 text-xs text-[#636363]">SERVER</p><code id="server-command" class="text-sm text-[#1a1a1a]">hysteria server --config server.yaml</code></div><button class="btn btn-outline !h-9 !px-3 !text-xs" type="button" data-copy-target="server-command">Copy</button></div><div class="card flex flex-wrap items-center justify-between gap-4 p-6"><div><p class="mb-4 text-xs text-[#636363]">CLIENT</p><code id="client-command" class="text-sm text-[#1a1a1a]">hysteria client --config client.yaml</code></div><button class="btn btn-outline !h-9 !px-3 !text-xs" type="button" data-copy-target="client-command">Copy</button></div><div class="flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white p-6"><span class="text-sm text-[#3d3d3d]">SOCKS5 on 127.0.0.1:1080 · HTTP on 127.0.0.1:8080</span><a href="https://github.com/crapthings/hysteria-rust/releases" class="link">Get a release →</a></div></div></div></div></section>
+
+    <section id="faq" class="bg-white"><div class="container py-20 lg:py-24"><div class="grid gap-12 lg:grid-cols-[.7fr_1.3fr]"><div><p class="text-sm font-medium text-[#024ad8]">07 / FAQ</p><h2 class="display mt-5 text-5xl sm:text-6xl">Good to know.</h2></div><div class="space-y-3"><details class="rounded-lg border border-[#e8e8e8] bg-white"><summary class="flex items-center gap-5 p-5 font-medium">Is this an official Hysteria release?</summary><p class="px-5 pb-5 text-sm leading-6 text-[#636363]">No. This is an independent Rust implementation targeting interoperability with the original Hysteria 2 project and a pinned upstream Go commit.</p></details><details class="rounded-lg border border-[#e8e8e8] bg-white"><summary class="flex items-center gap-5 p-5 font-medium">Do I need Rust or Go on the server?</summary><p class="px-5 pb-5 text-sm leading-6 text-[#636363]">No. Download the correct release binary for your operating system and architecture, verify its SHA-256 file, and run it directly.</p></details><details class="rounded-lg border border-[#e8e8e8] bg-white"><summary class="flex items-center gap-5 p-5 font-medium">Which firewall port should I open?</summary><p class="px-5 pb-5 text-sm leading-6 text-[#636363]">Open the configured listen port for UDP. The minimal example uses UDP 443. Additional TCP ports may be needed when optional HTTP/HTTPS masquerade frontends or ACME challenges are enabled.</p></details><details class="rounded-lg border border-[#e8e8e8] bg-white"><summary class="flex items-center gap-5 p-5 font-medium">Can Rust clients connect to Go servers?</summary><p class="px-5 pb-5 text-sm leading-6 text-[#636363]">Yes. The repository includes mandatory real-binary interoperability tests in both directions for core TCP/UDP, ECH, and Salamander behavior.</p></details><details class="rounded-lg border border-[#e8e8e8] bg-white"><summary class="flex items-center gap-5 p-5 font-medium">Why was my configuration rejected?</summary><p class="px-5 pb-5 text-sm leading-6 text-[#636363]">The Rust parser deliberately rejects unknown fields instead of silently ignoring likely typos. Check field spelling and nesting against the examples.</p></details></div></div></div></section>
+  </main>
+
+  <footer class="bg-[#1a1a1a] text-white"><div class="container grid gap-10 py-16 sm:grid-cols-2 lg:grid-cols-[1.3fr_1fr_1fr]"><div><div class="text-3xl font-medium tracking-[-.06em]">Hysteria<span class="text-[#296ef9]">/</span>Rust</div><p class="mt-5 max-w-xs text-sm leading-6 text-white/55">An independent Rust implementation of Hysteria 2. Fast by design.</p></div><div><p class="mb-4 text-sm text-white/45">EXPLORE</p><a class="block py-1 text-sm hover:text-[#c9e0fc]" href="#features">Features</a><a class="block py-1 text-sm hover:text-[#c9e0fc]" href="#install">Install</a><a class="block py-1 text-sm hover:text-[#c9e0fc]" href="#platforms">Platforms</a><a class="block py-1 text-sm hover:text-[#c9e0fc]" href="#configuration">Configuration</a><a class="block py-1 text-sm hover:text-[#c9e0fc]" href="#faq">FAQ</a></div><div><p class="mb-4 text-sm text-white/45">PROJECT</p><a class="block py-1 text-sm hover:text-[#c9e0fc]" href="https://github.com/crapthings/hysteria-rust">GitHub ↗</a><a class="block py-1 text-sm hover:text-[#c9e0fc]" href="https://v2.hysteria.network/">Original Hysteria 2 ↗</a><a class="block py-1 text-sm hover:text-[#c9e0fc]" href="https://github.com/crapthings/hysteria-rust/blob/main/LICENSE">MIT License</a></div></div><div class="container border-t border-white/15 py-6 text-xs leading-5 text-white/40">Hysteria 2 is created by The Hysteria Project. This independent Rust port is not an official Hysteria release.</div></footer>
+  <script>
+    const menuButton = document.querySelector('#menu-button');
+    const mobileMenu = document.querySelector('#mobile-menu');
+    const closeMenu = () => {
+      mobileMenu.classList.add('hidden');
+      menuButton.setAttribute('aria-expanded', 'false');
+    };
+    menuButton.addEventListener('click', () => {
+      const isOpen = menuButton.getAttribute('aria-expanded') === 'true';
+      mobileMenu.classList.toggle('hidden', isOpen);
+      menuButton.setAttribute('aria-expanded', String(!isOpen));
+    });
+    mobileMenu.querySelectorAll('a').forEach((link) => link.addEventListener('click', closeMenu));
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMenu(); });
+
+    const copyText = async (text) => {
+      if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    };
+    document.querySelectorAll('[data-copy-target]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const target = document.getElementById(button.dataset.copyTarget);
+        if (!target) return;
+        const original = button.textContent;
+        try {
+          await copyText(target.textContent.trim());
+          button.textContent = 'Copied';
+        } catch {
+          button.textContent = 'Select manually';
+        }
+        window.setTimeout(() => { button.textContent = original; }, 1600);
+      });
+    });
+  </script>
+</body>
+</html>
