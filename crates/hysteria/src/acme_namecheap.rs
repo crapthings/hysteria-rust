@@ -195,6 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn preserves_existing_records_when_adding_and_removing_challenge() {
+        crate::tls::ensure_crypto_provider();
         let calls = Arc::new(std::sync::Mutex::new(0));
         let observed = calls.clone();
         let app = Router::new().route("/", post(move |Form(fields): Form<HashMap<String, String>>| {
