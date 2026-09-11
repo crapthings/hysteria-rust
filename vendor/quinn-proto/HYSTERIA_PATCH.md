@@ -3,6 +3,9 @@
 This is `quinn-proto` 0.11.16 with Hysteria compatibility extensions:
 
 - `TransportConfig::assume_peer_max_datagram_frame_size`.
+- `ServerConfig::send_stateless_reset`, enabled by default. Hysteria's server
+  `quic.disableStatelessReset` option suppresses outgoing resets for unknown
+  connections; receiving resets and client endpoint behavior are unchanged.
 - BBR configuration setters for startup pacing/CWND gain, PROBE_BW CWND gain, startup round
   threshold, drain-to-target behavior, startup ACK aggregation behavior, and startup overshoot
   detection.

@@ -195,6 +195,7 @@ impl Default for EndpointConfig {
 /// Default values should be suitable for most internet applications.
 #[derive(Clone)]
 pub struct ServerConfig {
+    pub(crate) send_stateless_reset: bool,
     /// Transport configuration to use for incoming connections
     pub transport: Arc<TransportConfig>,
 
@@ -236,6 +237,7 @@ impl ServerConfig {
     ) -> Self {
         Self {
             transport: Arc::new(TransportConfig::default()),
+            send_stateless_reset: true,
             crypto,
 
             token_key,
@@ -254,6 +256,12 @@ impl ServerConfig {
 
             time_source: Arc::new(StdSystemTime),
         }
+    }
+
+    /// Enable sending stateless resets for unknown connections. Enabled by default.
+    pub fn send_stateless_reset(&mut self, enabled: bool) -> &mut Self {
+        self.send_stateless_reset = enabled;
+        self
     }
 
     /// Set a custom [`TransportConfig`]

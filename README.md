@@ -143,6 +143,12 @@ HYSTERIA_GO_BIN=/path/to/go/hysteria \
   cargo test --locked --package hysteria-cli --test go_interop -- --nocapture
 ```
 
+## QUIC stateless resets
+
+The server sends QUIC stateless resets by default to help clients detect lost
+connections promptly. Set `quic.disableStatelessReset: true` in the server
+configuration to suppress outgoing reset packets for unknown connections.
+
 ## Additional ACME DNS providers
 
 Porkbun DNS-01 certificate validation uses the upstream-compatible configuration:

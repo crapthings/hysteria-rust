@@ -65,6 +65,8 @@ pub struct SniffConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerQuicConfig {
     #[serde(default)]
+    pub disable_stateless_reset: bool,
+    #[serde(default)]
     pub init_stream_receive_window: u64,
     #[serde(default)]
     pub max_stream_receive_window: u64,
@@ -1667,6 +1669,10 @@ udpForwarding:
 
     #[test]
     fn parses_and_validates_go_style_server_quic_config() {
+        assert!(!ServerQuicConfig::default().disable_stateless_reset);
+        let reset: ServerQuicConfig =
+            serde_yaml_ng::from_str("disableStatelessReset: true").unwrap();
+        assert!(reset.disable_stateless_reset);
         let config: ServerConfig = serde_yaml_ng::from_str(
             "tls: { cert: cert.pem, key: key.pem, sniGuard: strict }\nauth: { type: password, password: secret }\nquic:\n  initStreamReceiveWindow: 77881\n  maxStreamReceiveWindow: 77882\n  initConnReceiveWindow: 77883\n  maxConnReceiveWindow: 77884\n  maxIdleTimeout: 99s\n  maxIncomingStreams: 256\n  disablePathMTUDiscovery: true\n",
         )

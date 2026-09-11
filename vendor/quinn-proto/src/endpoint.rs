@@ -272,6 +272,13 @@ impl Endpoint {
         buf: &mut Vec<u8>,
     ) -> Option<Transmit> {
         if self
+            .server_config
+            .as_ref()
+            .is_some_and(|config| !config.send_stateless_reset)
+        {
+            return None;
+        }
+        if self
             .last_stateless_reset
             .is_some_and(|last| last + self.config.min_reset_interval > now)
         {

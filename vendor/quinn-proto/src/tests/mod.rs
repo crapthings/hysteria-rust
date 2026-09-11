@@ -186,6 +186,15 @@ fn draft_version_compat() {
 
 #[test]
 fn server_stateless_reset() {
+    check_server_stateless_reset(true);
+}
+
+#[test]
+fn server_stateless_reset_disabled() {
+    check_server_stateless_reset(false);
+}
+
+fn check_server_stateless_reset(enabled: bool) {
     let _guard = subscribe();
     let mut key_material = vec![0; 64];
     let mut rng = rand::rng();
@@ -200,18 +209,24 @@ fn server_stateless_reset() {
     let mut pair = Pair::new(endpoint_config.clone(), server_config());
     let (client_ch, _) = pair.connect();
     pair.drive(); // Flush any post-handshake frames
-    pair.server.endpoint =
-        Endpoint::new(endpoint_config, Some(Arc::new(server_config())), true, None);
+    let mut config = server_config();
+    config.send_stateless_reset(enabled);
+    pair.server.endpoint = Endpoint::new(endpoint_config, Some(Arc::new(config)), true, None);
     // Force the server to generate the smallest possible stateless reset
     pair.client.connections.get_mut(&client_ch).unwrap().ping();
     info!("resetting");
     pair.drive();
-    assert_matches!(
-        pair.client_conn_mut(client_ch).poll(),
-        Some(Event::ConnectionLost {
-            reason: ConnectionError::Reset
-        })
-    );
+    if enabled {
+        assert_matches!(
+            pair.client_conn_mut(client_ch).poll(),
+            Some(Event::ConnectionLost {
+                reason: ConnectionError::Reset
+            })
+        );
+    } else {
+        // No reset is delivered while the client probes the lost connection.
+        assert_matches!(pair.client_conn_mut(client_ch).poll(), None);
+    }
 }
 
 #[test]

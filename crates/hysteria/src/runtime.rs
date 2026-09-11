@@ -259,6 +259,7 @@ fn apply_server_quic_config(
         settings.mtu_discovery_config(None);
     }
     server.transport_config(transport);
+    server.send_stateless_reset(!config.disable_stateless_reset);
     Ok(())
 }
 
