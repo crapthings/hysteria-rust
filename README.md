@@ -27,7 +27,7 @@ interoperable with the upstream Go implementation at commit
 - SOCKS5, HTTP proxy, forwarding, TUN, redirect, and TProxy client modes
 - ACL routing, GeoIP/GeoSite, masquerade, traffic statistics, and speed tests
 - Realm, STUN, NAT mapping, and peer-to-peer hole punching
-- Cross-platform release coverage matching the upstream 27-target matrix
+- Focused release coverage for seven mainstream Linux, macOS, and Windows targets
 - Strict YAML parsing that rejects unknown fields instead of hiding likely typos
 
 See [PORT_STATUS.md](PORT_STATUS.md) for the full implementation and compatibility report.
@@ -120,10 +120,9 @@ used. Local paths can be configured with `acl.geoip` and `acl.geosite`.
 
 | Platform | Release architectures | System integration |
 | --- | --- | --- |
-| Linux | x86, x64, ARM, MIPS, RISC-V, s390x, LoongArch | TUN, TProxy, redirect |
+| Linux | x64, ARMv7, ARM64 | TUN, TProxy, redirect |
 | macOS | x64, ARM64 | TUN |
-| Windows | x86, x64, ARM64 | TUN, WFP strict route |
-| Android / FreeBSD | x86, x64, ARMv7, ARM64 | Platform dependent |
+| Windows | x64, ARM64 | TUN, WFP strict route |
 
 Core QUIC, TCP/UDP, TLS, obfuscation, ACL, and Realm features are shared across
 supported targets. Low-level routing features depend on operating-system APIs.

@@ -52,8 +52,8 @@ The native executable is `target/release/hysteria`. Cross-release artifacts and 
 - Automatic immediate-and-24-hour update checks with global `--disable-update-check`/`HYSTERIA_DISABLE_UPDATE_CHECK` control, direct server checks, and censorship-safe client checks whose DNS/TLS/HTTP traffic is carried through the authenticated Hysteria TCP connection
 - Go-compatible fixed-vector and malformed-input tests for the above, plus a mandatory CI real-binary ECH/Salamander/TCP/UDP interoperability test covering Rust-client/Go-server and Go-client/Rust-server (`HYSTERIA_GO_BIN=/path/to/go/hysteria cargo test -p hysteria-cli --test go_interop` for local runs)
 - A narrowly patched vendored `quinn-proto` transport option matching Hysteria's Go-server behavior when Go clients intentionally omit the QUIC max-datagram-frame-size parameter
-- Optimized native and containerized cross-release packaging with target-qualified artifacts, SHA-256 checksums, baseline and x86-64-v3/AVX variants, and CI coverage for x86/x64/ARM64 Windows, x64/ARM64 macOS, Linux x86/x64/ARMv5/ARMv7/ARM64/s390x/MIPS LE hard- and soft-float/RISC-V/LoongArch, Android x86/x64/ARMv7/ARM64, and FreeBSD x86/x64/ARMv7/ARM64. The FreeBSD ARMv7 toolchain builds a checksum-verified sysroot from the official 14.3 UFS image; release artifacts are verified as FreeBSD EABI5 hard-float binaries.
+- Optimized native and containerized cross-release packaging with target-qualified artifacts and SHA-256 checksums. CI publishes Linux x64/ARMv7/ARM64, macOS x64/ARM64, and Windows x64/ARM64 binaries.
 
 ## Completion status
 
-- None currently identified relative to the compatibility target above. The Go release matrix's MIPS little-endian soft-float and FreeBSD ARMv7 variants are covered by custom Cross configurations and verified release builds.
+- None currently identified relative to the compatibility target above.
