@@ -94,17 +94,8 @@ path = "examples/high_level_tokio.rs"
 required-features = ["tokio"]
 
 [[example]]
-name = "high_level_warp"
-path = "examples/high_level_warp.rs"
-required-features = ["tokio"]
-
-[[example]]
 name = "low_level"
 path = "examples/low_level.rs"
-
-[[example]]
-name = "low_level_actix"
-path = "examples/low_level_actix.rs"
 
 [[example]]
 name = "low_level_axum"
@@ -211,13 +202,6 @@ optional = true
 [dependencies.x509-parser]
 version = "0.16"
 
-[dev-dependencies.actix-web]
-version = "4"
-features = [
-    "actix-tls",
-    "rustls-0_23",
-]
-
 [dev-dependencies.axum]
 version = "0.8.8"
 
@@ -264,6 +248,3 @@ features = ["net"]
 [dev-dependencies.tokio-util]
 version = "0.7.10"
 features = ["compat"]
-
-[dev-dependencies.warp]
-version = "0.3.7"

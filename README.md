@@ -200,6 +200,15 @@ certificate validation can race with that read/modify/write operation.
 
 ## Cross-platform releases
 
+Pushes and pull requests to `main`/`dev` run Linux workspace tests, formatting,
+Clippy, Go/Rust interoperability, and dependency auditing. These daily checks
+do not build release binaries or upload artifacts. Rust dependency caches are
+reused, and CI debug symbols and incremental compilation are disabled to keep
+build storage smaller.
+
+Run the CI workflow manually for all seven platform builds and one-day build
+artifacts. Version tags still trigger the separate full Release workflow.
+
 [`scripts/package_rust.py`](scripts/package_rust.py) builds a target-qualified
 release binary and SHA-256 checksum. Cross builds use the checked-in
 [`Cross.toml`](Cross.toml) configuration:

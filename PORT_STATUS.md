@@ -61,7 +61,8 @@ Post-baseline additions on the upstream-sync branch:
 - Unix socket masquerade proxy backends, accepting absolute paths or `unix:///...` URLs.
 - Porkbun, Njalla, and Namecheap ACME DNS-01 providers; live-account issuance remains unverified.
 - Server `quic.disableStatelessReset`, with default reset behavior preserved.
-- CI and release packaging cover seven targets, with CI enabled for `main` and `dev`.
+- Daily CI on `main`/`dev` checks Linux, lint, interoperability, and security.
+  Manual CI and tag-triggered release packaging cover seven targets.
 
 Chrome QUIC fingerprint parroting and Linux Mimic integration are not yet ported.
 The pinned Go interoperability reference above remains unchanged.

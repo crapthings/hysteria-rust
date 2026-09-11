@@ -17,6 +17,18 @@ on:
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   quality:
     name: Format and lint
@@ -30,6 +42,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Check format
         run: cargo fmt --all -- --check
 
@@ -42,7 +57,11 @@ jobs:
       - name: Lint
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      - name: Test Linux workspace
+        run: cargo test --locked --workspace
+
   test-and-package:
+    if: github.event_name == 'workflow_dispatch'
     name: Test and package (${{ matrix.label }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -83,6 +102,11 @@ jobs:
           components: clippy
           targets: ${{ matrix.target }}
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.label }}
+
       - name: Test
         run: cargo test --locked --workspace
 
@@ -98,8 +122,10 @@ jobs:
         with:
           name: hysteria-rust-${{ matrix.label }}
           path: build/rust/*
+          retention-days: 1
 
   cross-package:
+    if: github.event_name == 'workflow_dispatch'
     name: Cross-package (${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
@@ -127,6 +153,7 @@ jobs:
         with:
           name: hysteria-rust-${{ matrix.label }}
           path: build/rust/*
+          retention-days: 1
 
   interoperability:
     name: Go/Rust interoperability
@@ -151,6 +178,9 @@ jobs:
           go-version: 1.25.1
           cache-dependency-path: upstream-go/app/go.sum
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Build pinned Go binary
         working-directory: upstream-go/app
         run: go build -trimpath -o "${RUNNER_TEMP}/hysteria-go" .
@@ -171,8 +201,17 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.88.0
 
+      - name: Cache audit tool
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cargo-audit-0.22.2
+          cache-targets: false
+
       - name: Install pinned cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        run: |
+          if ! cargo audit --version 2>/dev/null | grep -q '0.22.2$'; then
+            cargo install cargo-audit --version 0.22.2 --locked
+          fi
 
       - name: Audit Cargo.lock
         run: cargo audit

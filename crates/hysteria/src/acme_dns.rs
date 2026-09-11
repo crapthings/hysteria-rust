@@ -743,8 +743,8 @@ mod tests {
 
     #[tokio::test]
     async fn njalla_rpc_authenticates_and_checks_api_errors() {
-        crate::tls::ensure_crypto_provider();
         use axum::{Json, Router, http::HeaderMap, routing::post};
+        crate::tls::ensure_crypto_provider();
         let app = Router::new().route(
             "/",
             post(
