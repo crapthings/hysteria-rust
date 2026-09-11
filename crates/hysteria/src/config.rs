@@ -827,6 +827,11 @@ impl ServerAcmeDns {
     fn validate(&self) -> Result<()> {
         let provider = self.name.trim().to_ascii_lowercase();
         let required: &[&str] = match provider.as_str() {
+            "namecheap" => &[
+                "namecheap_api_key",
+                "namecheap_api_user",
+                "namecheap_client_ip",
+            ],
             "njalla" => &["njalla_api_token"],
             "porkbun" => &["porkbun_api_key", "porkbun_api_secret_key"],
             "cloudflare" => &["cloudflare_api_token"],
@@ -846,6 +851,9 @@ impl ServerAcmeDns {
             {
                 return Err(CliError::new(format!("acme.dns.config.{key} is required")));
             }
+        }
+        if provider == "namecheap" {
+            crate::acme_namecheap::Provider::new(self)?;
         }
         if let Some(server) = self.config.get("namedotcom_server")
             && !server.is_empty()

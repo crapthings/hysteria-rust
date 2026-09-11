@@ -1,5 +1,6 @@
 mod acme;
 mod acme_dns;
+mod acme_namecheap;
 mod auth;
 pub mod cert;
 pub mod config;

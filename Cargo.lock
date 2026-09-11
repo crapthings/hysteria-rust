@@ -1902,6 +1902,7 @@ dependencies = [
  "url",
  "wfp",
  "x509-parser 0.18.1",
+ "xmltree",
 ]
 
 [[package]]

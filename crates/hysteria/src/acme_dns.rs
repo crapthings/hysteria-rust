@@ -35,6 +35,7 @@ pub(crate) fn solver(config: &ServerAcmeDns) -> Result<Arc<dyn AcmeDns01Solver>>
 
 #[derive(Clone)]
 enum Provider {
+    Namecheap(crate::acme_namecheap::Provider),
     Njalla {
         token: String,
     },
@@ -69,6 +70,7 @@ impl Provider {
     fn from_config(dns: &ServerAcmeDns) -> Result<Self> {
         let get = |key: &str| dns.config.get(key).cloned().unwrap_or_default();
         Ok(match dns.name.trim().to_ascii_lowercase().as_str() {
+            "namecheap" => Self::Namecheap(crate::acme_namecheap::Provider::new(dns)?),
             "njalla" => Self::Njalla {
                 token: get("njalla_api_token"),
             },
@@ -317,6 +319,16 @@ impl DnsSolver {
                 .await?;
                 String::new()
             }
+            Provider::Namecheap(provider) => {
+                if provider
+                    .update(&self.client, zone, name, value, true)
+                    .await?
+                {
+                    "created".to_owned()
+                } else {
+                    String::new()
+                }
+            }
             Provider::Njalla { token } => {
                 let result = njalla_call(&self.client, "https://njal.la/api/1/", token, "add-record",
                     serde_json::json!({"domain":zone,"name":name,"type":"TXT","content":value,"ttl":DNS_TTL})).await?;
@@ -366,6 +378,14 @@ impl DnsSolver {
     #[allow(clippy::too_many_lines)]
     async fn remove(&self, handle: &RecordHandle, value: &str) -> std::result::Result<(), String> {
         match &self.provider {
+            Provider::Namecheap(provider) => {
+                if handle.id == "created" {
+                    provider
+                        .update(&self.client, &handle.zone, &handle.name, value, false)
+                        .await?;
+                }
+                Ok(())
+            }
             Provider::Njalla { token } => {
                 njalla_call(
                     &self.client,
