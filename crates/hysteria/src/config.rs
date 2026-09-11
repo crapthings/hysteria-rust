@@ -922,15 +922,7 @@ impl MasqueradeConfig {
                 ));
             }
             "proxy" => {
-                let url = reqwest::Url::parse(&self.proxy.url).map_err(|error| {
-                    CliError::new(format!("invalid masquerade.proxy.url: {error}"))
-                })?;
-                if !matches!(url.scheme(), "http" | "https") {
-                    return Err(CliError::new(format!(
-                        "unsupported masquerade proxy scheme {:?}",
-                        url.scheme()
-                    )));
-                }
+                crate::masquerade::proxy_target(&self.proxy.url)?;
             }
             "string" if self.string.content.is_empty() => {
                 return Err(CliError::new(

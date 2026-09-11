@@ -430,13 +430,64 @@ struct ProxyBackend {
     x_forwarded: bool,
 }
 
+pub(crate) fn proxy_target(value: &str) -> Result<(reqwest::Url, Option<std::path::PathBuf>)> {
+    let value = if value.starts_with('/') {
+        format!("unix://{value}")
+    } else {
+        value.to_owned()
+    };
+    let url = reqwest::Url::parse(&value)
+        .map_err(|error| CliError::new(format!("invalid masquerade proxy URL: {error}")))?;
+    match url.scheme() {
+        "http" | "https" => Ok((url, None)),
+        "unix" => {
+            if !cfg!(unix) {
+                return Err(CliError::new(
+                    "Unix socket masquerade requires a Unix platform",
+                ));
+            }
+            if url.host_str().is_some()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || !url.path().starts_with('/')
+            {
+                return Err(CliError::new(
+                    "invalid Unix socket URL: expected an absolute path without host, credentials, query or fragment",
+                ));
+            }
+            let file_url = reqwest::Url::parse(&format!("file://{}", url.path()))
+                .map_err(|error| CliError::new(error.to_string()))?;
+            let path = file_url
+                .to_file_path()
+                .map_err(|()| CliError::new("invalid Unix socket path"))?;
+            Ok((
+                reqwest::Url::parse("http://localhost").expect("valid static URL"),
+                Some(path),
+            ))
+        }
+        scheme => Err(CliError::new(format!(
+            "unsupported masquerade proxy scheme {scheme:?}"
+        ))),
+    }
+}
+
 fn proxy_router(config: &MasqueradeConfig) -> Result<Router> {
     crate::tls::ensure_crypto_provider();
-    let target = reqwest::Url::parse(&config.proxy.url)
-        .map_err(|error| CliError::new(format!("invalid masquerade proxy URL: {error}")))?;
-    let client = reqwest::Client::builder()
+    let (target, socket) = proxy_target(&config.proxy.url)?;
+    let builder = reqwest::Client::builder()
         .danger_accept_invalid_certs(config.proxy.insecure)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    #[cfg(unix)]
+    let builder = if let Some(socket) = socket {
+        builder.no_proxy().unix_socket(socket)
+    } else {
+        builder
+    };
+    #[cfg(not(unix))]
+    let _ = socket;
+    let client = builder
         .build()
         .map_err(|error| CliError::new(format!("invalid masquerade proxy: {error}")))?;
     let backend = ProxyBackend {
@@ -613,6 +664,57 @@ mod tests {
 
     fn parse_config(yaml: &str) -> MasqueradeConfig {
         serde_yaml_ng::from_str(yaml).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn proxy_backend_uses_unix_socket() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("web.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                request.push(stream.read_u8().await.unwrap());
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with("GET /hello?q=1 HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+        let backend = Masquerade::build(&parse_config(&format!(
+            "type: proxy\nproxy:\n  url: 'unix://{}'\n",
+            path.display()
+        )))
+        .unwrap();
+        let mut incoming = request("https://example.test/hello?q=1", b"");
+        incoming.method = axum::http::Method::GET;
+        let mut response = backend.handle(incoming).await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.collect_body().await.unwrap(), "ok");
+        upstream.await.unwrap();
+        assert_eq!(
+            proxy_target(path.to_str().unwrap()).unwrap().1.unwrap(),
+            path
+        );
+        assert_eq!(
+            proxy_target("unix:///tmp/a%20b.sock").unwrap().1.unwrap(),
+            std::path::PathBuf::from("/tmp/a b.sock")
+        );
+        for invalid in [
+            "unix:relative",
+            "unix://host/tmp/a",
+            "unix:///tmp/a?",
+            "unix:///tmp/a#fragment",
+        ] {
+            assert!(proxy_target(invalid).is_err(), "{invalid}");
+        }
     }
 
     fn request(uri: &str, body: &'static [u8]) -> MasqueradeRequest {
