@@ -56,4 +56,15 @@ The native executable is `target/release/hysteria`. Cross-release artifacts and 
 
 ## Completion status
 
-- None currently identified relative to the compatibility target above.
+Post-baseline additions on the upstream-sync branch:
+
+- Unix socket masquerade proxy backends, accepting absolute paths or `unix:///...` URLs.
+- Porkbun, Njalla, and Namecheap ACME DNS-01 providers; live-account issuance remains unverified.
+- Server `quic.disableStatelessReset`, with default reset behavior preserved.
+- CI and release packaging cover seven targets, with CI enabled for `main` and `dev`.
+
+Chrome QUIC fingerprint parroting and Linux Mimic integration are not yet ported.
+The pinned Go interoperability reference above remains unchanged.
+
+- No additional gaps currently identified relative to the pinned compatibility
+  target; this is not a claim of feature parity with current upstream HEAD.

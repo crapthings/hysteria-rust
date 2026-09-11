@@ -527,6 +527,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bbr_uses_actual_initial_mtu() {
+        for mtu in [1200, 1280, 1400] {
+            let mut controller =
+                Arc::new(AdaptiveCongestionConfig::new(CongestionSettings::default()))
+                    .build(Instant::now(), mtu);
+            assert_eq!(controller.initial_window(), u64::from(mtu) * 32);
+            controller.on_mtu_update(mtu + 20);
+            assert!(controller.window() > 0);
+        }
+    }
+
+    #[test]
     fn brutal_loss_compensation_matches_go_samples() {
         for (acknowledgements, losses, expected) in [
             (100, 0, (100, 100)),

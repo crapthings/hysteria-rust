@@ -174,8 +174,11 @@ fn server_and_client_commands_run_all_proxy_modes() {
                 .contains("proxy-authorization")
         );
         stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nplain")
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\np")
             .unwrap();
+        // Regression: a whole-response 10-second timeout must not truncate the body.
+        thread::sleep(Duration::from_secs(11));
+        stream.write_all(b"lain").unwrap();
     });
 
     let server_config = directory.path().join("server.yaml");
@@ -463,6 +466,9 @@ fn http_connect(proxy: SocketAddr, target: SocketAddr) -> TcpStream {
 
 fn http_plain_request(proxy: SocketAddr, target: SocketAddr) {
     let mut stream = connect_until(proxy, Duration::from_secs(8));
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
     stream
         .write_all(
             format!(
