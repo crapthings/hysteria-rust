@@ -145,6 +145,23 @@ HYSTERIA_GO_BIN=/path/to/go/hysteria \
 
 ## Cross-platform releases
 
+Porkbun DNS-01 certificate validation uses the upstream-compatible configuration:
+
+```yaml
+acme:
+  domains: [example.com]
+  email: admin@example.com
+  type: dns
+  dns:
+    name: porkbun
+    config:
+      porkbun_api_key: YOUR_API_KEY
+      porkbun_api_secret_key: YOUR_SECRET_API_KEY
+```
+
+Enable API access for the domain in Porkbun. The solver creates a TXT record
+and deletes that record by ID after validation.
+
 [`scripts/package_rust.py`](scripts/package_rust.py) builds a target-qualified
 release binary and SHA-256 checksum. Cross builds use the checked-in
 [`Cross.toml`](Cross.toml) configuration:

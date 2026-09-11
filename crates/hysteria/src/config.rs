@@ -827,6 +827,7 @@ impl ServerAcmeDns {
     fn validate(&self) -> Result<()> {
         let provider = self.name.trim().to_ascii_lowercase();
         let required: &[&str] = match provider.as_str() {
+            "porkbun" => &["porkbun_api_key", "porkbun_api_secret_key"],
             "cloudflare" => &["cloudflare_api_token"],
             "duckdns" => &["duckdns_api_token"],
             "gandi" => &["gandi_api_token"],

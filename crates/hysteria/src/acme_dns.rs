@@ -35,6 +35,10 @@ pub(crate) fn solver(config: &ServerAcmeDns) -> Result<Arc<dyn AcmeDns01Solver>>
 
 #[derive(Clone)]
 enum Provider {
+    Porkbun {
+        key: String,
+        secret: String,
+    },
     Cloudflare {
         token: String,
     },
@@ -62,6 +66,10 @@ impl Provider {
     fn from_config(dns: &ServerAcmeDns) -> Result<Self> {
         let get = |key: &str| dns.config.get(key).cloned().unwrap_or_default();
         Ok(match dns.name.trim().to_ascii_lowercase().as_str() {
+            "porkbun" => Self::Porkbun {
+                key: get("porkbun_api_key"),
+                secret: get("porkbun_api_secret_key"),
+            },
             "cloudflare" => Self::Cloudflare {
                 token: get("cloudflare_api_token"),
             },
@@ -303,6 +311,14 @@ impl DnsSolver {
                 .await?;
                 String::new()
             }
+            Provider::Porkbun { key, secret } => {
+                let response: PorkbunResponse = json(
+                    self.client.post(format!("https://api.porkbun.com/api/json/v3/dns/create/{zone}"))
+                        .json(&serde_json::json!({"apikey":key,"secretapikey":secret,"name":name,"type":"TXT","content":value,"ttl":DNS_TTL.to_string()})),
+                    "Porkbun record creation",
+                ).await?;
+                response.record_id()?
+            }
             Provider::NameDotCom {
                 token,
                 user,
@@ -334,6 +350,19 @@ impl DnsSolver {
     #[allow(clippy::too_many_lines)]
     async fn remove(&self, handle: &RecordHandle, value: &str) -> std::result::Result<(), String> {
         match &self.provider {
+            Provider::Porkbun { key, secret } => {
+                let response: PorkbunResponse = json(
+                    self.client
+                        .post(format!(
+                            "https://api.porkbun.com/api/json/v3/dns/delete/{}/{}",
+                            handle.zone, handle.id
+                        ))
+                        .json(&serde_json::json!({"apikey":key,"secretapikey":secret})),
+                    "Porkbun record cleanup",
+                )
+                .await?;
+                response.check()
+            }
             Provider::Cloudflare { token } => {
                 let (zone_id, record_id) = handle
                     .id
@@ -573,6 +602,36 @@ fn bounded(value: &str) -> String {
 struct CfEnvelope<T> {
     result: T,
 }
+
+#[derive(Deserialize)]
+struct PorkbunResponse {
+    status: String,
+    #[serde(default)]
+    id: serde_json::Value,
+}
+
+impl PorkbunResponse {
+    fn check(&self) -> std::result::Result<(), String> {
+        if self.status == "SUCCESS" {
+            Ok(())
+        } else {
+            Err("Porkbun API rejected the request".to_owned())
+        }
+    }
+
+    fn record_id(&self) -> std::result::Result<String, String> {
+        self.check()?;
+        let id = match &self.id {
+            serde_json::Value::String(id) => id.clone(),
+            serde_json::Value::Number(id) if id.is_u64() => id.to_string(),
+            _ => String::new(),
+        };
+        if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("Porkbun returned an invalid record ID".to_owned());
+        }
+        Ok(id)
+    }
+}
 #[derive(Deserialize)]
 struct CfZone {
     id: String,
@@ -610,6 +669,25 @@ struct VultrRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_porkbun_responses() {
+        for id in [serde_json::json!(123), serde_json::json!("123")] {
+            let response: PorkbunResponse =
+                serde_json::from_value(serde_json::json!({"status":"SUCCESS","id":id})).unwrap();
+            assert_eq!(response.record_id().unwrap(), "123");
+        }
+        for body in [
+            r#"{"status":"ERROR","id":123}"#,
+            r#"{"status":"SUCCESS"}"#,
+            r#"{"status":"SUCCESS","id":"../all"}"#,
+        ] {
+            let response: PorkbunResponse = serde_json::from_str(body).unwrap();
+            assert!(response.record_id().is_err());
+        }
+        let response: PorkbunResponse = serde_json::from_str(r#"{"status":"SUCCESS"}"#).unwrap();
+        assert!(response.check().is_ok());
+    }
 
     #[test]
     fn computes_relative_record_names() {
