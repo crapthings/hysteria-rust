@@ -827,6 +827,7 @@ impl ServerAcmeDns {
     fn validate(&self) -> Result<()> {
         let provider = self.name.trim().to_ascii_lowercase();
         let required: &[&str] = match provider.as_str() {
+            "njalla" => &["njalla_api_token"],
             "porkbun" => &["porkbun_api_key", "porkbun_api_secret_key"],
             "cloudflare" => &["cloudflare_api_token"],
             "duckdns" => &["duckdns_api_token"],
@@ -1783,6 +1784,7 @@ udpForwarding:
         dns.validate().unwrap();
 
         for (provider, config) in [
+            ("njalla", "njalla_api_token: secret"),
             ("duckdns", "duckdns_api_token: secret"),
             ("gandi", "gandi_api_token: secret"),
             ("godaddy", "godaddy_api_token: key:secret"),

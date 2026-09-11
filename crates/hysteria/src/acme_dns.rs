@@ -35,6 +35,9 @@ pub(crate) fn solver(config: &ServerAcmeDns) -> Result<Arc<dyn AcmeDns01Solver>>
 
 #[derive(Clone)]
 enum Provider {
+    Njalla {
+        token: String,
+    },
     Porkbun {
         key: String,
         secret: String,
@@ -66,6 +69,9 @@ impl Provider {
     fn from_config(dns: &ServerAcmeDns) -> Result<Self> {
         let get = |key: &str| dns.config.get(key).cloned().unwrap_or_default();
         Ok(match dns.name.trim().to_ascii_lowercase().as_str() {
+            "njalla" => Self::Njalla {
+                token: get("njalla_api_token"),
+            },
             "porkbun" => Self::Porkbun {
                 key: get("porkbun_api_key"),
                 secret: get("porkbun_api_secret_key"),
@@ -311,6 +317,16 @@ impl DnsSolver {
                 .await?;
                 String::new()
             }
+            Provider::Njalla { token } => {
+                let result = njalla_call(&self.client, "https://njal.la/api/1/", token, "add-record",
+                    serde_json::json!({"domain":zone,"name":name,"type":"TXT","content":value,"ttl":DNS_TTL})).await?;
+                let id = result
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| "Njalla returned an invalid record ID".to_owned())?;
+                id.to_owned()
+            }
             Provider::Porkbun { key, secret } => {
                 let response: PorkbunResponse = json(
                     self.client.post(format!("https://api.porkbun.com/api/json/v3/dns/create/{zone}"))
@@ -350,6 +366,17 @@ impl DnsSolver {
     #[allow(clippy::too_many_lines)]
     async fn remove(&self, handle: &RecordHandle, value: &str) -> std::result::Result<(), String> {
         match &self.provider {
+            Provider::Njalla { token } => {
+                njalla_call(
+                    &self.client,
+                    "https://njal.la/api/1/",
+                    token,
+                    "remove-record",
+                    serde_json::json!({"domain":handle.zone,"id":handle.id}),
+                )
+                .await?;
+                Ok(())
+            }
             Provider::Porkbun { key, secret } => {
                 let response: PorkbunResponse = json(
                     self.client
@@ -483,6 +510,30 @@ impl DnsSolver {
             }
         }
     }
+}
+
+async fn njalla_call(
+    client: &Client,
+    endpoint: &str,
+    token: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> std::result::Result<serde_json::Value, String> {
+    let response: serde_json::Value = json(
+        client
+            .post(endpoint)
+            .header("Authorization", format!("Njalla {token}"))
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":"1","method":method,"params":params})),
+        "Njalla DNS request",
+    )
+    .await?;
+    if response.get("error").is_some_and(|error| !error.is_null()) {
+        return Err("Njalla API rejected the request".to_owned());
+    }
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| "Njalla API response is missing result".to_owned())
 }
 
 fn relative_name(fqdn: &str, zone: &str) -> std::result::Result<String, String> {
@@ -669,6 +720,68 @@ struct VultrRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn njalla_rpc_authenticates_and_checks_api_errors() {
+        use axum::{Json, Router, http::HeaderMap, routing::post};
+        let app = Router::new().route(
+            "/",
+            post(
+                |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                    assert_eq!(headers["authorization"], "Njalla test-token");
+                    assert_eq!(body["jsonrpc"], "2.0");
+                    assert_eq!(body["params"]["domain"], "example.com");
+                    Json(match body["method"].as_str().unwrap() {
+                        "add-record" => {
+                            assert_eq!(body["params"]["type"], "TXT");
+                            assert_eq!(body["params"]["name"], "_acme-challenge");
+                            assert_eq!(body["params"]["content"], "challenge");
+                            serde_json::json!({"result":{"id":"42"}})
+                        }
+                        "remove-record" => {
+                            assert_eq!(body["params"]["id"], "42");
+                            serde_json::json!({"result":{}})
+                        }
+                        "denied" => {
+                            serde_json::json!({"error":{"code":403,"message":"private detail"}})
+                        }
+                        _ => serde_json::json!({}),
+                    })
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::builder().no_proxy().build().unwrap();
+        let result = njalla_call(&client, &endpoint, "test-token", "add-record", serde_json::json!({"domain":"example.com","name":"_acme-challenge","type":"TXT","content":"challenge","ttl":300})).await.unwrap();
+        assert_eq!(result["id"], "42");
+        njalla_call(
+            &client,
+            &endpoint,
+            "test-token",
+            "remove-record",
+            serde_json::json!({"domain":"example.com","id":result["id"]}),
+        )
+        .await
+        .unwrap();
+        for method in ["denied", "malformed"] {
+            assert!(
+                njalla_call(
+                    &client,
+                    &endpoint,
+                    "test-token",
+                    method,
+                    serde_json::json!({"domain":"example.com"})
+                )
+                .await
+                .is_err()
+            );
+        }
+        server.abort();
+    }
 
     #[test]
     fn validates_porkbun_responses() {

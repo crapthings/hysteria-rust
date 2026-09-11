@@ -143,7 +143,7 @@ HYSTERIA_GO_BIN=/path/to/go/hysteria \
   cargo test --locked --package hysteria-cli --test go_interop -- --nocapture
 ```
 
-## Cross-platform releases
+## Additional ACME DNS providers
 
 Porkbun DNS-01 certificate validation uses the upstream-compatible configuration:
 
@@ -161,6 +161,20 @@ acme:
 
 Enable API access for the domain in Porkbun. The solver creates a TXT record
 and deletes that record by ID after validation.
+
+For Njalla, use the same ACME settings with this `dns` section:
+
+```yaml
+dns:
+  name: njalla
+  config:
+    njalla_api_token: YOUR_API_TOKEN
+```
+
+The token must permit creating and removing the domain's ACME TXT records.
+Njalla records are also cleaned up by their individual record IDs.
+
+## Cross-platform releases
 
 [`scripts/package_rust.py`](scripts/package_rust.py) builds a target-qualified
 release binary and SHA-256 checksum. Cross builds use the checked-in
