@@ -173,6 +173,12 @@ struct ClientHttp3State {
     driver: JoinHandle<()>,
 }
 
+impl Drop for ClientHttp3State {
+    fn drop(&mut self) {
+        self.driver.abort();
+    }
+}
+
 type ServerHttp3State = h3::server::Connection<h3_quinn::Connection, Bytes>;
 
 pub struct AuthenticatedConnection {
@@ -233,8 +239,7 @@ impl AuthenticatedConnection {
 impl Drop for AuthenticatedConnection {
     fn drop(&mut self) {
         if let Some(state) = self.client_http3.take() {
-            state.driver.abort();
-            drop(state.sender);
+            drop(state);
         }
     }
 }
@@ -419,13 +424,25 @@ async fn authenticate_client_connection(
     server_address: SocketAddr,
     handshake: ClientHandshake,
 ) -> Result<(AuthenticatedConnection, HandshakeInfo), TransportError> {
-    ensure_http3_settings_supported(&connection)?;
-    let (mut driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection.clone()))
+    let mut builder = h3::client::builder();
+    if let Some(limit) = http3_peer_header_limit(&connection)? {
+        builder
+            .authenticated_alps_max_field_section_size(limit)
+            .map_err(|error| TransportError::Configuration(error.to_owned()))?;
+    }
+    let (mut driver, sender) = builder
+        .build(h3_quinn::Connection::new(connection.clone()))
         .await
         .map_err(|error| TransportError::Http3Connection(error.to_string()))?;
     let driver_task = tokio::spawn(async move {
         let _ = std::future::poll_fn(|context| driver.poll_close(context)).await;
     });
+    // Own the driver before any fallible request construction or send, so an
+    // ALPS limit rejection (or cancellation) cannot detach the HTTP/3 task.
+    let mut http3 = ClientHttp3State {
+        sender,
+        driver: driver_task,
+    };
 
     let uri: Uri = format!("https://{AUTH_HOST}{AUTH_PATH}")
         .parse()
@@ -443,7 +460,8 @@ async fn authenticate_client_connection(
     )?;
     insert_header(request.headers_mut(), HEADER_PADDING, &auth_padding()?)?;
 
-    let mut stream = sender
+    let mut stream = http3
+        .sender
         .send_request(request)
         .await
         .map_err(|error| TransportError::Http3Stream(error.to_string()))?;
@@ -460,7 +478,6 @@ async fn authenticate_client_connection(
             VarInt::from_u32(CLOSE_PROTOCOL_ERROR),
             b"authentication failed",
         );
-        driver_task.abort();
         return Err(TransportError::AuthenticationFailed(
             response.status().as_u16(),
         ));
@@ -497,37 +514,34 @@ async fn authenticate_client_connection(
             auth_id: String::new(),
             peer_rx: auth_response.rx,
             udp_enabled: auth_response.udp_enabled,
-            client_http3: Some(ClientHttp3State {
-                sender,
-                driver: driver_task,
-            }),
+            client_http3: Some(http3),
             _server_http3: None,
         },
         info,
     ))
 }
 
-// The h3 driver currently reads settings only from its control stream. Until it
-// consumes authenticated ALPS settings, accepting them would silently discard
-// protocol state. This check must run before creating a driver or sending auth.
-fn ensure_http3_settings_supported(connection: &Connection) -> Result<(), TransportError> {
+// Deliberately narrow ALPS profile. Unsupported settings must not be silently
+// discarded. Call only after QUIC authentication, before starting HTTP/3.
+fn http3_peer_header_limit(connection: &Connection) -> Result<Option<u64>, TransportError> {
     let settings = connection
         .handshake_data()
         .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
         .and_then(|data| data.peer_application_settings);
     if let Some(settings) = settings {
-        connection.close(
-            CLOSE_PROTOCOL_ERROR.into(),
-            b"HTTP/3 ALPS settings are not supported",
-        );
-        crate::http3_alps::inspect(&settings)
-            .map_err(|error| TransportError::Protocol(format!("invalid HTTP/3 ALPS: {error}")))?;
-        return Err(TransportError::Configuration(
-            "HTTP/3 ALPS was negotiated, but application settings integration is not implemented"
-                .to_owned(),
-        ));
+        let parsed = crate::http3_alps::inspect(&settings).map_err(|error| {
+            connection.close(CLOSE_PROTOCOL_ERROR.into(), b"invalid HTTP/3 ALPS");
+            TransportError::Protocol(format!("invalid HTTP/3 ALPS: {error}"))
+        })?;
+        return parsed.supported_header_limit().map_err(|error| {
+            connection.close(
+                CLOSE_PROTOCOL_ERROR.into(),
+                b"unsupported HTTP/3 ALPS settings",
+            );
+            TransportError::Configuration(error.to_owned())
+        });
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn authenticate_server_connection(
@@ -536,11 +550,16 @@ async fn authenticate_server_connection(
     authenticator: &dyn Authenticator,
     masquerade: &dyn MasqueradeHandler,
 ) -> Result<Option<AuthenticatedConnection>, TransportError> {
-    ensure_http3_settings_supported(&connection)?;
-    let mut h3_connection: h3::server::Connection<h3_quinn::Connection, Bytes> =
-        h3::server::Connection::new(h3_quinn::Connection::new(connection.clone()))
-            .await
-            .map_err(|error| TransportError::Http3Connection(error.to_string()))?;
+    let mut builder = h3::server::builder();
+    if let Some(limit) = http3_peer_header_limit(&connection)? {
+        builder
+            .authenticated_alps_max_field_section_size(limit)
+            .map_err(|error| TransportError::Configuration(error.to_owned()))?;
+    }
+    let mut h3_connection: h3::server::Connection<h3_quinn::Connection, Bytes> = builder
+        .build(h3_quinn::Connection::new(connection.clone()))
+        .await
+        .map_err(|error| TransportError::Http3Connection(error.to_string()))?;
     while let Some(resolver) = h3_connection
         .accept()
         .await
@@ -757,7 +776,10 @@ fn auth_padding() -> Result<String, TransportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{make_client_config, make_server_config};
+    use crate::{
+        chrome_client_endpoint_config, make_chrome_client_config, make_client_config,
+        make_server_config,
+    };
     use hysteria_protocol::{TcpRequest, TcpResponse};
     use quinn::ClientConfig;
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -825,6 +847,13 @@ mod tests {
     }
 
     fn tls_configs_with_alps(settings: Option<Vec<u8>>) -> (quinn::ServerConfig, ClientConfig) {
+        tls_configs_with_asymmetric_alps(settings.clone(), settings)
+    }
+
+    fn tls_configs_with_asymmetric_alps(
+        client_settings: Option<Vec<u8>>,
+        server_settings: Option<Vec<u8>>,
+    ) -> (quinn::ServerConfig, ClientConfig) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let certificate = certified.cert.der().clone();
         let key =
@@ -839,10 +868,12 @@ mod tests {
         let mut client_tls = rustls::ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
-        if let Some(settings) = settings {
+        if let Some(settings) = client_settings {
             client_tls = client_tls
-                .with_quic_application_settings(vec![(crate::ALPN_H3.to_vec(), settings.clone())])
+                .with_quic_application_settings(vec![(crate::ALPN_H3.to_vec(), settings)])
                 .unwrap();
+        }
+        if let Some(settings) = server_settings {
             server_tls = server_tls
                 .with_quic_application_settings(vec![(crate::ALPN_H3.to_vec(), settings)])
                 .unwrap();
@@ -850,6 +881,26 @@ mod tests {
         (
             make_server_config(server_tls).unwrap(),
             make_client_config(client_tls).unwrap(),
+        )
+    }
+
+    fn tls_configs_with_chrome_transport() -> (quinn::ServerConfig, ClientConfig) {
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        let certificate = certified.cert.der().clone();
+        let key =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
+        let server_tls = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.clone()], key)
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(certificate).unwrap();
+        let client_tls = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        (
+            make_server_config(server_tls).unwrap(),
+            make_chrome_client_config(client_tls).unwrap(),
         )
     }
 
@@ -861,9 +912,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http3_rejects_negotiated_alps_before_starting_driver() {
-        for settings in [None, Some(Vec::new()), Some(vec![4, 0]), Some(vec![4])] {
-            let should_reject = settings.is_some();
+    async fn http3_validates_negotiated_alps_before_starting_driver() {
+        for settings in [
+            None,
+            Some(Vec::new()),
+            Some(vec![4, 0]),
+            Some(vec![4]),
+            Some(vec![4, 2, 8, 1]),
+            Some(vec![4, 2, 6, 42]),
+        ] {
+            let should_reject = settings.as_deref() == Some(&[4, 2, 8, 1][..]);
+            let expected_limit = (settings.as_deref() == Some(&[4, 2, 6, 42][..])).then_some(42);
             let malformed = settings.as_deref() == Some(&[4][..]);
             let (server_config, client_config) = tls_configs_with_alps(settings);
             let server = Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
@@ -879,7 +938,7 @@ mod tests {
                 .await
                 .expect("QUIC handshake timed out");
             for connection in [client_connection.unwrap(), server_connection.unwrap()] {
-                let result = ensure_http3_settings_supported(&connection);
+                let result = http3_peer_header_limit(&connection);
                 if malformed {
                     assert!(matches!(result, Err(TransportError::Protocol(_))));
                     assert!(connection.close_reason().is_some());
@@ -887,12 +946,82 @@ mod tests {
                     assert!(matches!(result, Err(TransportError::Configuration(_))));
                     assert!(connection.close_reason().is_some());
                 } else {
-                    result.unwrap();
+                    assert_eq!(result.unwrap(), expected_limit);
                     assert!(connection.close_reason().is_none());
                     connection.close(CLOSE_OK.into(), b"done");
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn chrome_transport_profile_completes_hysteria_authentication_and_datagrams() {
+        let (server_config, client_config) = tls_configs_with_chrome_transport();
+        let mut server = HysteriaServer::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            server_config,
+            ServerHandshake::default(),
+            Arc::new(|_remote: SocketAddr, request: &AuthRequest| {
+                (request.auth == "secret").then(|| "chrome-profile".to_owned())
+            }),
+        )
+        .unwrap();
+        let address = server.local_addr().unwrap();
+        let mut mismatched_endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        mismatched_endpoint.set_default_client_config(client_config.clone());
+        assert!(matches!(
+            mismatched_endpoint.connect(address, "localhost"),
+            Err(quinn::ConnectError::InvalidTransportParameters(_))
+        ));
+        mismatched_endpoint.close(CLOSE_OK.into(), b"done");
+
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let mut endpoint = Endpoint::new(
+            chrome_client_endpoint_config().unwrap(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .unwrap();
+        endpoint.set_default_client_config(client_config);
+        let (client, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connect(
+                &endpoint,
+                address,
+                "localhost",
+                ClientHandshake {
+                    auth: "secret".to_owned(),
+                    max_rx: 0,
+                    max_tx: 0,
+                },
+            ),
+        )
+        .await
+        .expect("Chrome transport profile authentication timed out")
+        .unwrap();
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(5), server.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted.auth_id, "chrome-profile");
+        client
+            .quinn()
+            .send_datagram(Bytes::from_static(b"chrome-transport"))
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                accepted.quinn().read_datagram(),
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+            Bytes::from_static(b"chrome-transport")
+        );
+        endpoint.close(CLOSE_OK.into(), b"done");
+        server.close();
     }
 
     #[test]
@@ -904,10 +1033,172 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn hysteria_authentication_consumes_alps_header_limits() {
+        for settings in [
+            Vec::new(),
+            vec![4, 0],
+            // QPACK upper bounds plus disabled CONNECT / HTTP datagrams.
+            vec![4, 9, 1, 0x50, 0, 7, 16, 8, 0, 0x33, 0],
+            vec![4, 4, 1, 0, 7, 0],
+            // Unknown setting and frame must not break authentication.
+            vec![4, 3, 0x52, 0x34, 1, 0x21, 1, 0xff],
+            vec![4, 5, 6, 0x80, 1, 0, 0],
+            vec![4, 2, 6, 1],
+        ] {
+            let too_small = settings == [4, 2, 6, 1];
+            let (server_config, client_config) = tls_configs_with_alps(Some(settings));
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let auth_calls = Arc::clone(&calls);
+            let mut server = HysteriaServer::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                server_config,
+                ServerHandshake::default(),
+                Arc::new(move |_remote: SocketAddr, request: &AuthRequest| {
+                    auth_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    (request.auth == "secret").then(|| "test-user".to_owned())
+                }),
+            )
+            .unwrap();
+            let address = server.local_addr().unwrap();
+            let mut endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+            endpoint.set_default_client_config(client_config);
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                connect(
+                    &endpoint,
+                    address,
+                    "localhost",
+                    ClientHandshake {
+                        auth: "secret".to_owned(),
+                        max_rx: 0,
+                        max_tx: 0,
+                    },
+                ),
+            )
+            .await
+            .expect("ALPS Hysteria authentication timed out");
+            if too_small {
+                assert!(matches!(result, Err(TransportError::Http3Stream(_))));
+                assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+            } else {
+                let (client, _) = result.unwrap();
+                let accepted =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), server.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(accepted.auth_id, "test-user");
+                client
+                    .quinn()
+                    .send_datagram(Bytes::from_static(b"alps-relay"))
+                    .unwrap();
+                let data = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    accepted.quinn().read_datagram(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(data, Bytes::from_static(b"alps-relay"));
+            }
+            endpoint.close(CLOSE_OK.into(), b"done");
+            server.close();
+        }
+    }
+
     #[derive(Default)]
     struct PendingAuthenticator {
         started: tokio::sync::Notify,
         cancelled: tokio::sync::Notify,
+    }
+
+    #[tokio::test]
+    async fn alps_fallback_and_rejection_preserve_hysteria_authentication() {
+        // One-sided payloads are deliberately malformed: they must never be
+        // parsed when ALPS was not negotiated. Each direction is independent.
+        let cases = [
+            (None, None, "secret", true, 1),
+            (Some(vec![4]), None, "secret", true, 1),
+            (None, Some(vec![4]), "secret", true, 1),
+            (Some(vec![]), Some(vec![]), "wrong", false, 1),
+            (None, None, "wrong", false, 1),
+            (Some(vec![4]), Some(vec![]), "secret", false, 0),
+            (Some(vec![]), Some(vec![4]), "secret", false, 0),
+            (Some(vec![4, 2, 8, 1]), Some(vec![]), "secret", false, 0),
+            (Some(vec![]), Some(vec![4, 2, 8, 1]), "secret", false, 0),
+        ];
+        for (client_settings, server_settings, password, succeeds, expected_calls) in cases {
+            let (server_config, client_config) =
+                tls_configs_with_asymmetric_alps(client_settings, server_settings);
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let auth_calls = Arc::clone(&calls);
+            let mut server = HysteriaServer::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                server_config,
+                ServerHandshake::default(),
+                Arc::new(move |_remote: SocketAddr, request: &AuthRequest| {
+                    auth_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    (request.auth == "secret").then(|| "test-user".to_owned())
+                }),
+            )
+            .unwrap();
+            let mut endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+            endpoint.set_default_client_config(client_config);
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                connect(
+                    &endpoint,
+                    server.local_addr().unwrap(),
+                    "localhost",
+                    ClientHandshake {
+                        auth: password.to_owned(),
+                        max_rx: 0,
+                        max_tx: 0,
+                    },
+                ),
+            )
+            .await
+            .expect("ALPS fallback/rejection timed out");
+            assert_eq!(result.is_ok(), succeeds, "{result:?}");
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::Relaxed),
+                expected_calls
+            );
+            if succeeds {
+                let (client, _) = result.unwrap();
+                let peer = tokio::time::timeout(std::time::Duration::from_secs(5), server.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                for connection in [client.quinn(), peer.quinn()] {
+                    let metadata = connection
+                        .handshake_data()
+                        .unwrap()
+                        .downcast::<quinn::crypto::rustls::HandshakeData>()
+                        .unwrap();
+                    assert!(metadata.peer_application_settings.is_none());
+                }
+                peer.quinn()
+                    .send_datagram(Bytes::from_static(b"fallback"))
+                    .unwrap();
+                let data = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    client.quinn().read_datagram(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(data, Bytes::from_static(b"fallback"));
+            } else if password == "wrong" {
+                assert!(matches!(
+                    result,
+                    Err(TransportError::AuthenticationFailed(_))
+                ));
+            }
+            endpoint.close(CLOSE_OK.into(), b"done");
+            server.close();
+        }
     }
 
     struct NotifyOnDrop<'a>(&'a tokio::sync::Notify);

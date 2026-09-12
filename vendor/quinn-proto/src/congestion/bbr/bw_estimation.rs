@@ -276,21 +276,23 @@ mod tests {
     #[test]
     fn a0_selection_uses_bytes_acked_when_packet_was_sent_and_prunes_history() {
         let now = Instant::now();
-        let mut estimation = BandwidthEstimation::default();
-        estimation.a0_candidates = VecDeque::from([
-            AckPoint {
-                time: now,
-                total_acked: 0,
-            },
-            AckPoint {
-                time: now + Duration::from_millis(1),
-                total_acked: 100,
-            },
-            AckPoint {
-                time: now + Duration::from_millis(2),
-                total_acked: 200,
-            },
-        ]);
+        let mut estimation = BandwidthEstimation {
+            a0_candidates: VecDeque::from([
+                AckPoint {
+                    time: now,
+                    total_acked: 0,
+                },
+                AckPoint {
+                    time: now + Duration::from_millis(1),
+                    total_acked: 100,
+                },
+                AckPoint {
+                    time: now + Duration::from_millis(2),
+                    total_acked: 200,
+                },
+            ]),
+            ..Default::default()
+        };
 
         assert_eq!(
             estimation.choose_a0_point(150).unwrap().total_acked,

@@ -19,7 +19,7 @@ impl TransportParameters {
     pub fn write_chrome<W: BufMut>(
         &self,
         w: &mut W,
-        rng: &mut (impl Rng + rand::CryptoRng),
+        rng: &mut impl rand::CryptoRng,
     ) -> Result<(), TransportError> {
         if self.original_dst_cid.is_some()
             || self.retry_src_cid.is_some()
@@ -105,6 +105,7 @@ mod tests {
     use rand::{SeedableRng, rngs::StdRng};
 
     use super::*;
+    use crate::{RandomConnectionIdGenerator, TransportConfig, config::EndpointConfig};
 
     fn profile() -> TransportParameters {
         TransportParameters {
@@ -120,6 +121,50 @@ mod tests {
             max_datagram_frame_size: Some(VarInt(65_536)),
             ..TransportParameters::default()
         }
+    }
+
+    #[test]
+    fn chrome_configured_profile_matches_advertised_limits() {
+        let mut transport = TransportConfig::default();
+        transport
+            .stream_receive_window(VarInt::from_u32(6 * 1024 * 1024))
+            .receive_window(VarInt::from_u32(15 * 1024 * 1024))
+            .max_concurrent_bidi_streams(VarInt::from_u32(100))
+            .max_concurrent_uni_streams(VarInt::from_u32(103))
+            .max_idle_timeout(Some(VarInt::from_u32(30_000).into()))
+            .initial_mtu(1250)
+            .ack_frequency_supported(false)
+            .datagram_receive_buffer_size(Some(65_536))
+            .max_datagram_frame_size(Some(VarInt::from_u32(65_536)));
+        let mut endpoint = EndpointConfig::default();
+        endpoint.grease_quic_bit(false);
+        let cid_generator = RandomConnectionIdGenerator::new(0);
+        let params = TransportParameters::new(
+            &transport,
+            &endpoint,
+            &cid_generator,
+            ConnectionId::new(&[]),
+            None,
+            &mut StdRng::seed_from_u64(7),
+        );
+        let mut encoded = Vec::new();
+        params
+            .write_chrome(&mut encoded, &mut StdRng::seed_from_u64(8))
+            .unwrap();
+        let decoded = TransportParameters::read(Side::Server, &mut encoded.as_slice()).unwrap();
+        assert_eq!(decoded.max_idle_timeout, VarInt(30_000));
+        assert_eq!(decoded.max_udp_payload_size, VarInt(1472));
+        assert_eq!(decoded.initial_max_data, VarInt(15 * 1024 * 1024));
+        assert_eq!(
+            decoded.initial_max_stream_data_bidi_local,
+            VarInt(6 * 1024 * 1024)
+        );
+        assert_eq!(decoded.initial_max_streams_bidi, VarInt(100));
+        assert_eq!(decoded.initial_max_streams_uni, VarInt(103));
+        assert_eq!(decoded.max_datagram_frame_size, Some(VarInt(65_536)));
+        assert_eq!(decoded.initial_src_cid, Some(ConnectionId::new(&[])));
+        assert_eq!(decoded.min_ack_delay, None);
+        assert!(!decoded.grease_quic_bit);
     }
 
     #[test]

@@ -48,6 +48,7 @@ pub fn builder() -> Builder {
 /// Builder of HTTP/3 server connections.
 pub struct Builder {
     pub(crate) config: Config,
+    alps_max_field_section_size: Option<u64>,
 }
 
 impl Builder {
@@ -55,7 +56,24 @@ impl Builder {
     pub(super) fn new() -> Self {
         Builder {
             config: Default::default(),
+            alps_max_field_section_size: None,
         }
+    }
+
+    /// Apply the authenticated peer ALPS header-size limit before responses.
+    ///
+    /// This does not negotiate ALPS or handle other settings. Only call after
+    /// authenticating TLS and validating the application settings payload.
+    /// Control-stream SETTINGS remain required and must not reduce this limit.
+    pub fn authenticated_alps_max_field_section_size(
+        &mut self,
+        value: u64,
+    ) -> Result<&mut Self, &'static str> {
+        if value > (1_u64 << 62) - 1 {
+            return Err("ALPS field section limit exceeds QUIC varint range");
+        }
+        self.alps_max_field_section_size = Some(value);
+        Ok(self)
     }
 
     // Not public API, just used in unit tests
@@ -129,7 +147,8 @@ impl Builder {
         B: Buf,
     {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let shared = SharedState::default();
+        let mut shared = SharedState::default();
+        shared.alps_max_field_section_size = self.alps_max_field_section_size;
 
         Ok(Connection {
             inner: ConnectionInner::new(conn, Arc::new(shared), self.config).await?,

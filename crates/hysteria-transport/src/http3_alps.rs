@@ -7,6 +7,29 @@ pub(crate) struct Settings {
     pub(crate) accept_ch_frames: usize,
 }
 
+impl Settings {
+    /// Limits usable by the current stateless h3 encoder. QPACK peer settings
+    /// are upper bounds: zero dynamic capacity and zero blocked streams obey
+    /// every advertised value (RFC 9204 sections 2.1.2 and 3.2.3).
+    pub(crate) fn supported_header_limit(&self) -> Result<Option<u64>, &'static str> {
+        if self.accept_ch_frames != 0 {
+            return Err("ALPS ACCEPT_CH handling is not implemented");
+        }
+        let Some(values) = &self.values else {
+            return Ok(None);
+        };
+        for (&id, &value) in values {
+            if value != 0 && matches!(id, 8 | 0x33 | 0x00ff_d277 | 0x2b60_3742 | 0x2b60_3743) {
+                return Err("unsupported HTTP/3 ALPS setting");
+            }
+            // QPACK bounds require no dynamic state; id 6 is returned below.
+            // Unknown SETTINGS (including GREASE) have no semantics for us.
+            // Reserved HTTP/2 settings and duplicates were rejected by inspect.
+        }
+        Ok(values.get(&6).copied())
+    }
+}
+
 /// Inspect authenticated TLS data without allocating based on peer lengths.
 pub(crate) fn inspect(mut input: &[u8]) -> Result<Settings, &'static str> {
     if input.len() > 16 * 1024 {
@@ -46,7 +69,7 @@ pub(crate) fn inspect(mut input: &[u8]) -> Result<Settings, &'static str> {
                 }
                 result.accept_ch_frames += 1;
             }
-            0 | 1 | 3 | 5 | 7 | 0xd | 0xf0700 | 0xf0701 => {
+            0..=3 | 5..=9 | 0xd | 0xf0700 | 0xf0701 => {
                 return Err("forbidden HTTP/3 frame in ALPS");
             }
             // Unknown extension frames are length-delimited and ignored.
@@ -78,6 +101,47 @@ fn length_prefixed<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stateless_encoder_accepts_qpack_bounds_and_disabled_extensions() {
+        for bound in [0, 1, 4096, (1_u64 << 62) - 1] {
+            let settings = Settings {
+                values: Some([(1, bound), (7, bound), (6, 8192), (8, 0), (0x33, 0)].into()),
+                accept_ch_frames: 0,
+            };
+            assert_eq!(settings.supported_header_limit(), Ok(Some(8192)));
+        }
+        for id in [8, 0x33, 0x00ff_d277, 0x2b60_3742, 0x2b60_3743] {
+            let settings = Settings {
+                values: Some([(id, 1)].into()),
+                accept_ch_frames: 0,
+            };
+            assert!(settings.supported_header_limit().is_err());
+        }
+        assert!(
+            Settings {
+                values: None,
+                accept_ch_frames: 1
+            }
+            .supported_header_limit()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unknown_settings_are_ignored_but_still_validated() {
+        // GREASE id 0x21 followed by a recognized header limit.
+        let settings = inspect(&[4, 4, 0x21, 63, 6, 42]).unwrap();
+        assert_eq!(settings.supported_header_limit(), Ok(Some(42)));
+        // An arbitrary unrecognized id, not only a GREASE id.
+        let settings = inspect(&[4, 3, 0x52, 0x34, 1]).unwrap();
+        assert_eq!(settings.supported_header_limit(), Ok(None));
+        assert!(inspect(&[4, 4, 0x21, 0, 0x21, 1]).is_err());
+        assert!(inspect(&[4, 1, 0x21]).is_err());
+        for frame in [2, 6, 8, 9] {
+            assert!(inspect(&[frame, 0]).is_err());
+        }
+    }
 
     #[test]
     fn empty_and_absent_settings_are_distinct() {

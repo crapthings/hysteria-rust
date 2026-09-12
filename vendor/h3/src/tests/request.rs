@@ -795,6 +795,40 @@ async fn header_too_big_server_error() {
 }
 
 #[tokio::test]
+async fn alps_header_limit_applies_before_client_control_settings() {
+    let mut pair = Pair::default();
+    let mut server = pair.server();
+    let client_fut = async {
+        let (mut driver, mut sender) = client::builder()
+            .send_settings(false)
+            .build::<_, _, Bytes>(pair.client().await)
+            .await.unwrap();
+        let request = async {
+            let mut stream = sender.send_request(
+                Request::get("https://localhost/").body(()).unwrap()
+            ).await.unwrap();
+            let _ = stream.recv_response().await;
+        };
+        tokio::select! {
+            _ = request => (),
+            _ = future::poll_fn(|cx| driver.poll_close(cx)) => (),
+        }
+    };
+    let server_fut = async {
+        let mut builder = server::builder();
+        assert!(builder.authenticated_alps_max_field_section_size(u64::MAX).is_err());
+        builder.authenticated_alps_max_field_section_size(12).unwrap();
+        let mut connection = builder.build(server.next().await).await.unwrap();
+        let (_, mut stream) = get_stream_blocking(&mut connection).await.unwrap();
+        assert_matches!(stream.send_response(Response::new(())).await,
+            Err(StreamError::HeaderTooBig { actual_size: 42, max_size: 12, .. }));
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(server_fut, client_fut);
+    }).await.expect("ALPS server header-limit test timed out");
+}
+
+#[tokio::test]
 async fn header_too_big_server_error_trailers() {
     init_tracing();
     let mut pair = Pair::default();

@@ -41,12 +41,18 @@ pub struct TransportConfig {
     pub(crate) mtu_discovery_config: Option<MtuDiscoveryConfig>,
     pub(crate) pad_to_mtu: bool,
     pub(crate) ack_frequency_config: Option<AckFrequencyConfig>,
+    pub(crate) ack_frequency_supported: bool,
+    pub(crate) chrome_packet_numbers: bool,
+    pub(crate) chrome_no_coalescing: bool,
+    pub(crate) chrome_initial_crypto_split: bool,
+    pub(crate) chrome_initial_payload_chaos: bool,
 
     pub(crate) persistent_congestion_threshold: u32,
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) crypto_buffer_size: usize,
     pub(crate) allow_spin: bool,
     pub(crate) datagram_receive_buffer_size: Option<usize>,
+    pub(crate) max_datagram_frame_size: Option<VarInt>,
     pub(crate) datagram_send_buffer_size: usize,
     pub(crate) assume_peer_max_datagram_frame_size: Option<VarInt>,
     #[cfg(test)]
@@ -244,6 +250,47 @@ impl TransportConfig {
         self
     }
 
+    /// Whether to advertise and accept the QUIC acknowledgement frequency extension.
+    ///
+    /// Defaults to `true`. Disabling this also prevents peers from sending ACK frequency frames.
+    pub fn ack_frequency_supported(&mut self, enabled: bool) -> &mut Self {
+        self.ack_frequency_supported = enabled;
+        self
+    }
+
+    /// Whether clients use Chrome's packet-number start and encoded-length policy.
+    ///
+    /// This is ignored for servers. Defaults to `false`.
+    pub fn chrome_packet_numbers(&mut self, enabled: bool) -> &mut Self {
+        self.chrome_packet_numbers = enabled;
+        self
+    }
+
+    /// Whether clients send at most one QUIC packet in each UDP datagram during the handshake.
+    ///
+    /// This is ignored for servers. Defaults to `false`.
+    pub fn chrome_no_coalescing(&mut self, enabled: bool) -> &mut Self {
+        self.chrome_no_coalescing = enabled;
+        self
+    }
+
+    /// Whether clients shape the first Initial CRYPTO flight like Chrome.
+    ///
+    /// This is ignored for servers. Defaults to `false`.
+    pub fn chrome_initial_crypto_split(&mut self, enabled: bool) -> &mut Self {
+        self.chrome_initial_crypto_split = enabled;
+        self
+    }
+
+    /// Whether clients randomize fresh Initial CRYPTO, PING and padding frame placement.
+    ///
+    /// Retransmissions and ACK-only packets are never randomized. This is ignored for servers and
+    /// defaults to `false`.
+    pub fn chrome_initial_payload_chaos(&mut self, enabled: bool) -> &mut Self {
+        self.chrome_initial_payload_chaos = enabled;
+        self
+    }
+
     /// Number of consecutive PTOs after which network is considered to be experiencing persistent congestion.
     pub fn persistent_congestion_threshold(&mut self, value: u32) -> &mut Self {
         self.persistent_congestion_threshold = value;
@@ -285,6 +332,15 @@ impl TransportConfig {
     /// exceeds this value, old datagrams are dropped until it is no longer exceeded.
     pub fn datagram_receive_buffer_size(&mut self, value: Option<usize>) -> &mut Self {
         self.datagram_receive_buffer_size = value;
+        self
+    }
+
+    /// Override the maximum DATAGRAM frame size advertised to the peer.
+    ///
+    /// The override is only advertised when incoming datagrams are enabled. The receive buffer
+    /// must be at least this large so that the advertised capability is usable.
+    pub fn max_datagram_frame_size(&mut self, value: Option<VarInt>) -> &mut Self {
+        self.max_datagram_frame_size = value;
         self
     }
 
@@ -386,12 +442,18 @@ impl Default for TransportConfig {
             mtu_discovery_config: Some(MtuDiscoveryConfig::default()),
             pad_to_mtu: false,
             ack_frequency_config: None,
+            ack_frequency_supported: true,
+            chrome_packet_numbers: false,
+            chrome_no_coalescing: false,
+            chrome_initial_crypto_split: false,
+            chrome_initial_payload_chaos: false,
 
             persistent_congestion_threshold: 3,
             keep_alive_interval: None,
             crypto_buffer_size: 16 * 1024,
             allow_spin: true,
             datagram_receive_buffer_size: Some(STREAM_RWND as usize),
+            max_datagram_frame_size: None,
             datagram_send_buffer_size: 1024 * 1024,
             assume_peer_max_datagram_frame_size: None,
             #[cfg(test)]
@@ -424,11 +486,17 @@ impl fmt::Debug for TransportConfig {
             mtu_discovery_config,
             pad_to_mtu,
             ack_frequency_config,
+            ack_frequency_supported,
+            chrome_packet_numbers,
+            chrome_no_coalescing,
+            chrome_initial_crypto_split,
+            chrome_initial_payload_chaos,
             persistent_congestion_threshold,
             keep_alive_interval,
             crypto_buffer_size,
             allow_spin,
             datagram_receive_buffer_size,
+            max_datagram_frame_size,
             datagram_send_buffer_size,
             assume_peer_max_datagram_frame_size,
             #[cfg(test)]
@@ -454,6 +522,14 @@ impl fmt::Debug for TransportConfig {
             .field("mtu_discovery_config", mtu_discovery_config)
             .field("pad_to_mtu", pad_to_mtu)
             .field("ack_frequency_config", ack_frequency_config)
+            .field("ack_frequency_supported", ack_frequency_supported)
+            .field("chrome_packet_numbers", chrome_packet_numbers)
+            .field("chrome_no_coalescing", chrome_no_coalescing)
+            .field("chrome_initial_crypto_split", chrome_initial_crypto_split)
+            .field(
+                "chrome_initial_payload_chaos",
+                chrome_initial_payload_chaos,
+            )
             .field(
                 "persistent_congestion_threshold",
                 persistent_congestion_threshold,
@@ -462,6 +538,7 @@ impl fmt::Debug for TransportConfig {
             .field("crypto_buffer_size", crypto_buffer_size)
             .field("allow_spin", allow_spin)
             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)
+            .field("max_datagram_frame_size", max_datagram_frame_size)
             .field("datagram_send_buffer_size", datagram_send_buffer_size)
             .field(
                 "assume_peer_max_datagram_frame_size",

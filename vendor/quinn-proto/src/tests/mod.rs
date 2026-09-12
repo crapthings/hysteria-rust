@@ -30,12 +30,387 @@ use crate::{
     cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
     crypto::rustls::QuicServerConfig,
     frame::FrameStruct,
+    range_set::ArrayRangeSet,
     transport_parameters::TransportParameters,
 };
 mod util;
 use util::*;
 
 mod token;
+
+#[test]
+fn chrome_packet_numbers_start_the_client_initial_space_at_one() {
+    let mut pair = Pair::default();
+    let default = pair.begin_connect(client_config());
+    assert_eq!(
+        pair.client_conn_mut(default)
+            .next_packet_number(packet::SpaceId::Initial),
+        0
+    );
+
+    let mut pair = Pair::default();
+    let mut config = client_config();
+    Arc::get_mut(&mut config.transport)
+        .unwrap()
+        .chrome_packet_numbers(true);
+    let chrome = pair.begin_connect(config);
+    assert_eq!(
+        pair.client_conn_mut(chrome)
+            .next_packet_number(packet::SpaceId::Initial),
+        1
+    );
+    assert_eq!(
+        pair.client_conn_mut(chrome)
+            .next_packet_number(packet::SpaceId::Handshake),
+        0
+    );
+    assert_eq!(
+        pair.client_conn_mut(chrome)
+            .next_packet_number(packet::SpaceId::Data),
+        0
+    );
+    pair.client.drive_outgoing(pair.time);
+    assert_eq!(
+        pair.client_conn_mut(chrome)
+            .next_packet_number(packet::SpaceId::Initial),
+        2
+    );
+}
+
+#[test]
+fn chrome_client_separates_initial_ack_and_handshake_flight() {
+    fn client_handshake_flight(chrome: bool) -> Vec<Bytes> {
+        let mut pair = Pair::default();
+        let mut config = client_config();
+        if chrome {
+            Arc::get_mut(&mut config.transport)
+                .unwrap()
+                .chrome_no_coalescing(true);
+        }
+        pair.begin_connect(config);
+        pair.drive_client();
+        pair.drive_server();
+        pair.client.drive_incoming(pair.time, pair.server.addr);
+        pair.client.drive_outgoing(pair.time);
+        pair.client
+            .outbound
+            .iter()
+            .map(|(_, packet)| packet.clone())
+            .collect()
+    }
+
+    let ordinary = client_handshake_flight(false);
+    let chrome = client_handshake_flight(true);
+    assert_eq!(chrome.len(), ordinary.len() + 1);
+    assert_eq!(chrome[0].len(), MIN_INITIAL_SIZE as usize);
+    assert!(chrome[1].len() < ordinary[1].len());
+    assert!(chrome[1].len() < MIN_INITIAL_SIZE as usize);
+    assert!(chrome[1].len() < chrome[2].len());
+}
+
+#[test]
+fn chrome_client_sends_client_hello_head_and_tail_before_middle() {
+    let mut pair = Pair::default();
+    let client_crypto = client_crypto_with_alpn(
+        (0..1_000u32)
+            .map(|value| value.to_be_bytes().to_vec())
+            .collect(),
+    );
+    let mut config = ClientConfig::new(Arc::new(client_crypto));
+    Arc::get_mut(&mut config.transport)
+        .unwrap()
+        .chrome_initial_crypto_split(true)
+        .chrome_initial_payload_chaos(true)
+        .chrome_packet_numbers(true)
+        .chrome_no_coalescing(true);
+
+    let connection = pair.begin_connect(config);
+    pair.client.drive_outgoing(pair.time);
+    let packets = pair
+        .client_conn_mut(connection)
+        .sent_crypto_frames(packet::SpaceId::Initial);
+
+    assert!(packets.len() > 1);
+    assert_eq!(packets[0].0, 1);
+    assert!(packets[0].1.len() >= 4);
+
+    let mut first_packet_ranges = ArrayRangeSet::new();
+    for &(offset, length) in &packets[0].1 {
+        first_packet_ranges.insert(offset..offset + length as u64);
+    }
+    let first_packet_ranges: Vec<_> = first_packet_ranges.iter().collect();
+    assert_eq!(first_packet_ranges.len(), 2);
+    assert_eq!(first_packet_ranges[0].start, 0);
+    assert!((55..=86).contains(&first_packet_ranges[0].end));
+    assert!(first_packet_ranges[1].start > first_packet_ranges[0].end);
+
+    assert!(packets[1]
+        .1
+        .iter()
+        .any(|&(offset, _)| offset == first_packet_ranges[0].end));
+}
+
+#[derive(Debug)]
+struct ChromeInitialWireShape {
+    packet_number: u64,
+    packet_number_len: usize,
+    destination_cid_len: usize,
+    source_cid_len: usize,
+    crypto_frames: Vec<(u64, Bytes)>,
+    ping_frames: usize,
+    padding_bytes: usize,
+    other_frames: usize,
+}
+
+fn decode_chrome_initial(datagram: &[u8]) -> ChromeInitialWireShape {
+    use crate::crypto::rustls::{initial_keys, initial_suite_from_provider};
+    use rustls::quic::Version;
+
+    assert_eq!(datagram.len(), 1250);
+    let supported_versions = DEFAULT_SUPPORTED_VERSIONS.to_vec();
+    let (partial, trailing) = packet::PartialDecode::new(
+        BytesMut::from(datagram),
+        &packet::FixedLengthConnectionIdParser::new(0),
+        &supported_versions,
+        false,
+    )
+    .unwrap();
+    assert!(trailing.is_none(), "Chrome Initial must not be coalesced");
+    let destination_cid = *partial.dst_cid();
+    let suite = initial_suite_from_provider(&Arc::new(default_provider())).unwrap();
+    let keys = initial_keys(Version::V1, destination_cid, Side::Server, &suite);
+    let mut packet = partial.finish(Some(&*keys.header.remote)).unwrap();
+    let packet::Header::Initial(ref header) = packet.header else {
+        panic!("expected an Initial packet");
+    };
+    let packet_number = header.number.expand(0);
+    let packet_number_len = header.number.len();
+    let source_cid_len = header.src_cid.len();
+    keys.packet
+        .remote
+        .decrypt(packet_number, &packet.header_data, &mut packet.payload)
+        .unwrap();
+
+    let mut shape = ChromeInitialWireShape {
+        packet_number,
+        packet_number_len,
+        destination_cid_len: destination_cid.len(),
+        source_cid_len,
+        crypto_frames: Vec::new(),
+        ping_frames: 0,
+        padding_bytes: 0,
+        other_frames: 0,
+    };
+    for frame in frame::Iter::new(packet.payload.freeze()).unwrap() {
+        match frame.unwrap() {
+            frame::Frame::Crypto(crypto) => {
+                shape.crypto_frames.push((crypto.offset, crypto.data));
+            }
+            frame::Frame::Ping => shape.ping_frames += 1,
+            frame::Frame::Padding => shape.padding_bytes += 1,
+            _ => shape.other_frames += 1,
+        }
+    }
+    shape
+}
+
+fn assert_fresh_chrome_initial(
+    shape: &ChromeInitialWireShape,
+    expected_packet_number: u64,
+    expected_packet_number_len: usize,
+) {
+    assert_eq!(shape.packet_number, expected_packet_number);
+    assert_eq!(shape.packet_number_len, expected_packet_number_len);
+    assert_eq!(shape.destination_cid_len, 8);
+    assert_eq!(shape.source_cid_len, 0);
+    assert!((3..=12).contains(&shape.crypto_frames.len()));
+    assert!((2..=10).contains(&shape.ping_frames));
+    assert!(shape.padding_bytes > 0);
+    assert_eq!(shape.other_frames, 0);
+}
+
+fn reassemble_client_hello(shapes: &[ChromeInitialWireShape]) -> Vec<u8> {
+    let mut fragments: Vec<_> = shapes
+        .iter()
+        .flat_map(|shape| shape.crypto_frames.iter())
+        .collect();
+    fragments.sort_by_key(|(offset, _)| *offset);
+    let mut expected_offset = 0;
+    let mut hello = Vec::new();
+    for (offset, data) in fragments {
+        assert_eq!(*offset, expected_offset, "CRYPTO data must be contiguous");
+        expected_offset += data.len() as u64;
+        hello.extend_from_slice(data);
+    }
+    assert!(hello.len() >= 4);
+    assert_eq!(hello[0], 1, "expected a TLS ClientHello");
+    let encoded_len =
+        usize::from(hello[1]) << 16 | usize::from(hello[2]) << 8 | usize::from(hello[3]);
+    assert_eq!(hello.len(), encoded_len + 4);
+    hello
+}
+
+fn client_hello_transport_parameters(shapes: &[ChromeInitialWireShape]) -> TransportParameters {
+    fn read_u16(bytes: &[u8], offset: &mut usize) -> usize {
+        let value = u16::from_be_bytes(bytes[*offset..*offset + 2].try_into().unwrap());
+        *offset += 2;
+        usize::from(value)
+    }
+
+    let hello = reassemble_client_hello(shapes);
+    let mut offset = 4 + 2 + 32;
+    offset += 1 + usize::from(hello[offset]);
+    let cipher_suites_len = read_u16(&hello, &mut offset);
+    offset += cipher_suites_len;
+    offset += 1 + usize::from(hello[offset]);
+    let extensions_len = read_u16(&hello, &mut offset);
+    let extensions_end = offset + extensions_len;
+    assert_eq!(extensions_end, hello.len());
+    while offset < extensions_end {
+        let extension = read_u16(&hello, &mut offset);
+        let length = read_u16(&hello, &mut offset);
+        let end = offset + length;
+        assert!(end <= extensions_end);
+        if extension == 0x39 {
+            return TransportParameters::read(Side::Server, &mut &hello[offset..end]).unwrap();
+        }
+        offset = end;
+    }
+    panic!("ClientHello did not contain QUIC transport parameters");
+}
+
+fn rust_chrome_initial_flight() -> Vec<Vec<u8>> {
+    let mut endpoint = EndpointConfig::default();
+    endpoint
+        .max_udp_payload_size(1472)
+        .unwrap()
+        .grease_quic_bit(false)
+        .cid_generator(|| Box::new(RandomConnectionIdGenerator::new(0)));
+    let mut pair = Pair::new(Arc::new(endpoint), server_config());
+
+    // TLS ClientHello parity is covered in hysteria-transport's Chrome TLS tests. This probe
+    // isolates QUIC packet layout, so the standalone Quinn test can run with its default crypto
+    // feature set as well as the workspace's AWS-LC provider.
+    let mut crypto = client_crypto_with_alpn(
+        (0..300u32)
+            .map(|value| value.to_be_bytes().to_vec())
+            .collect(),
+    );
+    crypto.chrome_transport_parameters(true);
+    let mut config = ClientConfig::new(Arc::new(crypto));
+    config.initial_dst_cid_provider(Arc::new(|| {
+        RandomConnectionIdGenerator::new(8).generate_cid()
+    }));
+    let mut congestion = crate::congestion::BbrConfig::default();
+    congestion.initial_window(32 * 1250);
+    Arc::get_mut(&mut config.transport)
+        .unwrap()
+        .stream_receive_window(VarInt::from_u32(6 * 1024 * 1024))
+        .receive_window(VarInt::from_u32(15 * 1024 * 1024))
+        .max_concurrent_bidi_streams(VarInt::from_u32(100))
+        .max_concurrent_uni_streams(VarInt::from_u32(103))
+        .max_idle_timeout(Some(VarInt::from_u32(30_000).into()))
+        .initial_mtu(1250)
+        .ack_frequency_supported(false)
+        .chrome_packet_numbers(true)
+        .chrome_no_coalescing(true)
+        .chrome_initial_crypto_split(true)
+        .chrome_initial_payload_chaos(true)
+        .datagram_receive_buffer_size(Some(65_536))
+        .max_datagram_frame_size(Some(VarInt::from_u32(65_536)))
+        .congestion_controller_factory(Arc::new(congestion));
+    pair.begin_connect(config);
+    pair.client.drive_outgoing(pair.time);
+    pair.client
+        .outbound
+        .drain(..)
+        .map(|(_, packet)| packet.to_vec())
+        .collect()
+}
+
+#[test]
+fn chrome_initial_packet_number_uses_prior_padding_budget() {
+    let shapes: Vec<_> = rust_chrome_initial_flight()
+        .iter()
+        .map(|datagram| decode_chrome_initial(datagram))
+        .collect();
+    assert_eq!(shapes.len(), 2);
+    assert_fresh_chrome_initial(&shapes[0], 1, 1);
+    assert_fresh_chrome_initial(&shapes[1], 2, 2);
+    reassemble_client_hello(&shapes);
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+#[ignore = "runs the pinned quic-go ChromeParrot reference probe"]
+fn chrome_go_initial_wire_parity() {
+    use std::{
+        io::Read,
+        net::UdpSocket,
+        process::{Command, Stdio},
+    };
+
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    let probe = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tools/chrome-wire-reference");
+    let mut child = Command::new("go")
+        .args(["run", ".", &socket.local_addr().unwrap().to_string()])
+        .current_dir(probe)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start pinned quic-go wire probe");
+
+    let mut datagrams = Vec::new();
+    let mut buffer = [0; 2048];
+    let (size, _) = socket.recv_from(&mut buffer).unwrap();
+    datagrams.push(buffer[..size].to_vec());
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    while let Ok((size, _)) = socket.recv_from(&mut buffer) {
+        datagrams.push(buffer[..size].to_vec());
+    }
+    let status = child.wait().unwrap();
+    if !status.success() {
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        panic!("pinned quic-go wire probe failed: {stderr}");
+    }
+
+    let go_shapes: Vec<_> = datagrams
+        .iter()
+        .filter_map(|datagram| {
+            let shape = decode_chrome_initial(datagram);
+            (!shape.crypto_frames.is_empty()).then_some(shape)
+        })
+        .collect();
+    let rust_shapes: Vec<_> = rust_chrome_initial_flight()
+        .iter()
+        .map(|datagram| decode_chrome_initial(datagram))
+        .collect();
+    assert!(!go_shapes.is_empty());
+    assert!(!rust_shapes.is_empty());
+    assert_eq!(go_shapes.len(), rust_shapes.len());
+    for (index, shape) in go_shapes.iter().enumerate() {
+        assert_fresh_chrome_initial(shape, index as u64 + 1, usize::from(index != 0) + 1);
+    }
+    for (index, shape) in rust_shapes.iter().enumerate() {
+        assert_fresh_chrome_initial(shape, index as u64 + 1, usize::from(index != 0) + 1);
+    }
+    assert_eq!(
+        client_hello_transport_parameters(&go_shapes),
+        client_hello_transport_parameters(&rust_shapes)
+    );
+}
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -1085,6 +1460,31 @@ fn initial_retransmit() {
     let client_ch = pair.begin_connect(client_config());
     pair.client.drive(pair.time, pair.server.addr);
     pair.client.outbound.clear(); // Drop initial
+    pair.drive();
+    assert_matches!(
+        pair.client_conn_mut(client_ch).poll(),
+        Some(Event::HandshakeDataReady)
+    );
+    assert_matches!(
+        pair.client_conn_mut(client_ch).poll(),
+        Some(Event::Connected)
+    );
+}
+
+#[test]
+fn chrome_initial_retransmit() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let mut config = client_config();
+    Arc::get_mut(&mut config.transport)
+        .unwrap()
+        .chrome_packet_numbers(true)
+        .chrome_no_coalescing(true)
+        .chrome_initial_crypto_split(true)
+        .chrome_initial_payload_chaos(true);
+    let client_ch = pair.begin_connect(config);
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client.outbound.clear();
     pair.drive();
     assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
