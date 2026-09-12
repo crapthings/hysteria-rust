@@ -7,7 +7,10 @@ use hysteria_protocol::{
 };
 use quinn::{Connection, Endpoint, RecvStream, SendStream, VarInt};
 use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::mpsc,
+    task::{JoinHandle, JoinSet},
+};
 
 const CLOSE_OK: u32 = 0x100;
 const CLOSE_PROTOCOL_ERROR: u32 = 0x101;
@@ -313,21 +316,33 @@ impl HysteriaServer {
         let (sender, authenticated) = mpsc::channel(64);
         let accept_endpoint = endpoint.clone();
         let accept_task = tokio::spawn(async move {
-            while let Some(incoming) = accept_endpoint.accept().await {
+            // Own child tasks so closing/dropping the server cancels pending
+            // authentication and masquerade work, including external callbacks.
+            let mut pending = JoinSet::new();
+            loop {
+                let incoming = tokio::select! {
+                    incoming = accept_endpoint.accept() => match incoming {
+                        Some(incoming) => incoming,
+                        None => break,
+                    },
+                    _ = pending.join_next(), if !pending.is_empty() => continue,
+                };
                 let sender = sender.clone();
                 let authenticator = Arc::clone(&authenticator);
                 let masquerade = Arc::clone(&masquerade);
                 let handshake = handshake.clone();
-                tokio::spawn(async move {
+                pending.spawn(async move {
                     let result = match incoming.await {
                         Ok(connection) => {
-                            authenticate_server_connection(
-                                connection,
+                            tokio::select! {
+                                _ = connection.closed() => Ok(None),
+                                result = authenticate_server_connection(
+                                connection.clone(),
                                 &handshake,
                                 authenticator.as_ref(),
                                 masquerade.as_ref(),
-                            )
-                            .await
+                                ) => result,
+                            }
                         }
                         Err(error) => Err(TransportError::Connect(error.to_string())),
                     };
@@ -368,6 +383,7 @@ impl HysteriaServer {
     }
 
     pub fn close(&self) {
+        self.accept_task.abort();
         self.endpoint
             .close(VarInt::from_u32(CLOSE_OK), b"server closed");
     }
@@ -375,7 +391,6 @@ impl HysteriaServer {
 
 impl Drop for HysteriaServer {
     fn drop(&mut self) {
-        self.accept_task.abort();
         self.close();
     }
 }
@@ -886,6 +901,85 @@ mod tests {
             let padding = auth_padding().unwrap();
             assert!((AUTH_PADDING_MIN..AUTH_PADDING_MAX_EXCLUSIVE).contains(&padding.len()));
             assert!(padding.bytes().all(|byte| PADDING_ALPHABET.contains(&byte)));
+        }
+    }
+
+    #[derive(Default)]
+    struct PendingAuthenticator {
+        started: tokio::sync::Notify,
+        cancelled: tokio::sync::Notify,
+    }
+
+    struct NotifyOnDrop<'a>(&'a tokio::sync::Notify);
+
+    impl Drop for NotifyOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    impl Authenticator for PendingAuthenticator {
+        fn authenticate_async<'a>(
+            &'a self,
+            _remote: SocketAddr,
+            _request: &'a AuthRequest,
+        ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>> {
+            Box::pin(async move {
+                let _guard = NotifyOnDrop(&self.cancelled);
+                self.started.notify_one();
+                std::future::pending().await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_authentication_is_cancelled_on_shutdown_or_disconnect() {
+        for action in ["close", "drop", "disconnect"] {
+            let (server_config, client_config) = tls_configs();
+            let authenticator = Arc::new(PendingAuthenticator::default());
+            let server = HysteriaServer::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                server_config,
+                ServerHandshake::default(),
+                authenticator.clone(),
+            )
+            .unwrap();
+            let address = server.local_addr().unwrap();
+            let mut endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+            endpoint.set_default_client_config(client_config);
+            let client_endpoint = endpoint.clone();
+            let client = tokio::spawn(async move {
+                connect(
+                    &client_endpoint,
+                    address,
+                    "localhost",
+                    ClientHandshake {
+                        auth: "secret".to_owned(),
+                        max_rx: 0,
+                        max_tx: 0,
+                    },
+                )
+                .await
+            });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                authenticator.started.notified(),
+            )
+            .await
+            .expect("authentication did not start");
+            match action {
+                "close" => server.close(),
+                "drop" => drop(server),
+                _ => endpoint.close(CLOSE_OK.into(), b"disconnect"),
+            }
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                authenticator.cancelled.notified(),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("authentication survived {action}"));
+            client.abort();
+            let _ = client.await;
         }
     }
 

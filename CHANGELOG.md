@@ -6,6 +6,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Unix socket backends for server masquerade proxies.
+- Porkbun, Njalla and Namecheap ACME DNS providers.
+- Server configuration option to disable stateless resets.
+
+### Fixed
+
+- Cancel pending server authentication/masquerade tasks when the server closes
+  or is dropped, and cancel pending callbacks when their QUIC peer disconnects.
+- Initialize the TLS crypto provider in DNS regression tests and update h2
+  dependencies used by the workspace.
+
+### Changed
+
+- Reduce release packages to seven mainstream platform/architecture targets.
+- Keep the full platform build matrix for manual CI runs and tagged releases;
+  daily CI retains lint, Linux tests, interoperability and dependency audit.
+- Disable debug information and incremental compilation for release workflow
+  validation builds, reducing temporary build disk usage without changing the
+  optimized release binary profile.
+
 ## [0.1.0-rc.1] - 2026-07-15
 
 ### Added
