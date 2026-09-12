@@ -38,6 +38,7 @@ pub(super) struct ClientHelloDetails {
     pub(super) alpn_protocols: Vec<ProtocolName>,
     pub(super) sent_extensions: Vec<ExtensionType>,
     pub(super) extension_order_seed: u16,
+    pub(super) chrome_extension_order: Vec<ExtensionType>,
     pub(super) offered_cert_compression: bool,
 }
 
@@ -47,6 +48,7 @@ impl ClientHelloDetails {
             alpn_protocols,
             sent_extensions: Vec::new(),
             extension_order_seed,
+            chrome_extension_order: Vec::new(),
             offered_cert_compression: false,
         }
     }

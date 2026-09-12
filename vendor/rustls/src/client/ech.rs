@@ -15,7 +15,7 @@ use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
 use crate::log::{debug, trace, warn};
 use crate::msgs::base::{Payload, PayloadU16};
 use crate::msgs::codec::{Codec, Reader};
-use crate::msgs::enums::{ExtensionType, HpkeKem};
+use crate::msgs::enums::{ExtensionType, HpkeAead, HpkeKdf, HpkeKem, NamedGroup};
 use crate::msgs::handshake::{
     ClientExtensions, ClientHelloPayload, EchConfigContents, EchConfigPayload, Encoding,
     EncryptedClientHello, EncryptedClientHelloOuter, HandshakeMessagePayload, HandshakePayload,
@@ -67,6 +67,33 @@ impl From<EchGreaseConfig> for EchMode {
     fn from(config: EchGreaseConfig) -> Self {
         Self::Grease(config)
     }
+}
+
+/// Match uTLS BoringGREASEECH: AES-128-GCM/SHA-256, an X25519 public key,
+/// and uniformly selected 144/176/208/240-byte dummy ciphertext. This is GREASE,
+/// not real ECH; use the existing ECH state machine when a real config is supplied.
+pub(super) fn chrome_grease_ext(config: &ClientConfig) -> Result<EncryptedClientHello, Error> {
+    let mut random = [0u8; 2];
+    config.provider.secure_random.fill(&mut random)?;
+    let key = config
+        .provider
+        .kx_groups
+        .iter()
+        .find(|group| group.name() == NamedGroup::X25519)
+        .ok_or_else(|| Error::General("Chrome ECH GREASE requires X25519".into()))?
+        .start()?;
+    // A power-of-two number of choices makes this selection unbiased.
+    let mut payload = vec![0; 144 + 32 * usize::from(random[1] & 3)];
+    config.provider.secure_random.fill(&mut payload)?;
+    Ok(EncryptedClientHello::Outer(EncryptedClientHelloOuter {
+        cipher_suite: HpkeSymmetricCipherSuite {
+            kdf_id: HpkeKdf::HKDF_SHA256,
+            aead_id: HpkeAead::AES_128_GCM,
+        },
+        config_id: random[0],
+        enc: PayloadU16::new(key.pub_key().to_vec()),
+        payload: PayloadU16::new(payload),
+    }))
 }
 
 /// Configuration for performing encrypted client hello.

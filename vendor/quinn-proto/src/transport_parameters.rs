@@ -15,6 +15,8 @@ use bytes::{Buf, BufMut};
 use rand::{Rng, RngExt, seq::SliceRandom as _};
 use thiserror::Error;
 
+mod chrome;
+
 use crate::{
     LOC_CID_COUNT, MAX_CID_SIZE, MAX_STREAM_COUNT, RESET_TOKEN_SIZE, ResetToken, Side,
     TIMER_GRANULARITY, TransportError, VarInt,

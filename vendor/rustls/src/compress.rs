@@ -188,7 +188,7 @@ mod feat_zlib_rs {
 pub use feat_zlib_rs::{ZLIB_COMPRESSOR, ZLIB_DECOMPRESSOR};
 
 #[allow(clippy::std_instead_of_core)] // awaits core::io::Cursor (1.97) in crate MSRV
-#[cfg(feature = "brotli")]
+#[cfg(any(feature = "brotli", feature = "brotli-custom"))]
 mod feat_brotli {
     use std::io::{Cursor, Write};
 
@@ -265,7 +265,7 @@ mod feat_brotli {
     const QUALITY_SLOW: u32 = 11;
 }
 
-#[cfg(feature = "brotli")]
+#[cfg(any(feature = "brotli", feature = "brotli-custom"))]
 pub use feat_brotli::{BROTLI_COMPRESSOR, BROTLI_DECOMPRESSOR};
 
 /// An LRU cache for compressions.

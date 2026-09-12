@@ -901,6 +901,10 @@ extension_struct! {
         ExtensionType::ALProtocolNegotiation =>
             pub(crate) protocols: Option<Vec<ProtocolName>>,
 
+        /// Experimental ALPS protocol names (17613).
+        ExtensionType::ApplicationSettings =>
+            pub(crate) application_settings: Option<Vec<ProtocolName>>,
+
         /// Available client certificate types (RFC7250)
         ExtensionType::ClientCertificateType =>
             pub(crate) client_certificate_types: Option<Vec<CertificateType>>,
@@ -976,6 +980,12 @@ extension_struct! {
         /// Order randomization seed.
         pub(crate) order_seed: u16,
 
+        /// Optional per-connection permutation, reused across HelloRetryRequest.
+        pub(crate) order_override: Vec<ExtensionType>,
+
+        /// GREASE has no real ECH ciphertext-offset requirements and may be shuffled.
+        pub(crate) shuffle_grease_ech: bool,
+
         /// Extensions that must appear contiguously.
         pub(crate) contiguous_extensions: Vec<ExtensionType>,
     }
@@ -990,6 +1000,7 @@ impl ClientExtensions<'_> {
             ec_point_formats,
             signature_schemes,
             protocols,
+            application_settings,
             client_certificate_types,
             server_certificate_types,
             extended_master_secret_request,
@@ -1009,6 +1020,8 @@ impl ClientExtensions<'_> {
             encrypted_client_hello,
             encrypted_client_hello_outer,
             order_seed,
+            order_override,
+            shuffle_grease_ech,
             contiguous_extensions,
         } = self;
         ClientExtensions {
@@ -1018,6 +1031,7 @@ impl ClientExtensions<'_> {
             ec_point_formats,
             signature_schemes,
             protocols,
+            application_settings,
             client_certificate_types,
             server_certificate_types,
             extended_master_secret_request,
@@ -1037,6 +1051,8 @@ impl ClientExtensions<'_> {
             encrypted_client_hello,
             encrypted_client_hello_outer,
             order_seed,
+            order_override,
+            shuffle_grease_ech,
             contiguous_extensions,
         }
     }
@@ -1051,7 +1067,7 @@ impl ClientExtensions<'_> {
         {
             exts.push(ExtensionType::EncryptedClientHelloOuterExtensions);
         }
-        if self.encrypted_client_hello.is_some() {
+        if self.encrypted_client_hello.is_some() && !self.shuffle_grease_ech {
             exts.push(ExtensionType::EncryptedClientHello);
         }
         if self.preshared_key_offer.is_some() {
@@ -1071,8 +1087,8 @@ impl ClientExtensions<'_> {
     /// - Second, extensions named in `self.contiguous_extensions`, in the order
     ///   given by that field.
     ///
-    /// - Lastly, any ECH and PSK extensions (in that order).  These
-    ///   are required to be last by the standard.
+    /// - Lastly, real ECH and PSK extensions retain their existing placement. GREASE ECH
+    ///   may instead participate in the randomized portion when explicitly requested.
     fn order_insensitive_extensions_in_random_order(&self) -> Vec<ExtensionType> {
         let mut order = self.collect_used();
 
@@ -1081,10 +1097,15 @@ impl ClientExtensions<'_> {
             !(matches!(
                 ext,
                 ExtensionType::PreSharedKey
-                    | ExtensionType::EncryptedClientHello
                     | ExtensionType::EncryptedClientHelloOuterExtensions
-            ) || self.contiguous_extensions.contains(ext))
+            ) || (*ext == ExtensionType::EncryptedClientHello && !self.shuffle_grease_ech)
+                || self.contiguous_extensions.contains(ext))
         });
+
+        if !self.order_override.is_empty() {
+            order.sort_by_key(|ext| self.order_override.iter().position(|x| x == ext).unwrap_or(usize::MAX));
+            return order;
+        }
 
         order.sort_by_cached_key(|new_ext| {
             let seed = ((self.order_seed as u32) << 16) | (u16::from(*new_ext) as u32);
@@ -1199,6 +1220,10 @@ extension_struct! {
         ExtensionType::ALProtocolNegotiation =>
             pub(crate) selected_protocol: Option<SingleProtocolName>,
 
+        /// Experimental ALPS settings payload, also used in client EncryptedExtensions.
+        ExtensionType::ApplicationSettings =>
+            pub(crate) application_settings: Option<Payload<'a>>,
+
         /// Key exchange server share (RFC8446)
         ExtensionType::KeyShare =>
             pub(crate) key_share: Option<KeyShareEntry>,
@@ -1259,6 +1284,7 @@ impl ServerExtensions<'_> {
             session_ticket_ack,
             renegotiation_info,
             selected_protocol,
+            application_settings,
             key_share,
             preshared_key,
             client_certificate_type,
@@ -1279,6 +1305,7 @@ impl ServerExtensions<'_> {
             session_ticket_ack,
             renegotiation_info,
             selected_protocol,
+            application_settings: application_settings.map(|x| x.into_owned()),
             key_share,
             preshared_key,
             client_certificate_type,

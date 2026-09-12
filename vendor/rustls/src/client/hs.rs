@@ -84,7 +84,11 @@ impl ClientHelloInput {
         cx: &mut ClientContext<'_>,
         config: Arc<ClientConfig>,
     ) -> Result<Self, Error> {
-        let mut resuming = ClientSessionValue::retrieve(&server_name, &config, cx);
+        let mut resuming = if cx.common.is_quic() && !config.quic_application_settings.is_empty() {
+            None
+        } else {
+            ClientSessionValue::retrieve(&server_name, &config, cx)
+        };
         let session_id = match &mut resuming {
             Some(_resuming) => {
                 debug!("Resuming session");
@@ -200,6 +204,7 @@ fn emit_client_hello_for_retry(
     // Defense in depth: the ECH state should be None if ECH is disabled based on config
     // builder semantics.
     let forbids_tls12 = cx.common.is_quic() || ech_state.is_some();
+    let chrome_baseline = cx.common.is_quic() && config.quic_chrome_baseline;
 
     let supported_versions = SupportedProtocolVersions {
         tls12: config.supports_version(ProtocolVersion::TLSv1_2) && !forbids_tls12,
@@ -238,6 +243,29 @@ fn emit_client_hello_for_retry(
         None => {}
     };
 
+    if cx.common.is_quic() {
+        let offered: Vec<_> = extra_exts.protocols.iter().flatten()
+            .filter(|protocol| config.quic_application_settings.iter().any(|(p, _)| p.as_slice() == protocol.as_ref()))
+            .cloned().collect();
+        if !offered.is_empty() {
+            exts.application_settings = Some(offered);
+        }
+    }
+
+    if chrome_baseline {
+        // Chrome's QUIC hello does not send the TLS 1.2 compatibility extensions or
+        // status_request. This does not change certificate verification policy.
+        exts.extended_master_secret_request = None;
+        exts.certificate_status_request = None;
+        // Reorder only schemes that the existing verifier supports. In particular, do not
+        // advertise SHA-1 merely to match a browser when the verifier cannot validate it.
+        if let Some(schemes) = exts.signature_schemes.as_mut() {
+            let order = super::client_conn::CHROME_SIGNATURE_SCHEMES;
+            schemes.retain(|scheme| order.contains(scheme));
+            schemes.sort_by_key(|scheme| order.iter().position(|s| s == scheme));
+        }
+    }
+
     if supported_versions.tls13 {
         if let Some(cas_extension) = config.verifier.root_hint_subjects() {
             exts.certificate_authority_names = Some(cas_extension.to_owned());
@@ -245,11 +273,12 @@ fn emit_client_hello_for_retry(
     }
 
     // Send the ECPointFormat extension only if we are proposing ECDHE
-    if config
-        .provider
-        .kx_groups
-        .iter()
-        .any(|skxg| skxg.name().key_exchange_algorithm() == KeyExchangeAlgorithm::ECDHE)
+    if !chrome_baseline
+        && config
+            .provider
+            .kx_groups
+            .iter()
+            .any(|skxg| skxg.name().key_exchange_algorithm() == KeyExchangeAlgorithm::ECDHE)
     {
         exts.ec_point_formats = Some(SupportedEcPointFormats::default());
     }
@@ -363,6 +392,22 @@ fn emit_client_hello_for_retry(
     // Extensions MAY be randomized
     // but they also need to keep the same order as the previous ClientHello
     exts.order_seed = input.hello.extension_order_seed;
+    exts.shuffle_grease_ech =
+        chrome_baseline && !matches!(config.ech_mode, Some(EchMode::Enable(_)));
+    if chrome_baseline {
+        if input.hello.chrome_extension_order.is_empty() {
+            let mut order = exts.collect_used();
+            // Include extensions that may be inserted later, including a retry cookie.
+            for ext in [ExtensionType::EncryptedClientHello, ExtensionType::Cookie] {
+                if !order.contains(&ext) {
+                    order.push(ext);
+                }
+            }
+            shuffle_chrome_extensions(&mut order, config.provider.secure_random)?;
+            input.hello.chrome_extension_order = order;
+        }
+        exts.order_override = input.hello.chrome_extension_order.clone();
+    }
 
     let mut cipher_suites: Vec<_> = config
         .provider
@@ -415,6 +460,10 @@ fn emit_client_hello_for_retry(
         // If we haven't offered ECH, and have no ECH state, then consider whether to use GREASE
         // ECH.
         (EchStatus::NotOffered, None) => {
+            let ech_grease_ext = ech_grease_ext.or_else(|| {
+                (chrome_baseline && config.ech_mode.is_none())
+                    .then(|| crate::client::ech::chrome_grease_ext(config))
+            });
             if let Some(grease_ext) = ech_grease_ext {
                 // Add the GREASE ECH extension.
                 let grease_ext = grease_ext?;
@@ -1185,4 +1234,23 @@ impl Deref for ClientSessionValue {
     fn deref(&self) -> &Self::Target {
         self.common()
     }
+}
+
+/// Unbiased Fisher-Yates shuffle using the configured cryptographic random source.
+fn shuffle_chrome_extensions(
+    extensions: &mut [ExtensionType],
+    random: &dyn crate::crypto::SecureRandom,
+) -> Result<(), Error> {
+    for i in (1..extensions.len()).rev() {
+        let bound = u32::try_from(i + 1).unwrap();
+        let threshold = bound.wrapping_neg() % bound;
+        let sample = loop {
+            let sample = crate::rand::random_u32(random)?;
+            if sample >= threshold {
+                break sample;
+            }
+        };
+        extensions.swap(i, (sample % bound) as usize);
+    }
+    Ok(())
 }

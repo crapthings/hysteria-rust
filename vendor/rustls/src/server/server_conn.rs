@@ -302,6 +302,7 @@ impl<'a> ClientHello<'a> {
 /// [`ServerSessionMemoryCache`]: crate::server::handy::ServerSessionMemoryCache
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
+    pub(super) quic_application_settings: Vec<(Vec<u8>, Vec<u8>)>,
     /// Source of randomness and other crypto.
     pub(super) provider: Arc<CryptoProvider>,
 
@@ -472,6 +473,22 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
+    /// Configure experimental QUIC ALPS (17613) with explicit ALPN/settings pairs.
+    /// Negotiation is limited to full QUIC handshakes without early data. The application
+    /// must define and process these settings; existing TCP behavior is unchanged.
+    ///
+    /// # Errors
+    /// Rejects duplicate/empty/oversized protocol names or settings too large for the extension.
+    /// Each settings value and the encoded protocol list are limited to 16 KiB.
+    pub fn with_quic_application_settings(
+        mut self,
+        settings: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<Self, Error> {
+        crate::alps::validate(&settings)?;
+        self.quic_application_settings = settings;
+        Ok(self)
+    }
+
     /// Create a builder for a server configuration with
     /// [the process-default `CryptoProvider`][CryptoProvider#using-the-per-process-default-cryptoprovider]
     /// and safe protocol version defaults.

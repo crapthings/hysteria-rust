@@ -425,6 +425,11 @@ mod client_hello {
                 false
             };
 
+            if cx.common.expect_application_settings {
+                // Do not issue PSKs until session storage carries authenticated ALPS values.
+                self.send_tickets = 0;
+            }
+
             // If we're not doing early data, then the next messages we receive
             // are encrypted with the handshake keys.
             match doing_early_data {
@@ -453,7 +458,9 @@ mod client_hello {
             let key_schedule_traffic =
                 emit_finished_tls13(flight, &self.randoms, cx, key_schedule, &self.config);
 
-            if !doing_client_auth && self.config.send_half_rtt_data {
+            if !doing_client_auth && self.config.send_half_rtt_data
+                && !cx.common.expect_application_settings
+            {
                 // Application data can be sent immediately after Finished, in one
                 // flight.  However, if client auth is enabled, we don't want to send
                 // application data to an unauthenticated peer.
@@ -737,6 +744,25 @@ mod client_hello {
         let mut ep = hs::ExtensionProcessing::new(extra_exts);
         ep.process_common(config, cx, ocsp_response, hello, resumedata)?;
 
+        if cx.common.is_quic() && resumedata.is_none() {
+            if let Some(offered) = &hello.application_settings {
+                if offered.is_empty() {
+                    return Err(cx.common.send_fatal_alert(AlertDescription::IllegalParameter,
+                        Error::General("empty ALPS protocol list".into())));
+                }
+                if let Some(protocol) = &cx.common.alpn_protocol {
+                    if offered.iter().any(|p| p == protocol) {
+                        if let Some((_, settings)) = config.quic_application_settings.iter()
+                            .find(|(p, _)| p.as_slice() == protocol.as_ref())
+                        {
+                            ep.extensions.application_settings = Some(Payload::new(settings.clone()));
+                            cx.common.expect_application_settings = true;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(retry_configs) = ech.retry_configs() {
             ep.extensions.encrypted_client_hello_ack = Some(ServerEncryptedClientHello {
                 retry_configs: retry_configs.to_vec(),
@@ -746,11 +772,24 @@ mod client_hello {
         // RFC 9149: echo the expected ticket count if the client sent the extension.
         if hello.ticket_request.is_some() && config.max_tls13_tickets > 0 {
             ep.extensions.ticket_request = Some(ServerTicketRequestHint {
-                expected_count: Ord::min(send_tickets, usize::from(u8::MAX)) as u8,
+                expected_count: if cx.common.expect_application_settings {
+                    0
+                } else {
+                    Ord::min(send_tickets, usize::from(u8::MAX)) as u8
+                },
             });
         }
 
-        let early_data = decide_if_early_data_allowed(cx, hello, resumedata, suite, config);
+        let early_data = if cx.common.is_quic() && !config.quic_application_settings.is_empty() {
+            // ALPS settings are not persisted with PSKs yet, so never accept 0-RTT here.
+            if hello.early_data_request.is_some() {
+                EarlyDataDecision::RequestedButRejected
+            } else {
+                EarlyDataDecision::Disabled
+            }
+        } else {
+            decide_if_early_data_allowed(cx, hello, resumedata, suite, config)
+        };
         if early_data == EarlyDataDecision::Accepted {
             ep.extensions.early_data_ack = Some(());
         }
@@ -939,13 +978,16 @@ struct ExpectCertificateOrCompressedCertificate {
 
 impl State<ServerConnectionData> for ExpectCertificateOrCompressedCertificate {
     fn handle<'m>(
-        self: Box<Self>,
+        mut self: Box<Self>,
         cx: &mut ServerContext<'_>,
         m: Message<'m>,
     ) -> hs::NextStateOrError<'m>
     where
         Self: 'm,
     {
+        if consume_client_application_settings(&mut self.transcript, cx, &m)? {
+            return Ok(self);
+        }
         match m.payload {
             MessagePayload::Handshake {
                 parsed: HandshakeMessagePayload(HandshakePayload::CertificateTls13(..)),
@@ -1103,6 +1145,9 @@ impl State<ServerConnectionData> for ExpectCertificate {
     where
         Self: 'm,
     {
+        if consume_client_application_settings(&mut self.transcript, cx, &m)? {
+            return Ok(self);
+        }
         if !self.message_already_in_transcript {
             self.transcript.add_message(&m);
         }
@@ -1319,6 +1364,30 @@ fn get_server_session_value(
     )
 }
 
+fn consume_client_application_settings(
+    transcript: &mut HandshakeHash,
+    cx: &mut ServerContext<'_>,
+    message: &Message<'_>,
+) -> Result<bool, Error> {
+    if !cx.common.expect_application_settings {
+        return Ok(false);
+    }
+    let extensions = require_handshake_msg!(message, HandshakeType::EncryptedExtensions,
+        HandshakePayload::EncryptedExtensions)?;
+    let Some(settings) = &extensions.application_settings else {
+        return Err(cx.common.send_fatal_alert(AlertDescription::MissingExtension,
+            Error::General("missing client ALPS settings".into())));
+    };
+    if extensions.collect_used().len() != 1 || !extensions.unknown_extensions.is_empty() {
+        return Err(cx.common.send_fatal_alert(AlertDescription::UnsupportedExtension,
+            Error::General("unsolicited client EncryptedExtensions".into())));
+    }
+    transcript.add_message(message);
+    cx.common.peer_application_settings = Some(settings.clone().into_vec());
+    cx.common.expect_application_settings = false;
+    Ok(true)
+}
+
 struct ExpectFinished {
     config: Arc<ServerConfig>,
     transcript: HandshakeHash,
@@ -1392,6 +1461,9 @@ impl State<ServerConnectionData> for ExpectFinished {
     where
         Self: 'm,
     {
+        if consume_client_application_settings(&mut self.transcript, cx, &m)? {
+            return Ok(self);
+        }
         let finished =
             require_handshake_msg!(m, HandshakeType::Finished, HandshakePayload::Finished)?;
 
