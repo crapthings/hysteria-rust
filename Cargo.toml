@@ -8,6 +8,8 @@ members = [
     "vendor/rustls-acme",
 ]
 exclude = [
+    "vendor/h3",
+    "vendor/h3-quinn",
     "vendor/netdev",
     "vendor/quinn-proto",
     "vendor/rustls",
@@ -92,6 +94,7 @@ version = "0.30.1"
 features = ["net", "socket", "uio"]
 
 [patch.crates-io]
+h3 = { path = "vendor/h3" }
 netdev = { path = "vendor/netdev" }
 quinn-proto = { path = "vendor/quinn-proto" }
 rustls-acme = { path = "vendor/rustls-acme" }

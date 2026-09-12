@@ -63,6 +63,7 @@ impl crypto::Session for TlsSession {
         }
         Some(Box::new(HandshakeData {
             protocol: self.inner.alpn_protocol().map(|x| x.into()),
+            peer_application_settings: self.inner.peer_application_settings().map(|x| x.into()),
             server_name: match self.inner {
                 Connection::Client(_) => None,
                 Connection::Server(ref session) => session.server_name().map(|x| x.into()),
@@ -261,6 +262,13 @@ pub struct HandshakeData {
     ///
     /// Guaranteed to be set if a nonempty list of protocols was specified for this connection.
     pub protocol: Option<Vec<u8>>,
+    /// Authenticated peer ALPS settings for the negotiated application protocol.
+    ///
+    /// `None` before authentication completes or when ALPS was not negotiated.
+    /// An empty negotiated payload is represented by `Some(Vec::new())`.
+    /// Retrieve fresh handshake data after connection establishment: an earlier
+    /// snapshot is not updated when authentication finishes.
+    pub peer_application_settings: Option<Vec<u8>>,
     /// The server name specified by the client, if any
     ///
     /// Always `None` for outgoing connections

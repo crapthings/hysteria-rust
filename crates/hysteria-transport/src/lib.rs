@@ -4,6 +4,7 @@ mod config;
 mod congestion;
 mod error;
 mod handshake;
+mod http3_alps;
 mod obfs_socket;
 mod outbound;
 mod proxy;

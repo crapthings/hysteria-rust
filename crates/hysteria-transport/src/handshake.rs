@@ -404,6 +404,7 @@ async fn authenticate_client_connection(
     server_address: SocketAddr,
     handshake: ClientHandshake,
 ) -> Result<(AuthenticatedConnection, HandshakeInfo), TransportError> {
+    ensure_http3_settings_supported(&connection)?;
     let (mut driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection.clone()))
         .await
         .map_err(|error| TransportError::Http3Connection(error.to_string()))?;
@@ -491,12 +492,36 @@ async fn authenticate_client_connection(
     ))
 }
 
+// The h3 driver currently reads settings only from its control stream. Until it
+// consumes authenticated ALPS settings, accepting them would silently discard
+// protocol state. This check must run before creating a driver or sending auth.
+fn ensure_http3_settings_supported(connection: &Connection) -> Result<(), TransportError> {
+    let settings = connection
+        .handshake_data()
+        .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .and_then(|data| data.peer_application_settings);
+    if let Some(settings) = settings {
+        connection.close(
+            CLOSE_PROTOCOL_ERROR.into(),
+            b"HTTP/3 ALPS settings are not supported",
+        );
+        crate::http3_alps::inspect(&settings)
+            .map_err(|error| TransportError::Protocol(format!("invalid HTTP/3 ALPS: {error}")))?;
+        return Err(TransportError::Configuration(
+            "HTTP/3 ALPS was negotiated, but application settings integration is not implemented"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 async fn authenticate_server_connection(
     connection: Connection,
     config: &ServerHandshake,
     authenticator: &dyn Authenticator,
     masquerade: &dyn MasqueradeHandler,
 ) -> Result<Option<AuthenticatedConnection>, TransportError> {
+    ensure_http3_settings_supported(&connection)?;
     let mut h3_connection: h3::server::Connection<h3_quinn::Connection, Bytes> =
         h3::server::Connection::new(h3_quinn::Connection::new(connection.clone()))
             .await
@@ -781,20 +806,32 @@ mod tests {
     }
 
     fn tls_configs() -> (quinn::ServerConfig, ClientConfig) {
+        tls_configs_with_alps(None)
+    }
+
+    fn tls_configs_with_alps(settings: Option<Vec<u8>>) -> (quinn::ServerConfig, ClientConfig) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let certificate = certified.cert.der().clone();
         let key =
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
 
-        let server_tls = rustls::ServerConfig::builder()
+        let mut server_tls = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![certificate.clone()], key)
             .unwrap();
         let mut roots = rustls::RootCertStore::empty();
         roots.add(certificate).unwrap();
-        let client_tls = rustls::ClientConfig::builder()
+        let mut client_tls = rustls::ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
+        if let Some(settings) = settings {
+            client_tls = client_tls
+                .with_quic_application_settings(vec![(crate::ALPN_H3.to_vec(), settings.clone())])
+                .unwrap();
+            server_tls = server_tls
+                .with_quic_application_settings(vec![(crate::ALPN_H3.to_vec(), settings)])
+                .unwrap();
+        }
         (
             make_server_config(server_tls).unwrap(),
             make_client_config(client_tls).unwrap(),
@@ -806,6 +843,41 @@ mod tests {
             crate::congestion::brutal_bandwidth(connection.quinn()),
             Some(expected)
         );
+    }
+
+    #[tokio::test]
+    async fn http3_rejects_negotiated_alps_before_starting_driver() {
+        for settings in [None, Some(Vec::new()), Some(vec![4, 0]), Some(vec![4])] {
+            let should_reject = settings.is_some();
+            let malformed = settings.as_deref() == Some(&[4][..]);
+            let (server_config, client_config) = tls_configs_with_alps(settings);
+            let server = Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+            let mut client = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+            client.set_default_client_config(client_config);
+            let connecting = client
+                .connect(server.local_addr().unwrap(), "localhost")
+                .unwrap();
+            let (client_connection, server_connection) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    tokio::join!(connecting, async { server.accept().await.unwrap().await })
+                })
+                .await
+                .expect("QUIC handshake timed out");
+            for connection in [client_connection.unwrap(), server_connection.unwrap()] {
+                let result = ensure_http3_settings_supported(&connection);
+                if malformed {
+                    assert!(matches!(result, Err(TransportError::Protocol(_))));
+                    assert!(connection.close_reason().is_some());
+                } else if should_reject {
+                    assert!(matches!(result, Err(TransportError::Configuration(_))));
+                    assert!(connection.close_reason().is_some());
+                } else {
+                    result.unwrap();
+                    assert!(connection.close_reason().is_none());
+                    connection.close(CLOSE_OK.into(), b"done");
+                }
+            }
+        }
     }
 
     #[test]

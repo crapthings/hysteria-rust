@@ -8,9 +8,134 @@ use std::sync::Arc;
 const ALPS: u16 = 17613;
 const PROTOCOL: &[u8] = b"test-alps";
 
+#[tokio::test]
+async fn quinn_exposes_authenticated_peer_settings() {
+    use quinn::crypto::rustls::{HandshakeData, QuicClientConfig, QuicServerConfig};
+
+    for payload in [None, Some(Vec::new()), Some(b"peer-settings".to_vec())] {
+        let (mut client, mut server) = configs(false, false);
+        if let Some(settings) = &payload {
+            client = client
+                .with_quic_application_settings(vec![(PROTOCOL.to_vec(), settings.clone())])
+                .unwrap();
+            server = server
+                .with_quic_application_settings(vec![(
+                    PROTOCOL.to_vec(),
+                    b"server-settings".to_vec(),
+                )])
+                .unwrap();
+        }
+        let server = quinn::Endpoint::server(
+            quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server).unwrap())),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap();
+        let mut client_endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        client_endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+            QuicClientConfig::try_from(client).unwrap(),
+        )));
+        let connecting = client_endpoint
+            .connect(server.local_addr().unwrap(), "localhost")
+            .unwrap();
+        let (client_connection, server_connection) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(connecting, async { server.accept().await.unwrap().await })
+            })
+            .await
+            .expect("loopback QUIC handshake timed out");
+        let client_connection = client_connection.unwrap();
+        let server_connection = server_connection.unwrap();
+        for (connection, expected) in [
+            (
+                &client_connection,
+                payload.as_ref().map(|_| b"server-settings".to_vec()),
+            ),
+            (&server_connection, payload),
+        ] {
+            let data = connection
+                .handshake_data()
+                .unwrap()
+                .downcast::<HandshakeData>()
+                .unwrap();
+            assert_eq!(data.protocol.as_deref(), Some(PROTOCOL));
+            assert_eq!(data.peer_application_settings, expected);
+        }
+        client_connection.close(0_u32.into(), b"done");
+        server_connection.close(0_u32.into(), b"done");
+    }
+}
+
 struct Pair {
     client: quic::ClientConnection,
     server: quic::ServerConnection,
+}
+
+#[tokio::test]
+async fn h3_applies_early_header_limit_and_rejects_later_reduction() {
+    use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
+
+    let (mut client, mut server) = configs(false, false);
+    client.alpn_protocols = vec![b"h3".to_vec()];
+    server.alpn_protocols.clone_from(&client.alpn_protocols);
+    let server = quinn::Endpoint::server(
+        quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server).unwrap())),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .unwrap();
+    let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+        QuicClientConfig::try_from(client).unwrap(),
+    )));
+    let connecting = endpoint
+        .connect(server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let (client, server) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(connecting, async { server.accept().await.unwrap().await })
+    })
+    .await
+    .unwrap();
+    let client = client.unwrap();
+    let server = server.unwrap();
+    let mut builder = h3::client::builder();
+    assert!(
+        builder
+            .authenticated_alps_max_field_section_size(u64::MAX)
+            .is_err()
+    );
+    // This test isolates the driver's hook; ALPS negotiation is tested separately.
+    builder
+        .authenticated_alps_max_field_section_size(1)
+        .unwrap();
+    let (mut driver, mut sender) = builder
+        .build::<_, _, bytes::Bytes>(h3_quinn::Connection::new(client.clone()))
+        .await
+        .unwrap();
+    let request = http::Request::builder()
+        .uri("https://localhost/")
+        .body(())
+        .unwrap();
+    assert!(matches!(
+        sender.send_request(request).await,
+        Err(h3::error::StreamError::HeaderTooBig { max_size: 1, .. })
+    ));
+
+    let mut control = server.open_uni().await.unwrap();
+    // Control stream, SETTINGS, two payload bytes, MAX_FIELD_SECTION_SIZE = 0.
+    control.write_all(&[0, 4, 2, 6, 0]).await.unwrap();
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        std::future::poll_fn(|cx| driver.poll_close(cx)),
+    )
+    .await
+    .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("reduces authenticated ALPS header limit"),
+        "{error}"
+    );
+    client.close(0_u32.into(), b"done");
+    server.close(0_u32.into(), b"done");
 }
 
 fn configs(retry: bool, mutual: bool) -> (ClientConfig, ServerConfig) {
