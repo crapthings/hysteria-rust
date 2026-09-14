@@ -60,6 +60,9 @@ jobs:
       - name: Test Linux workspace
         run: cargo test --locked --workspace
 
+      - name: Test vendored HTTP/3
+        run: cargo test --manifest-path vendor/h3/Cargo.toml --locked --lib --features i-implement-a-third-party-backend-and-opt-into-breaking-changes
+
   test-and-package:
     if: github.event_name == 'workflow_dispatch'
     name: Test and package (${{ matrix.label }})
@@ -190,6 +193,12 @@ jobs:
           HYSTERIA_GO_BIN: ${{ runner.temp }}/hysteria-go
           HYSTERIA_DISABLE_UPDATE_CHECK: "1"
         run: cargo test --locked --package hysteria-cli --test go_interop -- --nocapture
+
+      - name: Test Chrome runtime against Go server
+        env:
+          HYSTERIA_GO_BIN: ${{ runner.temp }}/hysteria-go
+          HYSTERIA_DISABLE_UPDATE_CHECK: "1"
+        run: cargo test --locked --package hysteria-cli --lib chrome_runtime_go_tcp_udp_interop -- --ignored --nocapture
 
   security:
     name: Dependency security audit

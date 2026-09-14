@@ -460,6 +460,7 @@ mod key_log;
 #[cfg(feature = "std")]
 mod key_log_file;
 mod suites;
+mod alps;
 mod versions;
 mod webpki;
 

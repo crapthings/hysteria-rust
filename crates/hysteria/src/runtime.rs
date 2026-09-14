@@ -8,9 +8,11 @@ use crate::{
 };
 use hysteria_transport::{
     ClientHandshake, HysteriaServer, ProxyClient, ProxyServerConnection, ServerHandshake,
-    TrafficLogger, bind_obfuscated_endpoint, connect, make_client_config_with_congestion,
-    make_server_config_with_congestion, obfuscated_endpoint_from_socket,
-    port_hopping_endpoint_from_socket, transport_config,
+    TrafficLogger, bind_obfuscated_endpoint, chrome_client_endpoint_config,
+    chrome_client_transport_config, connect, make_chrome_client_config_with_congestion,
+    make_client_config_with_congestion, make_server_config_with_congestion,
+    obfuscated_endpoint_from_socket_with_config, port_hopping_endpoint_from_socket_with_config,
+    transport_config,
 };
 use quinn::{
     ClientConfig as QuinnClientConfig, Endpoint, EndpointConfig, ServerConfig as QuinnServerConfig,
@@ -446,7 +448,17 @@ async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
     let congestion = config
         .congestion
         .settings(config.bandwidth.disable_loss_compensation)?;
-    let mut quic = make_client_config_with_congestion(tls, congestion)?;
+    let (mut quic, endpoint_config) = if config.quic.disable_chrome_parrot == Some(false) {
+        (
+            make_chrome_client_config_with_congestion(tls, congestion)?,
+            chrome_client_endpoint_config()?,
+        )
+    } else {
+        (
+            make_client_config_with_congestion(tls, congestion)?,
+            EndpointConfig::default(),
+        )
+    };
     apply_client_quic_config(&mut quic, &config.quic, congestion)?;
     let bind_address = if server_address.is_ipv4() {
         "0.0.0.0:0"
@@ -468,24 +480,20 @@ async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
                 .map_err(|error| std::io::Error::other(error.to_string()))
         });
         let (minimum, maximum) = config.transport.hop_intervals()?;
-        port_hopping_endpoint_from_socket(
+        port_hopping_endpoint_from_socket_with_config(
             socket,
             factory,
             server_addresses,
             minimum,
             maximum,
             obfs,
+            endpoint_config,
         )?
     } else if let Some(obfs) = obfs {
-        obfuscated_endpoint_from_socket(socket, None, obfs)?
+        obfuscated_endpoint_from_socket_with_config(socket, None, obfs, endpoint_config)?
     } else {
-        Endpoint::new(
-            EndpointConfig::default(),
-            None,
-            socket,
-            Arc::new(TokioRuntime),
-        )
-        .map_err(|error| CliError::new(format!("failed to create QUIC endpoint: {error}")))?
+        Endpoint::new(endpoint_config, None, socket, Arc::new(TokioRuntime))
+            .map_err(|error| CliError::new(format!("failed to create QUIC endpoint: {error}")))?
     };
     endpoint.set_default_client_config(quic);
     let (up, down) = config.bandwidth.values()?;
@@ -886,7 +894,11 @@ fn apply_client_quic_config(
     config: &ClientQuicConfig,
     congestion: hysteria_transport::CongestionSettings,
 ) -> Result<()> {
-    let mut transport = transport_config(true, congestion);
+    let mut transport = if config.disable_chrome_parrot == Some(false) {
+        chrome_client_transport_config(congestion)
+    } else {
+        transport_config(true, congestion)
+    };
     let settings = Arc::get_mut(&mut transport)
         .ok_or_else(|| CliError::new("new QUIC transport configuration is unexpectedly shared"))?;
     let stream_window = config
@@ -1240,8 +1252,103 @@ fn format_host_port(host: &str, port: u16) -> String {
 }
 
 #[cfg(test)]
+#[path = "runtime_chrome_interop.rs"]
+mod chrome_interop;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn chrome_runtime_connects_and_reconnects_across_socket_paths() {
+        tls::ensure_crypto_provider();
+        let directory = tempfile::tempdir().unwrap();
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        let cert = directory.path().join("cert.pem");
+        let key = directory.path().join("key.pem");
+        std::fs::write(&cert, certified.cert.pem()).unwrap();
+        std::fs::write(&key, certified.key_pair.serialize_pem()).unwrap();
+
+        for chrome in [false, true] {
+            for kind in ["", "salamander", "gecko"] {
+                for hopping in [false, true] {
+                    let mut config: ClientConfig = serde_yaml_ng::from_str(
+                        "server: localhost\nauth: secret\ntls: { sni: localhost }\nlazy: true\n",
+                    )
+                    .unwrap();
+                    config.tls.ca = cert.to_string_lossy().into_owned();
+                    config.quic.disable_chrome_parrot = Some(!chrome);
+                    config.quic.keep_alive_period = "7s".to_owned();
+                    config.obfs.kind = kind.to_owned();
+                    config.obfs.salamander.password = "test-password".to_owned();
+                    config.obfs.gecko.password = "test-password".to_owned();
+                    let server_tls = tls::server_config(&cert, &key, None, "strict").unwrap();
+                    let server_config = hysteria_transport::make_server_config(server_tls).unwrap();
+                    let endpoint = if let Some(obfs) = config.obfs.transport_config().unwrap() {
+                        bind_obfuscated_endpoint(
+                            "127.0.0.1:0".parse().unwrap(),
+                            Some(server_config),
+                            obfs,
+                        )
+                        .unwrap()
+                    } else {
+                        Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap()
+                    };
+                    let address = endpoint.local_addr().unwrap();
+                    config.server = if hopping {
+                        format!("127.0.0.1:{0}-{0}", address.port())
+                    } else {
+                        address.to_string()
+                    };
+                    let mut server = HysteriaServer::from_endpoint(
+                        endpoint,
+                        ServerHandshake::default(),
+                        Arc::new(|_: SocketAddr, request: &hysteria_protocol::AuthRequest| {
+                            (request.auth == "secret").then(|| "test-user".to_owned())
+                        }),
+                    );
+                    let handle = ClientHandle::new(config, false).await.unwrap();
+                    for _ in 0..2 {
+                        let (accepted, client) =
+                            tokio::time::timeout(Duration::from_secs(10), async {
+                                tokio::join!(server.accept(), handle.client())
+                            })
+                            .await
+                            .expect("runtime handshake timed out");
+                        let accepted = accepted.unwrap();
+                        let client = client.unwrap();
+                        assert_eq!(accepted.auth_id, "test-user");
+                        assert!(!client.is_closed());
+                        handle.invalidate(&client).await;
+                        assert!(client.is_closed());
+                    }
+                    handle.close().await;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chrome_runtime_switch_requires_explicit_opt_in() {
+        for field in ["chromeParrot", "chrome_parrot"] {
+            assert!(
+                serde_yaml_ng::from_str::<ClientConfig>(&format!(
+                    "server: localhost\nauth: secret\nquic: {{ {field}: true }}\n"
+                ))
+                .is_err()
+            );
+        }
+        let config: ClientConfig =
+            serde_yaml_ng::from_str("server: localhost\nauth: secret\n").unwrap();
+        assert_eq!(config.quic.disable_chrome_parrot, None);
+        for disabled in [true, false] {
+            let config: ClientConfig = serde_yaml_ng::from_str(&format!(
+                "server: localhost\nauth: secret\nquic: {{ disableChromeParrot: {disabled} }}\n"
+            ))
+            .unwrap();
+            assert_eq!(config.quic.disable_chrome_parrot, Some(disabled));
+        }
+    }
 
     #[test]
     fn server_address_defaults_to_443() {

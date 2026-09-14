@@ -24,6 +24,30 @@ fn stateless_retry() {
 }
 
 #[test]
+fn stateless_retry_with_chrome_initial_profile() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(validate_incoming);
+    let mut config = client_config();
+    Arc::get_mut(&mut config.transport)
+        .unwrap()
+        .chrome_packet_numbers(true)
+        .chrome_no_coalescing(true)
+        .chrome_initial_crypto_split(true)
+        .chrome_initial_payload_chaos(true);
+
+    let (client_ch, _server_ch) = pair.connect_with(config);
+    pair.client
+        .connections
+        .get_mut(&client_ch)
+        .unwrap()
+        .close(pair.time, VarInt(42), Bytes::new());
+    pair.drive();
+    assert_eq!(pair.client.known_connections(), 0);
+    assert_eq!(pair.server.known_connections(), 0);
+}
+
+#[test]
 fn retry_token_expired() {
     let _guard = subscribe();
 

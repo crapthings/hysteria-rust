@@ -166,6 +166,8 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
         let require_ems = self.provider.fips();
 
         ClientConfig {
+            quic_chrome_baseline: false,
+            quic_application_settings: Vec::new(),
             provider: self.provider,
             alpn_protocols: Vec::new(),
             check_selected_alpn: true,

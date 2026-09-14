@@ -61,6 +61,32 @@ pub fn port_hopping_endpoint_from_socket(
     max_interval: Duration,
     obfuscation: Option<ObfuscationConfig>,
 ) -> Result<Endpoint, TransportError> {
+    port_hopping_endpoint_from_socket_with_config(
+        socket,
+        socket_factory,
+        remotes,
+        min_interval,
+        max_interval,
+        obfuscation,
+        EndpointConfig::default(),
+    )
+}
+
+/// Creates a port-hopping client endpoint with a caller-supplied Quinn endpoint configuration.
+///
+/// # Errors
+///
+/// Returns an error for an empty remote list, invalid intervals, socket setup, obfuscation, or
+/// endpoint startup failures.
+pub fn port_hopping_endpoint_from_socket_with_config(
+    socket: std::net::UdpSocket,
+    socket_factory: UdpSocketFactory,
+    remotes: Vec<SocketAddr>,
+    min_interval: Duration,
+    max_interval: Duration,
+    obfuscation: Option<ObfuscationConfig>,
+    endpoint_config: EndpointConfig,
+) -> Result<Endpoint, TransportError> {
     if remotes.is_empty() {
         return Err(TransportError::Configuration(
             "UDP port hopping requires at least one remote address".to_owned(),
@@ -83,13 +109,8 @@ pub fn port_hopping_endpoint_from_socket(
         max_interval,
         codec,
     ));
-    Endpoint::new_with_abstract_socket(
-        EndpointConfig::default(),
-        None,
-        socket,
-        Arc::new(TokioRuntime),
-    )
-    .map_err(|error| TransportError::Endpoint(error.to_string()))
+    Endpoint::new_with_abstract_socket(endpoint_config, None, socket, Arc::new(TokioRuntime))
+        .map_err(|error| TransportError::Endpoint(error.to_string()))
 }
 
 fn prepare_socket(socket: std::net::UdpSocket) -> Result<tokio::net::UdpSocket, TransportError> {
@@ -126,6 +147,26 @@ pub fn obfuscated_endpoint_from_socket(
     server_config: Option<ServerConfig>,
     config: ObfuscationConfig,
 ) -> Result<Endpoint, TransportError> {
+    obfuscated_endpoint_from_socket_with_config(
+        socket,
+        server_config,
+        config,
+        EndpointConfig::default(),
+    )
+}
+
+/// Creates an obfuscated Quinn endpoint with a caller-supplied endpoint configuration.
+///
+/// # Errors
+///
+/// Returns an error when the socket cannot be made nonblocking, the obfuscation settings are
+/// invalid, or Quinn cannot start the endpoint.
+pub fn obfuscated_endpoint_from_socket_with_config(
+    socket: std::net::UdpSocket,
+    server_config: Option<ServerConfig>,
+    config: ObfuscationConfig,
+    endpoint_config: EndpointConfig,
+) -> Result<Endpoint, TransportError> {
     socket
         .set_nonblocking(true)
         .map_err(|error| TransportError::Endpoint(error.to_string()))?;
@@ -133,7 +174,7 @@ pub fn obfuscated_endpoint_from_socket(
         .map_err(|error| TransportError::Endpoint(error.to_string()))?;
     let socket = Arc::new(ObfuscatedUdpSocket::new(socket, config)?);
     Endpoint::new_with_abstract_socket(
-        EndpointConfig::default(),
+        endpoint_config,
         server_config,
         socket,
         Arc::new(TokioRuntime),
@@ -1106,7 +1147,10 @@ fn random_duration(minimum: Duration, maximum: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{make_client_config, make_server_config};
+    use crate::{
+        chrome_client_endpoint_config, make_chrome_client_config, make_client_config,
+        make_server_config,
+    };
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
     use std::sync::atomic::AtomicUsize;
 
@@ -1197,7 +1241,7 @@ mod tests {
             },
         ];
         for obfuscation in configurations {
-            let (server_config, client_config) = tls_configs();
+            let (server_config, client_config) = tls_configs_with_chrome(true);
             let server = bind_obfuscated_endpoint(
                 "127.0.0.1:0".parse().unwrap(),
                 Some(server_config),
@@ -1205,9 +1249,14 @@ mod tests {
             )
             .unwrap();
             let address = server.local_addr().unwrap();
-            let mut client =
-                bind_obfuscated_endpoint("127.0.0.1:0".parse().unwrap(), None, obfuscation)
-                    .unwrap();
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let mut client = obfuscated_endpoint_from_socket_with_config(
+                socket,
+                None,
+                obfuscation,
+                chrome_client_endpoint_config().unwrap(),
+            )
+            .unwrap();
             client.set_default_client_config(client_config);
 
             let accept_server = server.clone();
@@ -1236,7 +1285,7 @@ mod tests {
 
     #[tokio::test]
     async fn port_hop_preserves_obfuscated_quic_connection() {
-        let (server_config, client_config) = tls_configs();
+        let (server_config, client_config) = tls_configs_with_chrome(true);
         let obfuscation = ObfuscationConfig::Salamander {
             password: b"hopping-secret".to_vec(),
         };
@@ -1254,13 +1303,14 @@ mod tests {
             std::net::UdpSocket::bind("127.0.0.1:0")
         });
         let initial = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        let mut client = port_hopping_endpoint_from_socket(
+        let mut client = port_hopping_endpoint_from_socket_with_config(
             initial,
             factory,
             vec![address],
             Duration::from_secs(5),
             Duration::from_secs(5),
             Some(obfuscation),
+            chrome_client_endpoint_config().unwrap(),
         )
         .unwrap();
         client.set_default_client_config(client_config);
@@ -1296,6 +1346,10 @@ mod tests {
     }
 
     fn tls_configs() -> (quinn::ServerConfig, quinn::ClientConfig) {
+        tls_configs_with_chrome(false)
+    }
+
+    fn tls_configs_with_chrome(chrome: bool) -> (quinn::ServerConfig, quinn::ClientConfig) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let certificate = certified.cert.der().clone();
         let key =
@@ -1309,9 +1363,11 @@ mod tests {
         let client_tls = rustls::ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
-        (
-            make_server_config(server_tls).unwrap(),
-            make_client_config(client_tls).unwrap(),
-        )
+        let client_config = if chrome {
+            make_chrome_client_config(client_tls).unwrap()
+        } else {
+            make_client_config(client_tls).unwrap()
+        };
+        (make_server_config(server_tls).unwrap(), client_config)
     }
 }

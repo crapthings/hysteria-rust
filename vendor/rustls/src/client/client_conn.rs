@@ -31,6 +31,17 @@ use crate::unbuffered::{EncryptError, TransmitTlsData};
 use crate::{DistinguishedName, crypto};
 use crate::{KeyLog, WantsVersions, compress, sign, verify, versions};
 
+pub(super) const CHROME_SIGNATURE_SCHEMES: &[SignatureScheme] = &[
+    SignatureScheme::ECDSA_NISTP256_SHA256,
+    SignatureScheme::RSA_PSS_SHA256,
+    SignatureScheme::RSA_PKCS1_SHA256,
+    SignatureScheme::ECDSA_NISTP384_SHA384,
+    SignatureScheme::RSA_PSS_SHA384,
+    SignatureScheme::RSA_PKCS1_SHA384,
+    SignatureScheme::RSA_PSS_SHA512,
+    SignatureScheme::RSA_PKCS1_SHA512,
+];
+
 /// A trait for the ability to store client session data, so that sessions
 /// can be resumed in future connections.
 ///
@@ -162,6 +173,9 @@ pub trait ResolvesClientCert: fmt::Debug + Send + Sync {
 /// [`RootCertStore`]: crate::RootCertStore
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
+    /// Internal switch for the opt-in QUIC Chrome ClientHello baseline.
+    pub(super) quic_chrome_baseline: bool,
+    pub(super) quic_application_settings: Vec<(Vec<u8>, Vec<u8>)>,
     /// Which ALPN protocols we include in our client hello.
     /// If empty, no ALPN extension is sent.
     pub alpn_protocols: Vec<Vec<u8>>,
@@ -306,6 +320,105 @@ pub struct TicketRequest {
 }
 
 impl ClientConfig {
+    /// Configure experimental QUIC ALPS (17613) with explicit ALPN/settings pairs.
+    /// Only configured protocols actually offered via ALPN advertise ALPS. The application
+    /// must define and process the settings syntax; this does not configure HTTP/3 settings.
+    /// QUIC sessions using this configuration do not resume or send early data. TCP is unchanged.
+    ///
+    /// # Errors
+    /// Rejects duplicate/empty/oversized protocol names or settings too large for the extension.
+    /// Each settings value and the encoded protocol list are limited to 16 KiB.
+    pub fn with_quic_application_settings(
+        mut self,
+        settings: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<Self, Error> {
+        crate::alps::validate(&settings)?;
+        self.quic_application_settings = settings;
+        Ok(self)
+    }
+
+    /// Prepare the cryptographic baseline for a Chrome-shaped QUIC ClientHello.
+    ///
+    /// This is not a complete Chrome fingerprint: ALPS and QUIC packet shaping are not
+    /// implemented here. Without a configured ECH mode, QUIC sends Chrome-shaped ECH GREASE
+    /// (which does not encrypt the server name). With `brotli` or `brotli-custom` enabled,
+    /// Brotli certificate decompression is offered. No certificate verifier or
+    /// client certificate resolver is replaced. Only algorithms already supported by the
+    /// configured provider are used. Session resumption and early data are disabled.
+    ///
+    /// Use a dedicated configuration for QUIC; the returned configuration supports TLS 1.3
+    /// only. The original configuration (including clones) is unaffected.
+    ///
+    /// # Errors
+    /// Returns an error if TLS 1.3, a required cipher suite/key exchange group, or a compatible
+    /// certificate signature scheme is unavailable.
+    pub fn with_quic_chrome_baseline(mut self) -> Result<Self, Error> {
+        if !self
+            .verifier
+            .supported_verify_schemes()
+            .iter()
+            .any(|scheme| CHROME_SIGNATURE_SCHEMES.contains(scheme))
+        {
+            return Err(Error::General(
+                "Chrome QUIC baseline requires a compatible signature scheme".into(),
+            ));
+        }
+        if !self.supports_version(ProtocolVersion::TLSv1_3) {
+            return Err(Error::General(
+                "Chrome QUIC baseline requires TLS 1.3".into(),
+            ));
+        }
+        let mut provider = (*self.provider).clone();
+        provider.cipher_suites = [
+            CipherSuite::TLS13_AES_128_GCM_SHA256,
+            CipherSuite::TLS13_AES_256_GCM_SHA384,
+            CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
+        ]
+        .iter()
+        .map(|suite| {
+            self.provider
+                .cipher_suites
+                .iter()
+                .find(|s| s.suite() == *suite)
+                .copied()
+                .ok_or_else(|| {
+                    Error::General("Chrome QUIC baseline requires unavailable cipher suite".into())
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+        provider.kx_groups = [
+            NamedGroup::X25519MLKEM768,
+            NamedGroup::X25519,
+            NamedGroup::secp256r1,
+            NamedGroup::secp384r1,
+        ]
+        .iter()
+        .map(|group| {
+            self.provider
+                .kx_groups
+                .iter()
+                .find(|g| g.name() == *group)
+                .copied()
+                .ok_or_else(|| {
+                    Error::General(
+                        "Chrome QUIC baseline requires unavailable key exchange group".into(),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+        self.provider = Arc::new(provider);
+        self.versions = versions::EnabledVersions::new(&[&versions::TLS13]);
+        self.resumption = Resumption::disabled();
+        self.enable_early_data = false;
+        self.send_ticket_request = None;
+        #[cfg(any(feature = "brotli", feature = "brotli-custom"))]
+        {
+            self.cert_decompressors = alloc::vec![compress::BROTLI_DECOMPRESSOR];
+        }
+        self.quic_chrome_baseline = true;
+        Ok(self)
+    }
+
     /// Create a builder for a client configuration with
     /// [the process-default `CryptoProvider`][CryptoProvider#using-the-per-process-default-cryptoprovider]
     /// and safe protocol version defaults.

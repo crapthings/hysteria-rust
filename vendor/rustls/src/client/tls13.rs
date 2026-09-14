@@ -500,6 +500,12 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
         self.transcript.add_message(&m);
 
         validate_encrypted_extensions(cx.common, &self.hello, exts)?;
+        if exts.application_settings.is_some() && exts.selected_protocol.is_none() {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::IllegalParameter,
+                Error::General("ALPS without negotiated ALPN".into()),
+            ));
+        }
         hs::process_alpn_protocol(
             cx.common,
             &self.hello.alpn_protocols,
@@ -513,6 +519,24 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
             &self.config,
             exts.client_certificate_type.as_ref(),
         )?;
+
+        if let Some(settings) = &exts.application_settings {
+            let selected = cx.common.alpn_protocol.as_ref()
+                .filter(|protocol| self.hello.alpn_protocols.contains(protocol))
+                .and_then(|protocol| {
+                    self.config.quic_application_settings.iter()
+                        .find(|(p, _)| p.as_slice() == protocol.as_ref())
+                });
+            let Some((_, local)) = selected
+                .filter(|_| cx.common.is_quic() && !cx.common.early_traffic) else {
+                return Err(cx.common.send_fatal_alert(
+                    AlertDescription::IllegalParameter,
+                    Error::General("ALPS without a supported negotiated ALPN".into()),
+                ));
+            };
+            cx.common.peer_application_settings = Some(settings.clone().into_vec());
+            cx.common.application_settings_reply = Some(local.clone());
+        }
         hs::process_server_cert_type_extension(
             cx.common,
             &self.config,
@@ -1362,6 +1386,15 @@ impl State<ClientConnectionData> for ExpectFinished {
         }
 
         let mut flight = HandshakeFlightTls13::new(&mut st.transcript);
+
+        if let Some(settings) = cx.common.application_settings_reply.take() {
+            flight.add(HandshakeMessagePayload(HandshakePayload::EncryptedExtensions(Box::new(
+                ServerExtensions {
+                    application_settings: Some(Payload::new(settings)),
+                    ..Default::default()
+                },
+            ))));
+        }
 
         /* Send our authentication/finished messages.  These are still encrypted
          * with our handshake keys. */

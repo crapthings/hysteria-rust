@@ -3,6 +3,9 @@
 This is `quinn-proto` 0.11.16 with Hysteria compatibility extensions:
 
 - `TransportConfig::assume_peer_max_datagram_frame_size`.
+- An opt-in Chrome client transport-parameter serializer, plus explicit ACK-frequency support and
+  advertised DATAGRAM-size controls needed to keep live receive behavior aligned with that wire
+  profile. The standard serializer and defaults are unchanged.
 - `ServerConfig::send_stateless_reset`, enabled by default. Hysteria's server
   `quic.disableStatelessReset` option suppresses outgoing resets for unknown
   connections; receiving resets and client endpoint behavior are unchanged.
@@ -24,3 +27,17 @@ The default remains `None`, preserving Quinn's standard behavior for other proto
 The BBR defaults also preserve upstream Quinn behavior. Hysteria uses the additional setters to
 apply the profile values from its Go implementation instead of approximating profiles through
 different initial congestion windows.
+
+The Chrome serializer is selected on `QuicClientConfig`, validates incompatible endpoint and
+transport settings before any I/O, and never applies to server sessions. Hysteria's paired client
+profile uses a 30-second idle timeout, 6/15 MiB stream/connection receive windows, 100/103 incoming
+bidirectional/unidirectional streams, a 1250-byte initial MTU, a 1472-byte receive payload limit,
+a 65536-byte DATAGRAM advertisement, disabled ACK-frequency/fixed-bit greasing, and zero-length
+local connection IDs. It also opts into Chrome's packet-number start/width policy, disables
+handshake coalescing, keeps Initial padding at 1250 bytes, and sends the randomized ClientHello
+head plus tail before its middle. Packet-number sizing retains the prior Initial's pre-chaos
+padding budget, matching the pinned implementation's temporary width change across a multi-packet
+ClientHello. Fresh Initial CRYPTO is randomly fragmented, mixed with PINGs and distributed
+padding, then shuffled without changing the packet size. Explicit fresh-byte
+tracking keeps retransmissions and ACK-only packets on the ordinary path. The standard client and
+all server behavior remain unchanged.

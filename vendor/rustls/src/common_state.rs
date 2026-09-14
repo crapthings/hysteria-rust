@@ -36,6 +36,9 @@ pub struct CommonState {
     pub(crate) suite: Option<SupportedCipherSuite>,
     pub(crate) kx_state: KxState,
     pub(crate) alpn_protocol: Option<ProtocolName>,
+    pub(crate) peer_application_settings: Option<Vec<u8>>,
+    pub(crate) application_settings_reply: Option<Vec<u8>>,
+    pub(crate) expect_application_settings: bool,
     pub(crate) aligned_handshake: bool,
     pub(crate) may_send_application_data: bool,
     pub(crate) may_receive_application_data: bool,
@@ -73,6 +76,9 @@ impl CommonState {
             suite: None,
             kx_state: KxState::default(),
             alpn_protocol: None,
+            peer_application_settings: None,
+            application_settings_reply: None,
+            expect_application_settings: false,
             aligned_handshake: true,
             may_send_application_data: false,
             may_receive_application_data: false,
@@ -113,6 +119,16 @@ impl CommonState {
     /// [`Connection::process_new_packets()`]: crate::Connection::process_new_packets
     pub fn is_handshaking(&self) -> bool {
         !(self.may_send_application_data && self.may_receive_application_data)
+    }
+
+    /// Authenticated peer ALPS settings, available only after a successful handshake.
+    /// `Some(&[])` means ALPS negotiated empty settings; `None` means not negotiated or
+    /// not yet authenticated. The application is responsible for processing their syntax.
+    pub fn peer_application_settings(&self) -> Option<&[u8]> {
+        if self.is_handshaking() || self.sent_fatal_alert {
+            return None;
+        }
+        self.peer_application_settings.as_deref()
     }
 
     /// Retrieves the certificate chain or the raw public key used by the peer to authenticate.

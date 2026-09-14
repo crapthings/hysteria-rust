@@ -702,6 +702,19 @@ impl PacketNumber {
         }
     }
 
+    /// Apply Chromium's packet-number length policy.
+    ///
+    /// The congestion window provides a floor for the encoded range, one-byte packet numbers are
+    /// allowed, and three-byte packet numbers are never emitted.
+    pub(crate) fn new_chrome(n: u64, largest_acked: Option<u64>, cwnd_packets: u64) -> Self {
+        let unacked = largest_acked.map_or(n + 1, |acked| n - acked);
+        match unacked.max(cwnd_packets) {
+            0..64 => Self::U8(n as u8),
+            64..16_384 => Self::U16(n as u16),
+            _ => Self::U32(n as u32),
+        }
+    }
+
     pub(crate) fn len(self) -> usize {
         use PacketNumber::*;
         match self {
@@ -924,6 +937,27 @@ mod tests {
         check_pn(PacketNumber::new(0x10, 0), &hex!("10"));
         check_pn(PacketNumber::new(0x100, 0), &hex!("0100"));
         check_pn(PacketNumber::new(0x10000, 0), &hex!("010000"));
+    }
+
+    #[test]
+    fn chrome_packet_number_lengths_follow_cwnd_and_skip_three_bytes() {
+        assert_eq!(PacketNumber::new_chrome(1, None, 10), PacketNumber::U8(1));
+        assert_eq!(
+            PacketNumber::new_chrome(10_000, Some(9_999), 63),
+            PacketNumber::U8(16)
+        );
+        assert_eq!(
+            PacketNumber::new_chrome(10_000, Some(9_999), 64),
+            PacketNumber::U16(10_000)
+        );
+        assert_eq!(
+            PacketNumber::new_chrome(70_000, Some(69_999), 16_383),
+            PacketNumber::U16(4_464)
+        );
+        assert_eq!(
+            PacketNumber::new_chrome(70_000, Some(69_999), 16_384),
+            PacketNumber::U32(70_000)
+        );
     }
 
     #[test]
