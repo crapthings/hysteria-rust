@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-rc.2] - 2026-09-14
+
 ### Added
 
 - Experimental client `quic.disableChromeParrot: false` opt-in for the
@@ -48,5 +50,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cross-platform packaging for the upstream 27-target release matrix.
 - Real Go/Rust interoperability tests in both client/server directions.
 
-[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.1...HEAD
+[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.2...HEAD
+[0.1.0-rc.2]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.1...v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/crapthings/hysteria-rust/releases/tag/v0.1.0-rc.1

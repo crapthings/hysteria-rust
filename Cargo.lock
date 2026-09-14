@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "hysteria-cli"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "hysteria-obfs"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "blake2",
  "getrandom 0.3.4",
@@ -1531,11 +1531,11 @@ dependencies = [
 
 [[package]]
 name = "hysteria-protocol"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 
 [[package]]
 name = "hysteria-realm"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "axum",
  "base64",
@@ -1557,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "hysteria-transport"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
