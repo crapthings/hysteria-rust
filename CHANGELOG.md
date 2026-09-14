@@ -6,6 +6,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Use friendly OS/architecture names for future prebuilt downloads, such as
+  `hysteria-rust-linux-x64`, with matching SHA-256 filenames. Existing rc2 assets
+  retain their names. Update download scripts when moving to a later release.
+- Document the seven-target prebuilt policy and Linux glibc requirement;
+  additional targets are no longer routinely distributed or guaranteed tested.
+
 ## [0.1.0-rc.2] - 2026-09-14
 
 ### Added

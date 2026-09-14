@@ -15,15 +15,20 @@ interoperable with the upstream Go implementation at commit
 [Platform status](PORT_STATUS.md)
 
 > [!WARNING]
-> This is an independent port, not an official Hysteria release. The first
-> public release is a release candidate; test it before relying on it for
-> production traffic.
+> This is an independent port, not an official Hysteria release. Releases are
+> currently release candidates. See the [rc2 release notes](docs/releases/v0.1.0-rc.2.md)
+> for validated behavior and remaining limitations before deployment.
+
+[Install](#install) · [Quick start](#quick-start) ·
+[Chrome profile](#experimental-chrome-client-profile) · [Upgrade](#upgrade-and-rollback) ·
+[Development](#development-and-ci)
 
 ## Highlights
 
 - Hysteria-compatible TCP and UDP proxying over QUIC and HTTP/3
 - Salamander and Gecko obfuscation, port hopping, and BBR/Reno/Brutal congestion control
 - TLS 1.3, certificate pinning, mutual TLS, ECH, and ACME automation
+- Experimental Chrome-shaped client TLS/QUIC profile, disabled by default
 - SOCKS5, HTTP proxy, forwarding, TUN, redirect, and TProxy client modes
 - ACL routing, GeoIP/GeoSite, masquerade, traffic statistics, and speed tests
 - Realm, STUN, NAT mapping, and peer-to-peer hole punching
@@ -34,26 +39,76 @@ See [PORT_STATUS.md](PORT_STATUS.md) for the full implementation and compatibili
 
 ## Install
 
-Download the binary for your operating system and architecture from
-[GitHub Releases](https://github.com/crapthings/hysteria-rust/releases). Verify
-the adjacent SHA-256 file, make the binary executable on Unix, and run it
-directly. Rust and Go are not required on the target machine.
+Each download is a single executable containing **both client and server**
+commands. Rust and Go are not needed to run it. Download the binary and its
+matching `.sha256` file from [GitHub Releases](https://github.com/crapthings/hysteria-rust/releases).
 
-To build from source, install the toolchain declared in
-[`rust-toolchain.toml`](rust-toolchain.toml), then run:
+### Choose a platform
+
+Starting with rc2, prebuilt releases cover these seven targets. The table shows
+the existing rc2 filename suffix and the shorter names used by future releases.
+Prefix each entry with `hysteria-rust-`.
+
+| System / CPU | rc2 filename suffix | Future filename suffix |
+| --- | --- | --- |
+| Linux x86-64 (x64 / amd64) | `x86_64-unknown-linux-gnu` | `linux-x64` |
+| Linux ARM64 (aarch64) | `aarch64-unknown-linux-gnu` | `linux-arm64` |
+| Linux ARMv7, hard-float | `armv7-unknown-linux-gnueabihf` | `linux-armv7` |
+| macOS Intel | `x86_64-apple-darwin` | `macos-x64` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `macos-arm64` |
+| Windows x86-64 | `x86_64-pc-windows-msvc.exe` | `windows-x64.exe` |
+| Windows ARM64 | `aarch64-pc-windows-msvc.exe` | `windows-arm64.exe` |
+
+`unknown` is a Rust vendor field, not an unknown Linux distribution. Linux
+binaries use GNU/glibc: select a compatible architecture and system runtime.
+They are not separate Ubuntu/Debian packages or native Alpine/musl packages.
+
+The previous 27-target matrix is no longer routinely published. Other targets
+and extra Linux runtime/CPU variants are outside the prebuilt release scope;
+retained source/build configuration does not guarantee they compile or receive
+testing. Existing rc2 download names remain unchanged.
+
+### Verify and run
+
+For **Linux x64 rc2**, in the directory containing both downloaded files:
 
 ```shell
-cargo build --locked --release --package hysteria-cli
+sha256sum --check hysteria-rust-x86_64-unknown-linux-gnu.sha256
+chmod +x hysteria-rust-x86_64-unknown-linux-gnu
+./hysteria-rust-x86_64-unknown-linux-gnu version
+# Optional system-wide installation:
+sudo install -m 755 hysteria-rust-x86_64-unknown-linux-gnu /usr/local/bin/hysteria
 ```
 
-The executable is written to `target/release/hysteria` (`hysteria.exe` on Windows).
+Only proceed if verification succeeds. For other Linux targets, substitute the
+filename from the table. On macOS use `shasum -a 256 -c FILE.sha256`, then
+`chmod +x FILE` and `./FILE version`.
+
+On Windows, compare the hash with the first value in the checksum file before
+running the executable. For x64 rc2, use PowerShell:
+
+```powershell
+Get-FileHash .\hysteria-rust-x86_64-pc-windows-msvc.exe -Algorithm SHA256
+Get-Content .\hysteria-rust-x86_64-pc-windows-msvc.exe.sha256
+.\hysteria-rust-x86_64-pc-windows-msvc.exe version
+```
+
+Commands below assume the executable is installed on PATH as `hysteria`.
+Otherwise replace `hysteria` with `./YOUR_DOWNLOADED_FILE` on Unix or
+`.\YOUR_DOWNLOADED_FILE.exe` on Windows.
 
 ## Quick start
 
-Create a minimal server configuration:
+Before starting, point your domain at the server, allow inbound **UDP 443** in
+both the host firewall and cloud security group, and provision a certificate
+and private key for that domain. Binding port 443 may require a privileged
+service or a suitable bind capability. Alternatively use an unprivileged UDP
+port and update both configurations.
+
+Save the following as `server.yaml`, replacing the certificate paths and password:
 
 ```yaml
-listen: :443
+listen: ":443"
 
 tls:
   cert: /etc/hysteria/server.crt
@@ -70,7 +125,8 @@ Start the server:
 hysteria server --config server.yaml
 ```
 
-Create a matching client configuration:
+Save the following as `client.yaml`, replacing the server address and using
+the same password:
 
 ```yaml
 server: example.com:443
@@ -93,14 +149,31 @@ hysteria client --config client.yaml
 ```
 
 The client now exposes SOCKS5 on `127.0.0.1:1080` and HTTP proxying on
-`127.0.0.1:8080`. The server name, certificate domain, `tls.sni`, and password
-must agree between both sides.
+`127.0.0.1:8080`. The client `auth` must match the server password. `tls.sni`
+must match a name covered by the server certificate; `server` can instead be
+an IP address, provided `tls.sni` still names the certificate correctly.
+
+For a private CA or self-signed certificate, add `ca: /path/to/trusted-ca-or-server.crt`
+inside the client's `tls` section. Transfer only the public certificate to the
+client; keep the private key on the server. ACME users can follow the
+[DNS provider examples](docs/acme-dns-providers.md) instead of provisioning
+static certificate files.
+
+With the client running, test HTTPS forwarding:
+
+```shell
+curl --proxy socks5h://127.0.0.1:1080 https://example.com/
+```
+
+A QUIC timeout usually calls for checking the UDP port, firewall and address;
+a certificate error calls for checking the trust configuration and `tls.sni`.
 
 Full starter files are available at
 [`examples/server.yaml`](examples/server.yaml) and
-[`examples/client.yaml`](examples/client.yaml). The schema, field names,
-duration strings, bandwidth strings, ACL syntax, and share links are compatible
-with the targeted Go implementation.
+[`examples/client.yaml`](examples/client.yaml). Supported configuration fields follow the targeted Go implementation where
+implemented; this is not a claim that every Go option or default is supported.
+Unknown YAML fields are rejected. Check [PORT_STATUS.md](PORT_STATUS.md) and
+the examples before migrating a configuration.
 
 > [!IMPORTANT]
 > Never expose a server with the example password. Keep private keys readable
@@ -116,18 +189,71 @@ with the targeted Go implementation.
 Geo databases are downloaded only when a `geoip:` or `geosite:` ACL matcher is
 used. Local paths can be configured with `acl.geoip` and `acl.geosite`.
 
-## Platform support
+## Experimental Chrome client profile
 
-| Platform | Release architectures | System integration |
-| --- | --- | --- |
-| Linux | x64, ARMv7, ARM64 | TUN, TProxy, redirect |
-| macOS | x64, ARM64 | TUN |
-| Windows | x64, ARM64 | TUN, WFP strict route |
+Starting with rc2, explicitly opt in on the **Rust client**:
 
-Core QUIC, TCP/UDP, TLS, obfuscation, ACL, and Realm features are shared across
-supported targets. Low-level routing features depend on operating-system APIs.
+```yaml
+quic:
+  disableChromeParrot: false
+```
 
-## Verify
+Omission or `true` keeps ordinary Rust behavior. This changes the client's
+TLS/QUIC profile and Initial packet shaping; it does not enable ALPS or claim
+complete Chrome wire equivalence. CA verification, certificate pinning, client
+certificates and real ECH have combination-test coverage. See
+[Chrome QUIC status](docs/chrome-quic-port.md) for remaining work.
+
+Upgrading only the Rust server does not turn this feature on in Surge or any
+other third-party client. Those clients continue to use their own Hysteria 2
+implementation and do not need to enable this experimental profile to connect. Validate
+your client/server combination before a production rollout.
+
+## Upgrade and rollback
+
+Read the [release notes](https://github.com/crapthings/hysteria-rust/releases)
+and [CHANGELOG](CHANGELOG.md), download the appropriate binary, and verify its
+checksum before upgrading. Record the current version and back up the executable
+and configuration.
+
+For an existing service, preserve its configuration path, password, certificates,
+port and obfuscation settings. Stop the service, replace its executable, then
+start it and verify both its version and a real client connection. A restart
+briefly interrupts existing connections. If validation fails, stop the service,
+restore the saved executable and any changed configuration, and start it again.
+Service names and executable paths depend on your installation.
+
+For rc2, existing configurations keep the ordinary client profile unless the
+Chrome option is explicitly enabled. You do not need to rotate passwords or
+regenerate certificates just to replace the executable.
+
+## Configuration reference
+
+OS-specific integration includes TUN/TProxy/redirect on Linux, TUN on macOS,
+and TUN/WFP strict routing on Windows. These modes require the appropriate
+operating-system permissions and setup; ordinary SOCKS5/HTTP proxy use does not
+require configuring them.
+
+### QUIC stateless resets
+
+The server sends QUIC stateless resets by default to help clients detect lost
+connections promptly. Set `quic.disableStatelessReset: true` in the server
+configuration to suppress outgoing reset packets for unknown connections.
+
+### Additional ACME DNS providers
+
+See [Additional ACME DNS providers](docs/acme-dns-providers.md) for complete
+Porkbun, Njalla and Namecheap setup examples.
+
+## Development and CI
+
+Install the toolchain from [rust-toolchain.toml](rust-toolchain.toml), then build:
+
+```shell
+cargo build --locked --release --package hysteria-cli
+```
+
+The result is `target/release/hysteria` (`hysteria.exe` on Windows).
 
 ```shell
 cargo fmt --all -- --check
@@ -135,70 +261,20 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-Real Go/Rust interoperability can also be tested with a binary built from the
-compatibility commit:
+The root workspace does not run all vendored-crate tests. See
+[Chrome QUIC checks](docs/chrome-quic-port.md#local-foundation-checks) for the
+standalone Quinn/h3 commands. Real Go/Rust testing requires a binary built from
+the compatibility commit linked above:
 
 ```shell
 HYSTERIA_GO_BIN=/path/to/go/hysteria \
   cargo test --locked --package hysteria-cli --test go_interop -- --nocapture
+HYSTERIA_GO_BIN=/path/to/go/hysteria \
+  cargo test --locked --package hysteria-cli --lib chrome_runtime_go_tcp_udp_interop -- --ignored --nocapture
 ```
 
-## QUIC stateless resets
-
-The server sends QUIC stateless resets by default to help clients detect lost
-connections promptly. Set `quic.disableStatelessReset: true` in the server
-configuration to suppress outgoing reset packets for unknown connections.
-
-## Additional ACME DNS providers
-
-Porkbun DNS-01 certificate validation uses the upstream-compatible configuration:
-
-```yaml
-acme:
-  domains: [example.com]
-  email: admin@example.com
-  type: dns
-  dns:
-    name: porkbun
-    config:
-      porkbun_api_key: YOUR_API_KEY
-      porkbun_api_secret_key: YOUR_SECRET_API_KEY
-```
-
-Enable API access for the domain in Porkbun. The solver creates a TXT record
-and deletes that record by ID after validation.
-
-For Njalla, use the same ACME settings with this `dns` section:
-
-```yaml
-dns:
-  name: njalla
-  config:
-    njalla_api_token: YOUR_API_TOKEN
-```
-
-The token must permit creating and removing the domain's ACME TXT records.
-Njalla records are also cleaned up by their individual record IDs.
-
-For Namecheap:
-
-```yaml
-dns:
-  name: namecheap
-  config:
-    namecheap_api_key: YOUR_API_KEY
-    namecheap_api_user: YOUR_USERNAME
-    namecheap_client_ip: YOUR_WHITELISTED_IPV4
-    # Optional sandbox endpoint:
-    # namecheap_api_endpoint: https://api.sandbox.namecheap.com/xml.response
-```
-
-Enable API access and whitelist the server's public IPv4 address in Namecheap.
-Namecheap replaces the full host list on each update. The solver preserves
-existing records and serializes its own updates, but external DNS edits during
-certificate validation can race with that read/modify/write operation.
-
-## Cross-platform releases
+Without `HYSTERIA_GO_BIN`, the ordinary integration test skips its work.
+The explicitly invoked Chrome test fails if the binary is missing.
 
 Pushes and pull requests to `main`/`dev` run Linux workspace tests, formatting,
 Clippy, Go/Rust interoperability, and dependency auditing. These daily checks
@@ -209,7 +285,7 @@ build storage smaller.
 Run the CI workflow manually for all seven platform builds and one-day build
 artifacts. Version tags still trigger the separate full Release workflow.
 
-[`scripts/package_rust.py`](scripts/package_rust.py) builds a target-qualified
+[`scripts/package_rust.py`](scripts/package_rust.py) builds a platform-named
 release binary and SHA-256 checksum. Cross builds use the checked-in
 [`Cross.toml`](Cross.toml) configuration:
 

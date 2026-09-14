@@ -14,6 +14,16 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
+RELEASE_TARGET_NAMES = {
+    "x86_64-unknown-linux-gnu": "linux-x64",
+    "aarch64-unknown-linux-gnu": "linux-arm64",
+    "armv7-unknown-linux-gnueabihf": "linux-armv7",
+    "x86_64-apple-darwin": "macos-x64",
+    "aarch64-apple-darwin": "macos-arm64",
+    "x86_64-pc-windows-msvc": "windows-x64",
+    "aarch64-pc-windows-msvc": "windows-arm64",
+}
+
 
 def host_target() -> str:
     output = subprocess.check_output(["rustc", "-vV"], text=True)
@@ -88,8 +98,9 @@ def main() -> int:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     variant_suffix = "-avx" if args.variant == "avx" else ""
+    target_name = RELEASE_TARGET_NAMES.get(target, target)
     artifact = output_dir / (
-        f"hysteria-rust-{target}{variant_suffix}{executable_suffix}"
+        f"hysteria-rust-{target_name}{variant_suffix}{executable_suffix}"
     )
     shutil.copy2(source, artifact)
 
