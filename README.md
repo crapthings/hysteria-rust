@@ -7,7 +7,7 @@
 
 An independent Rust implementation of [Hysteria 2](https://v2.hysteria.network/),
 interoperable with the upstream Go implementation at commit
-[`f2ad1de5`](https://github.com/apernet/hysteria/commit/f2ad1de5da52a1da9622285a1d61553ddaa41f21).
+[`62d10167`](https://github.com/apernet/hysteria/commit/62d1016707af21b91e5fb6070311d9f016ff2754).
 
 [Project website](https://crapthings.github.io/hysteria-rust/) ·
 [Downloads](https://github.com/crapthings/hysteria-rust/releases) ·

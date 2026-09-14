@@ -34,6 +34,12 @@ struct RendezvousState {
 
 #[tokio::test]
 async fn rust_client_and_server_connect_through_realm() {
+    tokio::time::timeout(Duration::from_secs(30), realm_round_trip())
+        .await
+        .expect("Realm smoke test exceeded its deadline");
+}
+
+async fn realm_round_trip() {
     let (stun_address, stun_task) = start_stun().await;
     let (rendezvous_address, state, rendezvous_task) = start_rendezvous().await;
 

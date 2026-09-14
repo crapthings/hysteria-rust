@@ -40,4 +40,21 @@ padding budget, matching the pinned implementation's temporary width change acro
 ClientHello. Fresh Initial CRYPTO is randomly fragmented, mixed with PINGs and distributed
 padding, then shuffled without changing the packet size. Explicit fresh-byte
 tracking keeps retransmissions and ACK-only packets on the ordinary path. The standard client and
-all server behavior remain unchanged.
+all server behavior remain unchanged by the Chrome profile.
+
+## Encryption-level transition hardening
+
+Following the review of Hysteria Go `62d1016707af21b91e5fb6070311d9f016ff2754`
+and quic-go `73339f7edbb9`, reject unconsumed CRYPTO data when TLS advances
+beyond Initial or Handshake. Previously a byte buffered beyond a gap could
+survive the transition and the handshake would succeed. This is a local Quinn
+fix affecting both profiles, not a replacement of its TLS implementation.
+
+`handshake_rejects_buffered_crypto_beyond_a_gap` injects malformed data at both
+levels. `lost_stream_data_competes_with_fresh_stream_data` documents the existing
+fair cross-stream scheduling policy; no scheduler change is included.
+
+Validation: `cargo test --manifest-path vendor/quinn-proto/Cargo.toml --locked --lib`
+passed 294 tests with one ignored, including handshake retransmission cases.
+Ordinary and Chrome runtime interoperability were also exercised; see
+[the upstream review](../../docs/upstream-hardening.md).

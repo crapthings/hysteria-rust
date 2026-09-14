@@ -1607,9 +1607,15 @@ impl Connection {
             Ok(false) => {}
             Ok(true) => {
                 self.stats.path.congestion_events += 1;
-                self.path
-                    .congestion
-                    .on_congestion_event(now, largest_sent_time, false, 0, 0, None, None);
+                self.path.congestion.on_congestion_event(
+                    now,
+                    largest_sent_time,
+                    false,
+                    0,
+                    0,
+                    None,
+                    None,
+                );
             }
         }
     }
@@ -2801,6 +2807,21 @@ impl Connection {
         }
 
         self.write_crypto();
+        // Reject bytes buffered beyond a gap as soon as TLS leaves their level.
+        // Checking only newly arriving old-level frames misses data buffered
+        // before the transition (RFC 9000, section 7.5).
+        for space in [SpaceId::Initial, SpaceId::Handshake] {
+            let finished = match space {
+                SpaceId::Initial => self.highest_space > SpaceId::Initial,
+                SpaceId::Handshake => !self.crypto.is_handshaking(),
+                SpaceId::Data => unreachable!(),
+            };
+            if finished && self.spaces[space].crypto_stream.has_unread_data() {
+                return Err(TransportError::PROTOCOL_VIOLATION(
+                    "unconsumed crypto data at previous encryption level",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -3417,12 +3438,8 @@ impl Connection {
         if chaos_protected {
             let padding_budget = max_size - buf.len() - selected_crypto_size;
             sent.chrome_initial_padding = Some(padding_budget);
-            let result = encode_chrome_initial_payload(
-                selected_crypto,
-                padding_budget,
-                &mut self.rng,
-                buf,
-            );
+            let result =
+                encode_chrome_initial_payload(selected_crypto, padding_budget, &mut self.rng, buf);
             trace!(
                 crypto_frames = result.crypto.len(),
                 pings = result.pings,
@@ -3772,6 +3789,14 @@ impl Connection {
             .congestion
             .window()
             .saturating_sub(self.path.in_flight.bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_test_crypto(&mut self, space: SpaceId, offset: u64, data: Bytes) {
+        self.spaces[space]
+            .pending
+            .crypto
+            .push_front(frame::Crypto { offset, data });
     }
 
     #[cfg(test)]

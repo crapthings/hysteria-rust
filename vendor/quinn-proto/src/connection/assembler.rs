@@ -224,6 +224,11 @@ impl Assembler {
         self.bytes_read
     }
 
+    /// Whether ordered consumption has not reached the highest received offset.
+    pub(super) fn has_unread_data(&self) -> bool {
+        self.end > self.bytes_read
+    }
+
     /// Discard all buffered data
     pub(super) fn clear(&mut self) {
         self.data.clear();

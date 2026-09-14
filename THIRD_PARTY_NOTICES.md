@@ -1,16 +1,21 @@
 # Third-party notices
 
 This repository contains modified source snapshots of several Rust crates. The
-copies are used through `[patch.crates-io]`; their upstream copyright notices
+application overrides are used through `[patch.crates-io]`; their upstream copyright notices
 and license texts remain in their respective directories.
 
 | Component | Version | License | Local provenance |
 | --- | --- | --- | --- |
+| h3 | 0.0.8 | MIT | [`vendor/h3/HYSTERIA_PATCH.md`](vendor/h3/HYSTERIA_PATCH.md) |
+| h3-quinn (test fixture only) | 0.0.10 | MIT | [`vendor/h3/HYSTERIA_PATCH.md`](vendor/h3/HYSTERIA_PATCH.md) |
 | netdev | 0.31.0 | MIT | [`vendor/netdev/HYSTERIA_PATCH.md`](vendor/netdev/HYSTERIA_PATCH.md) |
 | quinn-proto | 0.11.16 | MIT OR Apache-2.0 | [`vendor/quinn-proto/HYSTERIA_PATCH.md`](vendor/quinn-proto/HYSTERIA_PATCH.md) |
 | rustls | 0.23.42 | Apache-2.0 OR ISC OR MIT | [`vendor/rustls/HYSTERIA_PATCH.md`](vendor/rustls/HYSTERIA_PATCH.md) |
 | rustls-acme | 0.15.3 | Apache-2.0 OR MIT | [`vendor/rustls-acme/HYSTERIA_PATCH.md`](vendor/rustls-acme/HYSTERIA_PATCH.md) |
 | wfp | 0.0.7 | MIT OR Apache-2.0 | [`vendor/wfp/HYSTERIA_PATCH.md`](vendor/wfp/HYSTERIA_PATCH.md) |
+
+The vendored h3-quinn snapshot is source-included by the standalone h3 tests;
+it is not an application override. Runtime h3-quinn is resolved from crates.io.
 
 The project can download GeoIP and GeoSite databases at runtime when an ACL uses
 those matchers. These databases are not included in the source tree or release

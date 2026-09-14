@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject duplicate HTTP/3 Host fields, authority userinfo, and scheme/path on
+  ordinary CONNECT; encode ordinary CONNECT without scheme/path.
+- Reject buffered, unconsumed QUIC CRYPTO data when TLS advances beyond its
+  encryption level, including data left beyond a gap.
+- Bound test fixture socket operations, thread waits and CLI subprocesses;
+  add a Realm smoke deadline and timeout regressions.
+
 ### Changed
 
 - Use friendly OS/architecture names for future prebuilt downloads, such as
@@ -13,6 +22,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   retain their names. Update download scripts when moving to a later release.
 - Document the seven-target prebuilt policy and Linux glibc requirement;
   additional targets are no longer routinely distributed or guaranteed tested.
+- Advance the Go runtime interoperability baseline to `62d10167` with Go 1.26.5,
+  and run vendored HTTP/3 and QUIC suites in CI and release verification.
+  The historical Chrome wire-reference pin and opt-in defaults are unchanged.
 
 ## [0.1.0-rc.2] - 2026-09-14
 

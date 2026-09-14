@@ -802,11 +802,13 @@ async fn alps_header_limit_applies_before_client_control_settings() {
         let (mut driver, mut sender) = client::builder()
             .send_settings(false)
             .build::<_, _, Bytes>(pair.client().await)
-            .await.unwrap();
+            .await
+            .unwrap();
         let request = async {
-            let mut stream = sender.send_request(
-                Request::get("https://localhost/").body(()).unwrap()
-            ).await.unwrap();
+            let mut stream = sender
+                .send_request(Request::get("https://localhost/").body(()).unwrap())
+                .await
+                .unwrap();
             let _ = stream.recv_response().await;
         };
         tokio::select! {
@@ -816,16 +818,28 @@ async fn alps_header_limit_applies_before_client_control_settings() {
     };
     let server_fut = async {
         let mut builder = server::builder();
-        assert!(builder.authenticated_alps_max_field_section_size(u64::MAX).is_err());
-        builder.authenticated_alps_max_field_section_size(12).unwrap();
+        assert!(builder
+            .authenticated_alps_max_field_section_size(u64::MAX)
+            .is_err());
+        builder
+            .authenticated_alps_max_field_section_size(12)
+            .unwrap();
         let mut connection = builder.build(server.next().await).await.unwrap();
         let (_, mut stream) = get_stream_blocking(&mut connection).await.unwrap();
-        assert_matches!(stream.send_response(Response::new(())).await,
-            Err(StreamError::HeaderTooBig { actual_size: 42, max_size: 12, .. }));
+        assert_matches!(
+            stream.send_response(Response::new(())).await,
+            Err(StreamError::HeaderTooBig {
+                actual_size: 42,
+                max_size: 12,
+                ..
+            })
+        );
     };
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(server_fut, client_fut);
-    }).await.expect("ALPS server header-limit test timed out");
+    })
+    .await
+    .expect("ALPS server header-limit test timed out");
 }
 
 #[tokio::test]
@@ -1438,6 +1452,80 @@ async fn request_invalid_data_frame_length_too_short() {
 }
 
 // Helpers
+
+#[tokio::test]
+async fn malformed_authorities_are_stream_errors() {
+    for extra in [
+        vec![
+            (b"host".as_slice(), b"localhost".as_slice()),
+            (b"host".as_slice(), b"other".as_slice()),
+        ],
+        vec![(b":authority".as_slice(), b"user@localhost".as_slice())],
+        vec![(b":method".as_slice(), b"CONNECT".as_slice())],
+    ] {
+        let mut pair = Pair::default();
+        let mut server = pair.server();
+        let client_fut = async {
+            let conn = pair.client_inner().await;
+            let mut fields: Vec<qpack::HeaderField> = vec![
+                (b":method", b"GET").into(),
+                (b":scheme", b"https").into(),
+                (b":path", b"/").into(),
+                (b":authority", b"localhost").into(),
+            ];
+            // Replace pseudo-fields rather than relying on duplicate pseudo-field handling.
+            for (name, value) in extra {
+                if name == b":method" {
+                    fields[0] = (name, value).into();
+                } else if name == b":authority" {
+                    fields[3] = (name, value).into();
+                } else {
+                    fields.push((name, value).into());
+                }
+            }
+            let mut block = BytesMut::new();
+            qpack::encode_stateless(&mut block, fields).unwrap();
+            let mut wire = BytesMut::new();
+            Frame::headers(block).encode_with_payload(&mut wire);
+            let (mut send, mut recv) = conn.open_bi().await.unwrap();
+            send.write_all(&wire).await.unwrap();
+            send.finish().unwrap();
+            assert_matches!(recv.read_to_end(1024).await, Err(quinn::ReadToEndError::Read(quinn::ReadError::Reset(code))) if code.into_inner() == Code::H3_MESSAGE_ERROR.value());
+            let (mut send, mut recv) = conn.open_bi().await.unwrap();
+            let mut wire = BytesMut::new();
+            request_encode(
+                &mut wire,
+                Request::get("https://localhost/ok").body(()).unwrap(),
+            );
+            send.write_all(&wire).await.unwrap();
+            send.finish().unwrap();
+            assert!(!recv.read_to_end(1024).await.unwrap().is_empty());
+        };
+        let server_fut = async {
+            let mut incoming = server::Connection::new(server.next().await).await.unwrap();
+            let resolver = incoming.accept().await.unwrap().unwrap();
+            assert_matches!(
+                resolver.resolve_request().await.err(),
+                Some(StreamError::StreamError {
+                    code: Code::H3_MESSAGE_ERROR,
+                    ..
+                })
+            );
+            let resolver = incoming.accept().await.unwrap().unwrap();
+            let (request, mut stream) = resolver.resolve_request().await.unwrap();
+            assert_eq!(request.uri().path(), "/ok");
+            stream.send_response(Response::new(())).await.unwrap();
+            stream.finish().await.unwrap();
+            // Keep the connection alive until the client receives the response.
+            let _ = incoming.accept().await;
+        };
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(client_fut, server_fut);
+        })
+        .await
+        .unwrap();
+    }
+}
 
 fn request_encode<B: BufMut>(buf: &mut B, req: http::Request<()>) {
     let (parts, _) = req.into_parts();

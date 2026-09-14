@@ -1,10 +1,13 @@
 #[path = "support/ech.rs"]
 mod ech;
+#[path = "support/thread.rs"]
+mod fixture_thread;
 use ech::generate_ech_key;
+use fixture_thread::join_until;
 use rcgen::generate_simple_self_signed;
 use std::{
     env, fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
     path::Path,
     process::{Child, Command, Stdio},
@@ -13,6 +16,64 @@ use std::{
 };
 
 struct Children(Vec<Child>);
+
+const IO_TIMEOUT: Duration = Duration::from_secs(12);
+
+fn accept_until(listener: &TcpListener, timeout: Duration) -> io::Result<TcpStream> {
+    listener.set_nonblocking(true)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false)?;
+                configure_stream(&stream)?;
+                return Ok(stream);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "echo accept timed out",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn configure_stream(stream: &TcpStream) -> io::Result<()> {
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IO_TIMEOUT))
+}
+
+#[test]
+fn echo_accept_times_out_without_a_peer() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let started = Instant::now();
+    let error = accept_until(&listener, Duration::from_millis(40)).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn accepted_echo_stream_has_io_deadlines() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let _peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let mut stream = accept_until(&listener, Duration::from_secs(1)).unwrap();
+    assert_eq!(stream.read_timeout().unwrap(), Some(IO_TIMEOUT));
+    assert_eq!(stream.write_timeout().unwrap(), Some(IO_TIMEOUT));
+    stream
+        .set_read_timeout(Some(Duration::from_millis(40)))
+        .unwrap();
+    let mut byte = [0];
+    let error = stream.read_exact(&mut byte).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    ));
+}
 
 #[derive(Clone, Copy)]
 struct Direction<'a> {
@@ -91,7 +152,7 @@ fn run_direction(direction: Direction<'_>) {
     let tcp_echo_address = echo.local_addr().unwrap();
     let expected = payload.to_vec();
     let echo_thread = thread::spawn(move || {
-        let (mut stream, _) = echo.accept().unwrap();
+        let mut stream = accept_until(&echo, IO_TIMEOUT).unwrap();
         let mut buffer = vec![0; expected.len()];
         stream.read_exact(&mut buffer).unwrap();
         assert_eq!(buffer, expected);
@@ -101,6 +162,7 @@ fn run_direction(direction: Direction<'_>) {
     udp_echo
         .set_read_timeout(Some(Duration::from_secs(12)))
         .unwrap();
+    udp_echo.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
     let udp_echo_address = udp_echo.local_addr().unwrap();
     let udp_payload = [payload, b"-udp"].concat();
     let expected_udp = udp_payload.clone();
@@ -131,7 +193,7 @@ fn run_direction(direction: Direction<'_>) {
     fs::write(
         &client_config,
         format!(
-            "server: {server_address}\nauth: interop-secret\ntls:\n  sni: localhost\n  insecure: true\n  ech: {ech_config}\nobfs:\n  type: salamander\n  salamander:\n    password: interop-obfs\ntcpForwarding:\n  - listen: {tcp_forwarding_address}\n    remote: {tcp_echo_address}\nudpForwarding:\n  - listen: {udp_forwarding_address}\n    remote: {udp_echo_address}\n    timeout: 10s\n"
+            "quic:\n  disableChromeParrot: true\nserver: {server_address}\nauth: interop-secret\ntls:\n  sni: localhost\n  insecure: true\n  ech: {ech_config}\nobfs:\n  type: salamander\n  salamander:\n    password: interop-obfs\ntcpForwarding:\n  - listen: {tcp_forwarding_address}\n    remote: {tcp_echo_address}\nudpForwarding:\n  - listen: {udp_forwarding_address}\n    remote: {udp_echo_address}\n    timeout: 10s\n"
         ),
     )
     .unwrap();
@@ -144,6 +206,7 @@ fn run_direction(direction: Direction<'_>) {
         .push(spawn(client_binary, "client", &client_config));
 
     let mut tunnel = connect_until(tcp_forwarding_address, Duration::from_secs(12));
+    configure_stream(&tunnel).unwrap();
     tunnel.write_all(payload).unwrap();
     let mut reply = vec![0; payload.len()];
     tunnel.read_exact(&mut reply).unwrap();
@@ -154,12 +217,13 @@ fn run_direction(direction: Direction<'_>) {
         Duration::from_secs(12),
     );
     drop(tunnel);
-    echo_thread.join().unwrap();
-    udp_echo_thread.join().unwrap();
+    join_until(echo_thread);
+    join_until(udp_echo_thread);
 }
 
 fn udp_round_trip(address: SocketAddr, payload: &[u8], timeout: Duration) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_millis(250)))
         .unwrap();

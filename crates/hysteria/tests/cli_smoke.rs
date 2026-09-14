@@ -1,10 +1,13 @@
 use rcgen::generate_simple_self_signed;
+#[path = "support/thread.rs"]
+mod fixture_thread;
+use fixture_thread::join_until;
 use std::{
     fs,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Command, Output, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -24,6 +27,9 @@ impl UdpRelay {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket
             .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         let address = socket.local_addr().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
@@ -57,12 +63,102 @@ impl Drop for UdpRelay {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(task) = self.task.take() {
-            task.join().unwrap();
+            join_until(task);
         }
     }
 }
 
 struct Children(Vec<Child>);
+
+trait BoundedOutput {
+    fn bounded_output(&mut self) -> std::io::Result<Output> {
+        self.output_with_deadline(Duration::from_secs(30))
+    }
+    fn output_with_deadline(&mut self, timeout: Duration) -> std::io::Result<Output>;
+}
+
+impl BoundedOutput for Command {
+    fn output_with_deadline(&mut self, timeout: Duration) -> std::io::Result<Output> {
+        // Files avoid pipe backpressure while the parent polls the deadline.
+        let mut stdout = tempfile::tempfile()?;
+        let mut stderr = tempfile::tempfile()?;
+        let child = self
+            .stdin(Stdio::null())
+            .stdout(stdout.try_clone()?)
+            .stderr(stderr.try_clone()?)
+            .spawn()?;
+        let mut children = Children(vec![child]);
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            if let Some(status) = children.0[0].try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "CLI subprocess exceeded its deadline",
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        std::io::Seek::rewind(&mut stdout)?;
+        std::io::Seek::rewind(&mut stderr)?;
+        let mut output = Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        stdout.read_to_end(&mut output.stdout)?;
+        stderr.read_to_end(&mut output.stderr)?;
+        Ok(output)
+    }
+}
+
+#[test]
+fn bounded_subprocess_stops_an_unresponsive_child() {
+    const CHILD_ENV: &str = "HYSTERIA_SMOKE_UNRESPONSIVE_CHILD";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        thread::sleep(Duration::from_secs(60));
+        return;
+    }
+    let started = Instant::now();
+    let error = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "bounded_subprocess_stops_an_unresponsive_child"])
+        .env(CHILD_ENV, "1")
+        .output_with_deadline(Duration::from_millis(100))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+// Keep fixture failures bounded even when the proxy never reaches the origin.
+fn accept_until(listener: &TcpListener) -> TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                configure_stream(&stream);
+                return stream;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "fixture accept timed out");
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("fixture accept failed: {error}"),
+        }
+    }
+}
+
+fn configure_stream(stream: &TcpStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+}
 
 impl Drop for Children {
     fn drop(&mut self) {
@@ -89,7 +185,7 @@ fn lazy_client_connects_on_demand_and_reconnects() {
     let echo_address = echo.local_addr().unwrap();
     let echo_thread = thread::spawn(move || {
         for _ in 0..2 {
-            let (mut stream, _) = echo.accept().unwrap();
+            let mut stream = accept_until(&echo);
             let mut buffer = [0; 32];
             let size = stream.read(&mut buffer).unwrap();
             stream.write_all(&buffer[..size]).unwrap();
@@ -134,7 +230,7 @@ fn lazy_client_connects_on_demand_and_reconnects() {
     thread::sleep(Duration::from_secs(5));
     children.0[1] = spawn(binary, "server", &server_config);
     forward_round_trip(forwarding_address, b"second", Duration::from_secs(8));
-    echo_thread.join().unwrap();
+    join_until(echo_thread);
 }
 
 #[test]
@@ -155,17 +251,11 @@ fn server_and_client_commands_run_all_proxy_modes() {
     let http_address = free_tcp_address();
     let (echo_address, echo_thread) = start_tcp_echo(4);
     let (sniff_echo_address, sniff_echo_thread) = start_sniff_origin();
-    let udp_echo = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let udp_echo_address = udp_echo.local_addr().unwrap();
-    let udp_echo_thread = thread::spawn(move || {
-        let mut buffer = [0; 128];
-        let (size, source) = udp_echo.recv_from(&mut buffer).unwrap();
-        udp_echo.send_to(&buffer[..size], source).unwrap();
-    });
+    let (udp_echo_address, udp_echo_thread) = start_udp_echo();
     let http_origin = TcpListener::bind("127.0.0.1:0").unwrap();
     let http_origin_address = http_origin.local_addr().unwrap();
     let http_origin_thread = thread::spawn(move || {
-        let (mut stream, _) = http_origin.accept().unwrap();
+        let mut stream = accept_until(&http_origin);
         let request = read_until_headers(&mut stream);
         assert!(request.starts_with(b"GET /through-proxy HTTP/1.1\r\n"));
         assert!(
@@ -241,11 +331,28 @@ fn server_and_client_commands_run_all_proxy_modes() {
 
     socks_udp_round_trip(socks_address, udp_echo_address);
     assert_traffic_stats(traffic_stats_address);
-    echo_thread.join().unwrap();
-    sniff_echo_thread.join().unwrap();
-    udp_echo_thread.join().unwrap();
-    http_origin_thread.join().unwrap();
-    auth_callback_thread.join().unwrap();
+    join_until(echo_thread);
+    join_until(sniff_echo_thread);
+    join_until(udp_echo_thread);
+    join_until(http_origin_thread);
+    join_until(auth_callback_thread);
+}
+
+fn start_udp_echo() -> (SocketAddr, thread::JoinHandle<()>) {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let address = socket.local_addr().unwrap();
+    let task = thread::spawn(move || {
+        let mut buffer = [0; 128];
+        let (size, source) = socket.recv_from(&mut buffer).unwrap();
+        socket.send_to(&buffer[..size], source).unwrap();
+    });
+    (address, task)
 }
 
 fn start_tcp_echo(count: usize) -> (SocketAddr, thread::JoinHandle<()>) {
@@ -253,7 +360,7 @@ fn start_tcp_echo(count: usize) -> (SocketAddr, thread::JoinHandle<()>) {
     let address = listener.local_addr().unwrap();
     let task = thread::spawn(move || {
         for _ in 0..count {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = accept_until(&listener);
             let mut buffer = [0; 64];
             let size = stream.read(&mut buffer).unwrap();
             stream.write_all(&buffer[..size]).unwrap();
@@ -266,7 +373,7 @@ fn start_sniff_origin() -> (SocketAddr, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let task = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        let mut stream = accept_until(&listener);
         let request = read_until_headers(&mut stream);
         assert!(request.starts_with(b"GET /sniffed HTTP/1.1\r\n"));
         assert!(
@@ -314,7 +421,7 @@ fn assert_ping(
         .arg(target.to_string())
         .arg("--config")
         .arg(&config)
-        .output()
+        .bounded_output()
         .unwrap();
     assert!(
         output.status.success(),
@@ -332,7 +439,7 @@ fn assert_speedtest(binary: &str, config: &Path) {
         .arg("4096")
         .arg("--config")
         .arg(config)
-        .output()
+        .bounded_output()
         .unwrap();
     assert!(
         output.status.success(),
@@ -351,7 +458,7 @@ fn assert_speedtest(binary: &str, config: &Path) {
         .arg("--skip-upload")
         .arg("--config")
         .arg(config)
-        .output()
+        .bounded_output()
         .unwrap();
     assert!(
         timed.status.success(),
@@ -367,7 +474,7 @@ fn assert_share(binary: &str, config: &Path) {
         .arg("--qr")
         .arg("--config")
         .arg(config)
-        .output()
+        .bounded_output()
         .unwrap();
     assert!(
         output.status.success(),
@@ -433,6 +540,9 @@ fn socks_udp_round_trip(proxy: SocketAddr, target: SocketAddr) {
     packet.extend_from_slice(&target.port().to_be_bytes());
     packet.extend_from_slice(b"socks udp");
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -517,7 +627,7 @@ fn start_auth_callback() -> (SocketAddr, thread::JoinHandle<()>) {
     let address = listener.local_addr().unwrap();
     let task = thread::spawn(move || {
         for _ in 0..4 {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = accept_until(&listener);
             let request = read_http_request(&mut stream);
             assert_eq!(request["auth"], "test-secret");
             assert_eq!(request["tx"], 0);
@@ -630,7 +740,10 @@ fn connect_until(address: SocketAddr, timeout: Duration) -> TcpStream {
     let deadline = Instant::now() + timeout;
     loop {
         match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
-            Ok(stream) => return stream,
+            Ok(stream) => {
+                configure_stream(&stream);
+                return stream;
+            }
             Err(error) if Instant::now() < deadline => {
                 let _ = error;
                 thread::sleep(Duration::from_millis(50));

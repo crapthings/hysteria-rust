@@ -15,7 +15,7 @@ exercise an actual timed port change or Realm discovery. ALPS is not enabled
 by this switch; complete application interoperability remains a separate gate.
 
 An explicit ignored runtime test now launches a Go server built from CI's pinned
-`f2ad1de5da52a1da9622285a1d61553ddaa41f21` revision. Local validation passed
+`62d1016707af21b91e5fb6070311d9f016ff2754` revision (Go 1.26.5). Local validation passed
 Chrome-client authentication with a trusted CA, TCP echo, 32-byte UDP echo,
 3000-byte fragmented UDP echo, oversized-message rejection, and the same
 exchanges after reconnect, over direct and Salamander sockets. The CI interop
@@ -31,7 +31,8 @@ HYSTERIA_GO_BIN=/path/to/pinned/hysteria-go cargo test --locked -p hysteria-cli 
 ```
 
 Reference: apernet/quic-go commit `184d081eef3e9edd5cb7c0ddf2460c91f2e6adb1`,
-as pinned by the Go Hysteria checkout. This includes the follow-up packet-number,
+retained as the wire-reference fixture, independently of the newer runtime
+interop baseline above. This includes the follow-up packet-number,
 Initial ACK and coalescing corrections, not just the first Chrome parrot commit.
 
 ## Implemented foundation
@@ -225,7 +226,7 @@ ordinary non-ALPS settings. Its standalone unit suite is now part of CI's
 quality job, in addition to the root loopback tests. Local validation passed
 the standalone suite and the pinned Go/Rust TCP/UDP, Salamander and ECH
 interoperability test in both directions (Go commit
-`f2ad1de5da52a1da9622285a1d61553ddaa41f21`, matching CI). This verifies ordinary
+`62d1016707af21b91e5fb6070311d9f016ff2754`, matching CI). This verifies ordinary
 connections, not negotiated Chrome/ALPS interoperability, which remains disabled.
 
 1. Complete TLS/application integration: define and apply HTTP/3 ALPS settings,

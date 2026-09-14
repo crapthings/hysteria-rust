@@ -63,6 +63,9 @@ jobs:
       - name: Test vendored HTTP/3
         run: cargo test --manifest-path vendor/h3/Cargo.toml --locked --lib --features i-implement-a-third-party-backend-and-opt-into-breaking-changes
 
+      - name: Test vendored QUIC
+        run: cargo test --manifest-path vendor/quinn-proto/Cargo.toml --locked --lib
+
   test-and-package:
     if: github.event_name == 'workflow_dispatch'
     name: Test and package (${{ matrix.label }})
@@ -169,7 +172,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: apernet/hysteria
-          ref: f2ad1de5da52a1da9622285a1d61553ddaa41f21
+          ref: 62d1016707af21b91e5fb6070311d9f016ff2754
           path: upstream-go
 
       - name: Setup Rust
@@ -178,7 +181,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: 1.25.1
+          go-version: 1.26.5
           cache-dependency-path: upstream-go/app/go.sum
 
       - name: Cache Rust dependencies

@@ -59,6 +59,42 @@ impl Header {
     pub fn into_request_parts(
         self,
     ) -> Result<(Method, Uri, Option<Protocol>, HeaderMap), HeaderError> {
+        if self.fields.get_all(header::HOST).iter().count() > 1 {
+            return Err(HeaderError::InvalidHeaderValue(
+                "duplicate Host fields".into(),
+            ));
+        }
+        let regular_connect =
+            self.pseudo.method == Some(Method::CONNECT) && self.pseudo.protocol.is_none();
+        if regular_connect {
+            if self.pseudo.scheme.is_some() || self.pseudo.path.is_some() {
+                return Err(HeaderError::InvalidHeaderValue(
+                    "ordinary CONNECT must omit :scheme and :path".into(),
+                ));
+            }
+            if self.pseudo.authority.is_none() {
+                return Err(HeaderError::MissingAuthority);
+            }
+        }
+        let http_authority = regular_connect
+            || self.pseudo.scheme.as_ref().map_or(false, |scheme| {
+                scheme == &Scheme::HTTP || scheme == &Scheme::HTTPS
+            });
+        if http_authority
+            && (self
+                .pseudo
+                .authority
+                .as_ref()
+                .map_or(false, |a| a.as_str().contains('@'))
+                || self
+                    .fields
+                    .get(header::HOST)
+                    .map_or(false, |h| h.as_bytes().contains(&b'@')))
+        {
+            return Err(HeaderError::InvalidHeaderValue(
+                "userinfo is forbidden in authority".into(),
+            ));
+        }
         let mut uri = Uri::builder();
 
         if let Some(path) = self.pseudo.path {
@@ -383,7 +419,18 @@ impl Pseudo {
             None
         };
 
-        let len = 3 + authority.is_some() as usize + protocol.is_some() as usize;
+        let regular_connect = method == Method::CONNECT && protocol.is_none();
+        let scheme = if regular_connect {
+            None
+        } else {
+            scheme.or(Some(Scheme::HTTPS))
+        };
+        let path = if regular_connect { None } else { Some(path) };
+        let len = 1
+            + scheme.is_some() as usize
+            + path.is_some() as usize
+            + authority.is_some() as usize
+            + protocol.is_some() as usize;
 
         //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3
         //= type=implication
@@ -398,9 +445,9 @@ impl Pseudo {
         //# CONNECT request; see Section 4.4.
         Self {
             method: Some(method),
-            scheme: scheme.or(Some(Scheme::HTTPS)),
+            scheme,
             authority,
-            path: Some(path),
+            path,
             status: None,
             protocol,
             len,
@@ -483,6 +530,82 @@ impl fmt::Display for HeaderError {
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
+
+    #[test]
+    fn rejects_ambiguous_request_authorities() {
+        for authority in ["example.com", "user@example.com"] {
+            for hosts in [
+                vec![],
+                vec!["example.com"],
+                vec!["example.com", "example.com"],
+                vec!["example.com", "other.example"],
+            ] {
+                let mut fields = vec![
+                    (b":method", b"GET").into(),
+                    (b":scheme", b"https").into(),
+                    (b":path", b"/").into(),
+                    (b":authority", authority.as_bytes()).into(),
+                ];
+                fields.extend(hosts.iter().map(|host| (b"host", host.as_bytes()).into()));
+                let result = Header::try_from(fields).unwrap().into_request_parts();
+                assert_eq!(
+                    result.is_ok(),
+                    authority == "example.com" && hosts.len() < 2
+                );
+            }
+        }
+        let fields = vec![
+            (b":method", b"GET").into(),
+            (b":scheme", b"http").into(),
+            (b":path", b"/").into(),
+            (b"host", b"user@example.com").into(),
+        ];
+        assert!(Header::try_from(fields)
+            .unwrap()
+            .into_request_parts()
+            .is_err());
+    }
+
+    #[test]
+    fn ordinary_connect_omits_scheme_and_path() {
+        let header = Header::request(
+            Method::CONNECT,
+            "example.com:443".parse().unwrap(),
+            HeaderMap::new(),
+            Extensions::new(),
+        )
+        .unwrap();
+        assert_eq!(header.len(), 2);
+        assert!(header.pseudo.scheme.is_none());
+        assert!(header.pseudo.path.is_none());
+        assert!(header.into_request_parts().is_ok());
+        for extra in [
+            vec![(b":scheme".as_slice(), b"https".as_slice())],
+            vec![(b":path".as_slice(), b"/".as_slice())],
+        ] {
+            let mut fields = vec![
+                (b":method", b"CONNECT").into(),
+                (b":authority", b"example.com:443").into(),
+            ];
+            fields.extend(extra.into_iter().map(Into::into));
+            assert!(Header::try_from(fields)
+                .unwrap()
+                .into_request_parts()
+                .is_err());
+        }
+        let mut ext = Extensions::new();
+        ext.insert(Protocol::WEB_TRANSPORT);
+        let header = Header::request(
+            Method::CONNECT,
+            "https://example.com/".parse().unwrap(),
+            HeaderMap::new(),
+            ext,
+        )
+        .unwrap();
+        assert!(header.pseudo.scheme.is_some());
+        assert!(header.pseudo.path.is_some());
+        assert!(header.into_request_parts().is_ok());
+    }
 
     #[test]
     fn request_has_no_authority_nor_host() {

@@ -144,10 +144,12 @@ fn chrome_client_sends_client_hello_head_and_tail_before_middle() {
     assert!((55..=86).contains(&first_packet_ranges[0].end));
     assert!(first_packet_ranges[1].start > first_packet_ranges[0].end);
 
-    assert!(packets[1]
-        .1
-        .iter()
-        .any(|&(offset, _)| offset == first_packet_ranges[0].end));
+    assert!(
+        packets[1]
+            .1
+            .iter()
+            .any(|&(offset, _)| offset == first_packet_ranges[0].end)
+    );
 }
 
 #[derive(Debug)]
@@ -354,8 +356,8 @@ fn chrome_go_initial_wire_parity() {
     socket
         .set_read_timeout(Some(Duration::from_secs(60)))
         .unwrap();
-    let probe = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tools/chrome-wire-reference");
+    let probe =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/chrome-wire-reference");
     let mut child = Command::new("go")
         .args(["run", ".", &socket.local_addr().unwrap().to_string()])
         .current_dir(probe)
@@ -1451,6 +1453,28 @@ fn key_update_reordered() {
 
     assert_eq!(pair.client_conn_mut(client_ch).stats().path.lost_packets, 0);
     assert_eq!(pair.server_conn_mut(server_ch).stats().path.lost_packets, 0);
+}
+
+#[test]
+fn handshake_rejects_buffered_crypto_beyond_a_gap() {
+    for space in [packet::SpaceId::Initial, packet::SpaceId::Handshake] {
+        let mut pair = Pair::default();
+        let client = pair.begin_connect(client_config());
+        // Queue an out-of-order byte beyond the valid messages at this level.
+        // TLS then advances levels, leaving this byte unconsumed.
+        pair.client_conn_mut(client)
+            .queue_test_crypto(space, 16_000, Bytes::from_static(b"x"));
+        pair.drive();
+        let events = std::iter::from_fn(|| pair.client_conn_mut(client).poll()).collect::<Vec<_>>();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::ConnectionLost { reason: ConnectionError::ConnectionClosed(close) }
+                    if close.error_code == TransportErrorCode::PROTOCOL_VIOLATION
+            )),
+            "expected rejection of leftover {space:?} CRYPTO, got {events:?}"
+        );
+    }
 }
 
 #[test]

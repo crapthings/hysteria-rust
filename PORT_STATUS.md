@@ -1,6 +1,6 @@
 # Port status
 
-Compatibility target: the upstream Go Hysteria 2 implementation at commit `f2ad1de5da52a1da9622285a1d61553ddaa41f21`.
+Compatibility target: the upstream Go Hysteria 2 implementation at commit `62d1016707af21b91e5fb6070311d9f016ff2754`, built with Go 1.26.5. This describes the current source tree, not an update to existing release artifacts. See [the upstream hardening review](docs/upstream-hardening.md) for validation scope.
 
 This repository is a standalone Rust workspace. The upstream Go binary is used only as an executable interoperability reference: GitHub CI builds the pinned commit and supplies it through `HYSTERIA_GO_BIN`; normal Rust builds and runtime deployments do not require Go or the upstream repository.
 

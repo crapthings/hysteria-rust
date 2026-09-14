@@ -1,3 +1,7 @@
+# Legacy/community self-build configurations, outside the seven official
+# prebuilt targets. Retained for experimentation, without routine CI coverage
+# or a guarantee that these toolchains still build. See README.md and PORT_STATUS.md.
+
 [target.mipsel-unknown-linux-gnu]
 # Rust no longer ships a precompiled standard library for this Tier 3 target.
 # Cross builds it from rust-src so the Go release matrix's MIPS little-endian

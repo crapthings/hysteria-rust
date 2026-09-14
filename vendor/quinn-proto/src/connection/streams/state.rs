@@ -1340,6 +1340,53 @@ mod tests {
     }
 
     #[test]
+    fn lost_stream_data_competes_with_fresh_stream_data() {
+        let mut server = make(Side::Server);
+        server.set_params(&TransportParameters {
+            initial_max_streams_bidi: 2u32.into(),
+            initial_max_data: 100u32.into(),
+            initial_max_stream_data_bidi_remote: 100u32.into(),
+            ..TransportParameters::default()
+        });
+        let (mut pending, state) = (Retransmits::default(), ConnState::Established);
+        let mut streams = Streams {
+            state: &mut server,
+            conn_state: &state,
+        };
+        let lost = streams.open(Dir::Bi).unwrap();
+        let fresh = streams.open(Dir::Bi).unwrap();
+        SendStream {
+            id: lost,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        }
+        .write(b"lost")
+        .unwrap();
+        let mut buf = Vec::new();
+        let mut sent = server.write_stream_frames(&mut buf, 100, true);
+        assert_eq!(sent.len(), 1);
+        SendStream {
+            id: fresh,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        }
+        .write(b"fresh")
+        .unwrap();
+        server.retransmit(sent.remove(0));
+        buf.clear();
+        let retransmission = server.write_stream_frames(&mut buf, 100, true);
+        // Current Quinn policy is fair scheduling across equal-priority streams,
+        // not global retransmission priority. Both streams must still progress.
+        assert_eq!(retransmission.len(), 2);
+        assert_eq!(retransmission[0].id, fresh);
+        assert_eq!(retransmission[1].id, lost);
+        assert_eq!(retransmission[1].offsets, 0..4);
+        assert!(!server.can_send_stream_data());
+    }
+
+    #[test]
     fn stream_priority() {
         let mut server = make(Side::Server);
         server.set_params(&TransportParameters {
