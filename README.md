@@ -16,7 +16,7 @@ interoperable with the upstream Go implementation at commit
 
 > [!WARNING]
 > This is an independent port, not an official Hysteria release. Releases are
-> currently release candidates. See the [rc2 release notes](docs/releases/v0.1.0-rc.2.md)
+> currently release candidates. See the [rc3 release notes](docs/releases/v0.1.0-rc.3.md)
 > for validated behavior and remaining limitations before deployment.
 
 [Install](#install) · [Quick start](#quick-start) ·
@@ -70,14 +70,14 @@ testing. Existing rc2 download names remain unchanged.
 
 ### Verify and run
 
-For **Linux x64 rc2**, in the directory containing both downloaded files:
+For **Linux x64 rc3**, in the directory containing both downloaded files:
 
 ```shell
-sha256sum --check hysteria-rust-x86_64-unknown-linux-gnu.sha256
-chmod +x hysteria-rust-x86_64-unknown-linux-gnu
-./hysteria-rust-x86_64-unknown-linux-gnu version
+sha256sum --check hysteria-rust-linux-x64.sha256
+chmod +x hysteria-rust-linux-x64
+./hysteria-rust-linux-x64 version
 # Optional system-wide installation:
-sudo install -m 755 hysteria-rust-x86_64-unknown-linux-gnu /usr/local/bin/hysteria
+sudo install -m 755 hysteria-rust-linux-x64 /usr/local/bin/hysteria
 ```
 
 Only proceed if verification succeeds. For other Linux targets, substitute the
