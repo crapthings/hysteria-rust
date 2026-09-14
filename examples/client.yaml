@@ -5,6 +5,11 @@ auth: CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD
 tls:
   sni: example.com
 
+# Experimental Chrome-shaped TLS/QUIC client profile (ALPS remains disabled).
+# Omit this section or use true to retain the existing Rust behavior.
+# quic:
+#   disableChromeParrot: false
+
 socks5:
   listen: 127.0.0.1:1080
 

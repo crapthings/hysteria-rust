@@ -1,6 +1,34 @@
 # Chrome QUIC port status
 
-Status: **in progress; not enabled by the user-facing runtime or YAML configuration**.
+Status: **experimental TLS/QUIC opt-in available; full Chrome/ALPS integration in progress**.
+
+The client runtime accepts `quic.disableChromeParrot: false` as an experimental opt-in.
+It selects the paired TLS, transport and endpoint configurations and preserves
+the transport profile when applying user overrides. Direct, obfuscated and
+port-hopping endpoint construction share this selection, including reconnects
+through `ClientHandle`. Omission or `true` retains ordinary Rust behavior. This
+conservative default differs from Go; the option is client-only.
+Runtime loopback regressions exercise authenticated initial connections and
+reconnections with ordinary and Chrome profiles over direct, Salamander and
+Gecko sockets, both with and without the port-hopping constructor. These do not
+exercise an actual timed port change or Realm discovery. ALPS is not enabled
+by this switch; complete application interoperability remains a separate gate.
+
+An explicit ignored runtime test now launches a Go server built from CI's pinned
+`f2ad1de5da52a1da9622285a1d61553ddaa41f21` revision. Local validation passed
+Chrome-client authentication with a trusted CA, TCP echo, 32-byte UDP echo,
+3000-byte fragmented UDP echo, oversized-message rejection, and the same
+exchanges after reconnect, over direct and Salamander sockets. The CI interop
+job runs this test using its existing Go build. Missing `HYSTERIA_GO_BIN` is an
+error when explicitly running it. This covers the runtime TLS/transport profile,
+not negotiated ALPS, Gecko interoperability or wire equivalence. Additional
+direct and Salamander cases enable real ECH, certificate pinning and client
+authentication together, including TCP/UDP and reconnects. Wrong pins, missing
+client identities and wrong CAs are rejected. These tests use the YAML opt-in.
+
+```sh
+HYSTERIA_GO_BIN=/path/to/pinned/hysteria-go cargo test --locked -p hysteria-cli --lib chrome_runtime_go_tcp_udp_interop -- --ignored --nocapture
+```
 
 Reference: apernet/quic-go commit `184d081eef3e9edd5cb7c0ddf2460c91f2e6adb1`,
 as pinned by the Go Hysteria checkout. This includes the follow-up packet-number,
@@ -34,7 +62,7 @@ selects the tested rustls Chrome ClientHello baseline. Direct, Salamander,
 Gecko, and port-hopping loopback tests complete real QUIC/Hysteria traffic with
 the profile. Custom socket constructors accept the paired endpoint config so
 the zero-CID behavior is not lost outside the direct path. The user-facing YAML
-and runtime still do not select this profile.
+and runtime select this profile only with the explicit experimental opt-in.
 
 Initial packet shaping is implemented behind the same opt-in profile. Client
 Initial packet numbers start at one and use Chrome's congestion-window-aware
@@ -60,7 +88,7 @@ and disabled resumption/early data. It clones the existing crypto provider rathe
 than installing a process-global provider, retains certificate verification and
 client authentication, and rejects missing required algorithms. Ordinary config
 builders still produce the original behavior. The opt-in Hysteria transport helper
-uses this method, but the user-facing runtime does not select that helper yet.
+uses this method, selected by the runtime's experimental opt-in.
 
 `crates/hysteria-transport/tests/chrome_tls.rs` inspects actual serialized hellos
 and checks default isolation, missing hybrid support, untrusted certificate
@@ -180,7 +208,7 @@ Sources: [pinned ClientHello](https://github.com/apernet/quic-go/blob/184d081eef
 References: [TLS ALPS draft](https://github.com/vasilvv/tls-alps/blob/main/draft-vvv-tls-alps.md),
 [upstream uTLS v1.8.2 GREASE](https://github.com/refraction-networking/utls/blob/v1.8.2/u_ech.go).
 
-## Remaining integration (required before enabling)
+## Remaining integration (required before full-profile/default enablement)
 
 Vendored h3 0.0.8 now has client and server authenticated ALPS header-size hooks.
 It enforces MAX_FIELD_SECTION_SIZE before the first request, independently of
@@ -198,10 +226,10 @@ quality job, in addition to the root loopback tests. Local validation passed
 the standalone suite and the pinned Go/Rust TCP/UDP, Salamander and ECH
 interoperability test in both directions (Go commit
 `f2ad1de5da52a1da9622285a1d61553ddaa41f21`, matching CI). This verifies ordinary
-connections, not Chrome/ALPS interoperability, which remains disabled.
+connections, not negotiated Chrome/ALPS interoperability, which remains disabled.
 
 1. Complete TLS/application integration: define and apply HTTP/3 ALPS settings,
-   then connect the opt-in TLS and transport profiles to the application.
+   before enabling ALPS alongside the experimental TLS/transport profile.
    Full-permutation ordering, TLS-layer ALPS, Brotli, ECH GREASE,
    cipher/signature/group ordering and hybrid/X25519 shares have tested baselines.
    Preserve verification, certificate pinning and client authentication. Do not
@@ -214,8 +242,9 @@ connections, not Chrome/ALPS interoperability, which remains disabled.
    reconnection across all supported socket paths.
 3. Run bidirectional Go/Rust authentication and TCP/UDP interoperability tests
    with the complete opt-in Chrome profile rather than only the ordinary profile.
-4. Only then expose the upstream-compatible `quic.disableChromeParrot` switch
-   and decide the default. Parameter resemblance alone is not a full fingerprint
+4. Only then consider a complete-profile claim or changing the conservative
+   default of `quic.disableChromeParrot`. The current opt-in deliberately leaves
+   ALPS disabled. Parameter resemblance alone is not a full fingerprint
    implementation and does not establish resistance to traffic analysis.
 
 ## Local foundation checks

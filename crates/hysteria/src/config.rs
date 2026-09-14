@@ -444,6 +444,9 @@ impl ClientTransportConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientQuicConfig {
+    /// Experimental profile; only an explicit false opts in. Omission preserves legacy behavior.
+    #[serde(default)]
+    pub disable_chrome_parrot: Option<bool>,
     #[serde(default)]
     pub init_stream_receive_window: u64,
     #[serde(default)]

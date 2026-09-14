@@ -8,6 +8,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Experimental client `quic.disableChromeParrot: false` opt-in for the
+  Chrome-shaped TLS/QUIC profile. Omission retains existing behavior; ALPS
+  remains disabled. Includes Go interoperability and certificate checks.
 - Unix socket backends for server masquerade proxies.
 - Porkbun, Njalla and Namecheap ACME DNS providers.
 - Server configuration option to disable stateless resets.
