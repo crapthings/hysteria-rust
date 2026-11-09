@@ -8,9 +8,9 @@ use crate::{
 };
 use hysteria_transport::{
     ClientHandshake, HysteriaServer, ProxyClient, ProxyServerConnection, ServerHandshake,
-    TrafficLogger, bind_obfuscated_endpoint, chrome_client_endpoint_config,
-    chrome_client_transport_config, connect, make_chrome_client_config_with_congestion,
-    make_client_config_with_congestion, make_server_config_with_congestion,
+    TrafficLogger, chrome_client_endpoint_config, chrome_client_transport_config, connect,
+    make_chrome_client_config_with_congestion, make_client_config_with_congestion,
+    make_server_config_with_congestion, obfuscated_endpoint_from_socket,
     obfuscated_endpoint_from_socket_with_config, port_hopping_endpoint_from_socket_with_config,
     transport_config,
 };
@@ -146,30 +146,68 @@ async fn build_server_transport(
             Some(runtime),
         ));
     }
-    let address = resolve_one(&normalize_listen(&config.listen)).await?;
-    if let Some(obfs) = obfuscation {
-        let endpoint = bind_obfuscated_endpoint(address, Some(quic), obfs)?;
-        Ok((
-            HysteriaServer::from_endpoint_with_masquerade(
-                endpoint,
-                handshake,
-                authenticator,
-                masquerade,
-            ),
-            None,
-        ))
+    let socket = server_udp_socket(&config.listen).await?;
+    let endpoint = if let Some(obfs) = obfuscation {
+        obfuscated_endpoint_from_socket(socket, Some(quic), obfs)?
     } else {
-        Ok((
-            HysteriaServer::bind_with_masquerade(
-                address,
-                quic,
-                handshake,
-                authenticator,
-                masquerade,
-            )?,
-            None,
-        ))
-    }
+        Endpoint::new(
+            EndpointConfig::default(),
+            Some(quic),
+            socket,
+            Arc::new(TokioRuntime),
+        )?
+    };
+    Ok((
+        HysteriaServer::from_endpoint_with_masquerade(
+            endpoint,
+            handshake,
+            authenticator,
+            masquerade,
+        ),
+        None,
+    ))
+}
+
+// Configure the socket before binding: std and Quinn socket defaults vary by OS.
+// Only an omitted host may fall back to IPv4 when IPv6 is unavailable.
+async fn server_udp_socket(listen: &str) -> Result<std::net::UdpSocket> {
+    let implicit_host = listen.starts_with(':');
+    let address = if implicit_host {
+        resolve_one(&format!("[::]{listen}")).await?
+    } else {
+        resolve_one(listen).await?
+    };
+    let socket = Socket::new(
+        Domain::for_address(address),
+        Type::DGRAM,
+        Some(Protocol::UDP),
+    )
+    .and_then(|socket| {
+        if address.is_ipv6() {
+            socket.set_only_v6(false)?;
+        }
+        Ok(socket)
+    });
+    let socket = match socket {
+        Ok(socket) => match socket.bind(&address.into()) {
+            Ok(()) => socket,
+            Err(error) if implicit_host && error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                return server_ipv4_socket(address.port(), &error);
+            }
+            Err(error) => return Err(error.into()),
+        },
+        Err(error) if implicit_host => return server_ipv4_socket(address.port(), &error),
+        Err(error) => return Err(error.into()),
+    };
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
+}
+
+fn server_ipv4_socket(port: u16, reason: &std::io::Error) -> Result<std::net::UdpSocket> {
+    eprintln!("Dual-stack UDP unavailable ({reason}); falling back to IPv4");
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?;
+    socket.set_nonblocking(true)?;
+    Ok(socket)
 }
 
 async fn build_server_tls(
@@ -1258,6 +1296,107 @@ mod chrome_interop;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hysteria_transport::bind_obfuscated_endpoint;
+
+    #[tokio::test]
+    async fn server_wildcard_accepts_both_ip_families() {
+        tls::ensure_crypto_provider();
+        let directory = tempfile::tempdir().unwrap();
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        let cert = directory.path().join("cert.pem");
+        let key = directory.path().join("key.pem");
+        std::fs::write(&cert, certified.cert.pem()).unwrap();
+        std::fs::write(&key, certified.key_pair.serialize_pem()).unwrap();
+
+        // Exercise the production server path, including both obfuscation wrappers.
+        for listen in [":0", "[::]:0"] {
+            for kind in ["", "salamander", "gecko"] {
+                let mut config: ServerConfig =
+                    serde_yaml_ng::from_str("auth: { type: password, password: secret }\n")
+                        .unwrap();
+                config.listen = listen.to_owned();
+                config.obfs.kind = kind.to_owned();
+                config.obfs.salamander.password = "test-password".to_owned();
+                config.obfs.gecko.password = "test-password".to_owned();
+                let server_tls = tls::server_config(&cert, &key, None, "strict").unwrap();
+                let quic = hysteria_transport::make_server_config(server_tls).unwrap();
+                let (mut server, _) = build_server_transport(
+                    &config,
+                    quic,
+                    ServerHandshake::default(),
+                    crate::auth::build(&config.auth).unwrap(),
+                    Arc::new(crate::masquerade::Masquerade::build(&config.masquerade).unwrap()),
+                )
+                .await
+                .unwrap();
+                let address = server.local_addr().unwrap();
+                assert!(address.is_ipv6(), "dual-stack test requires IPv6 support");
+                for host in ["127.0.0.1", "::1"] {
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        let mut client_config: ClientConfig = serde_yaml_ng::from_str(
+                            "server: localhost\nauth: secret\ntls: { sni: localhost }\nlazy: true\n",
+                        )
+                        .unwrap();
+                        client_config.server = format_host_port(host, address.port());
+                        client_config.tls.ca = cert.to_string_lossy().into_owned();
+                        client_config.obfs = config.obfs.clone();
+                        let handle = ClientHandle::new(client_config, false).await.unwrap();
+                        let (accepted, client) = tokio::join!(server.accept(), handle.client());
+                        let accepted = accepted.unwrap();
+                        let client = client.unwrap();
+                        let proxy = tokio::spawn(ProxyServerConnection::new(accepted).serve());
+
+                        let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                        let echo_address = echo.local_addr().unwrap();
+                        let echo_task = tokio::spawn(async move {
+                            let (mut stream, _) = echo.accept().await.unwrap();
+                            let mut payload = [0; 4];
+                            stream.read_exact(&mut payload).await.unwrap();
+                            stream.write_all(&payload).await.unwrap();
+                        });
+                        let mut tunnel = client.tcp(&echo_address.to_string()).await.unwrap();
+                        tunnel.write_all(b"ping").await.unwrap();
+                        let mut response = [0; 4];
+                        tunnel.read_exact(&mut response).await.unwrap();
+                        assert_eq!(&response, b"ping");
+                        echo_task.await.unwrap();
+
+                        let echo = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                        let echo_address = echo.local_addr().unwrap();
+                        let echo_task = tokio::spawn(async move {
+                            let mut payload = [0; 4];
+                            let (size, peer) = echo.recv_from(&mut payload).await.unwrap();
+                            echo.send_to(&payload[..size], peer).await.unwrap();
+                        });
+                        let mut udp = client.udp().unwrap();
+                        udp.send(b"pong", &echo_address.to_string()).await.unwrap();
+                        let (response, _) = udp.receive().await.unwrap();
+                        assert_eq!(response, b"pong");
+                        echo_task.await.unwrap();
+                        handle.close().await;
+                        proxy.abort();
+                    })
+                    .await
+                    .unwrap_or_else(|_| panic!("{listen} obfs={kind:?} client={host} timed out"));
+                }
+                server.close();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn server_explicit_ipv4_and_port_conflicts() {
+        let ipv4 = server_udp_socket("0.0.0.0:0").await.unwrap();
+        assert!(ipv4.local_addr().unwrap().is_ipv4());
+        let specific = server_udp_socket("127.0.0.1:0").await.unwrap();
+        assert!(specific.local_addr().unwrap().ip().is_loopback());
+        let dual = server_udp_socket(":0").await.unwrap();
+        let port = dual.local_addr().unwrap().port();
+        // A conflict must fail rather than silently falling back to another family.
+        assert!(server_udp_socket(&format!(":{port}")).await.is_err());
+        assert!(server_udp_socket(&format!("[::]:{port}")).await.is_err());
+        assert!(server_udp_socket(&format!("0.0.0.0:{port}")).await.is_err());
+    }
 
     #[tokio::test]
     async fn chrome_runtime_connects_and_reconnects_across_socket_paths() {

@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Make server `:port` listeners prefer a single dual-stack UDP socket with
+  IPv4 fallback when IPv6 is unavailable; explicitly enable dual-stack for
+  `[::]:port`, including Salamander and Gecko obfuscation.
+
 ## [0.1.0-rc.3] - 2026-09-14
 
 ### Fixed

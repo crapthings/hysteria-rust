@@ -85,6 +85,8 @@ struct Direction<'a> {
     ech_key: &'a Path,
     ech_config: &'a str,
     payload: &'a [u8],
+    listen_prefix: Option<&'a str>,
+    server_host: &'a str,
 }
 
 impl Drop for Children {
@@ -121,8 +123,10 @@ fn go_and_rust_binaries_relay_obfuscated_tcp_and_udp_in_both_directions() {
         ech_key: &ech_key,
         ech_config: &ech_config,
         payload: b"rust-client-go-server",
+        listen_prefix: None,
+        server_host: "127.0.0.1",
     });
-    run_direction(Direction {
+    let rust_server = Direction {
         directory: directory.path(),
         server_binary: rust_binary,
         client_binary: &go_binary,
@@ -131,7 +135,19 @@ fn go_and_rust_binaries_relay_obfuscated_tcp_and_udp_in_both_directions() {
         ech_key: &ech_key,
         ech_config: &ech_config,
         payload: b"go-client-rust-server",
-    });
+        listen_prefix: None,
+        server_host: "127.0.0.1",
+    };
+    run_direction(rust_server);
+    for prefix in [":", "[::]:"] {
+        for host in ["127.0.0.1", "::1"] {
+            run_direction(Direction {
+                listen_prefix: Some(prefix),
+                server_host: host,
+                ..rust_server
+            });
+        }
+    }
 }
 
 fn run_direction(direction: Direction<'_>) {
@@ -144,8 +160,15 @@ fn run_direction(direction: Direction<'_>) {
         ech_key,
         ech_config,
         payload,
+        listen_prefix,
+        server_host,
     } = direction;
-    let server_address = free_udp_address();
+    let port = free_udp_address().port();
+    let server_address = SocketAddr::new(server_host.parse().unwrap(), port);
+    let server_listen = listen_prefix.map_or_else(
+        || server_address.to_string(),
+        |prefix| format!("{prefix}{port}"),
+    );
     let tcp_forwarding_address = free_tcp_address();
     let udp_forwarding_address = free_udp_address();
     let echo = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -182,7 +205,7 @@ fn run_direction(direction: Direction<'_>) {
     fs::write(
         &server_config,
         format!(
-            "listen: {server_address}\ntls:\n  cert: {}\n  key: {}\nech:\n  keyPath: {}\nauth:\n  type: password\n  password: interop-secret\nobfs:\n  type: salamander\n  salamander:\n    password: interop-obfs\n",
+            "listen: '{server_listen}'\ntls:\n  cert: {}\n  key: {}\nech:\n  keyPath: {}\nauth:\n  type: password\n  password: interop-secret\nobfs:\n  type: salamander\n  salamander:\n    password: interop-obfs\n",
             yaml_path(cert),
             yaml_path(key),
             yaml_path(ech_key)
@@ -193,7 +216,7 @@ fn run_direction(direction: Direction<'_>) {
     fs::write(
         &client_config,
         format!(
-            "quic:\n  disableChromeParrot: true\nserver: {server_address}\nauth: interop-secret\ntls:\n  sni: localhost\n  insecure: true\n  ech: {ech_config}\nobfs:\n  type: salamander\n  salamander:\n    password: interop-obfs\ntcpForwarding:\n  - listen: {tcp_forwarding_address}\n    remote: {tcp_echo_address}\nudpForwarding:\n  - listen: {udp_forwarding_address}\n    remote: {udp_echo_address}\n    timeout: 10s\n"
+            "quic:\n  disableChromeParrot: true\nserver: '{server_address}'\nauth: interop-secret\ntls:\n  sni: localhost\n  insecure: true\n  ech: {ech_config}\nobfs:\n  type: salamander\n  salamander:\n    password: interop-obfs\ntcpForwarding:\n  - listen: {tcp_forwarding_address}\n    remote: {tcp_echo_address}\nudpForwarding:\n  - listen: {udp_forwarding_address}\n    remote: {udp_echo_address}\n    timeout: 10s\n"
         ),
     )
     .unwrap();

@@ -119,6 +119,12 @@ auth:
   password: CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD
 ```
 
+The server listens on both IPv4 and IPv6 with `listen: ":443"` when the OS
+supports dual-stack sockets, falling back to IPv4 if IPv6 is unavailable.
+Use `listen: "[::]:443"` to require an IPv6 socket with dual-stack enabled,
+or `listen: "0.0.0.0:443"` for IPv4 only. Specific IP addresses bind only
+to that interface address. These settings apply with or without obfuscation.
+
 Start the server:
 
 ```shell
