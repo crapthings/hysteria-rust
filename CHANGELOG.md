@@ -8,6 +8,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Update `rustls-webpki` and `webpki-roots` to address RUSTSEC-2026-0382 and
+  RUSTSEC-2026-0381 certificate trust vulnerabilities.
+- Account for Windows cross-family binding semantics in the listener conflict test.
 - Make server `:port` listeners prefer a single dual-stack UDP socket with
   IPv4 fallback when IPv6 is unavailable; explicitly enable dual-stack for
   `[::]:port`, including Salamander and Gecko obfuscation.

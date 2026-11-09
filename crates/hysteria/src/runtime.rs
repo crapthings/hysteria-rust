@@ -1395,6 +1395,9 @@ mod tests {
         // A conflict must fail rather than silently falling back to another family.
         assert!(server_udp_socket(&format!(":{port}")).await.is_err());
         assert!(server_udp_socket(&format!("[::]:{port}")).await.is_err());
+        // Windows may permit a separate IPv4 bind alongside a dual-stack socket.
+        // Same-family conflicts above must still fail on every platform.
+        #[cfg(not(target_os = "windows"))]
         assert!(server_udp_socket(&format!("0.0.0.0:{port}")).await.is_err());
     }
 
