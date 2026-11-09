@@ -16,7 +16,7 @@ interoperable with the upstream Go implementation at commit
 
 > [!WARNING]
 > This is an independent port, not an official Hysteria release. Releases are
-> currently release candidates. See the [rc3 release notes](docs/releases/v0.1.0-rc.3.md)
+> currently release candidates. See the [rc4 release notes](docs/releases/v0.1.0-rc.4.md)
 > for validated behavior and remaining limitations before deployment.
 
 [Install](#install) · [Quick start](#quick-start) ·

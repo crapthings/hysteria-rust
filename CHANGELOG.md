@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-rc.4] - 2026-11-09
+
 ### Fixed
 
 - Update `rustls-webpki` and `webpki-roots` to address RUSTSEC-2026-0382 and
@@ -14,6 +16,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Make server `:port` listeners prefer a single dual-stack UDP socket with
   IPv4 fallback when IPv6 is unavailable; explicitly enable dual-stack for
   `[::]:port`, including Salamander and Gecko obfuscation.
+- Pass a valid boolean value to the CLI update-check environment variable in
+  CI and release interoperability tests.
+
+### Changed
+
+- Skip automatic CI for changes limited to `README.md`, alongside the existing
+  website-only exclusions. Code changes and tagged releases retain validation.
 
 ## [0.1.0-rc.3] - 2026-09-14
 
@@ -81,7 +90,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cross-platform packaging for the upstream 27-target release matrix.
 - Real Go/Rust interoperability tests in both client/server directions.
 
-[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.3...HEAD
+[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.4...HEAD
+[0.1.0-rc.4]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.3...v0.1.0-rc.4
 [0.1.0-rc.3]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.2...v0.1.0-rc.3
 [0.1.0-rc.2]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.1...v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/crapthings/hysteria-rust/releases/tag/v0.1.0-rc.1
