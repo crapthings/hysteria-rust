@@ -5,7 +5,7 @@ use crate::{
         Socks5OutboundConfig,
     },
     geo::GeoDatabases,
-    resolver::Resolver,
+    resolver::{Resolver, unbracket_ipv6},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use hysteria_protocol::MAX_UDP_SIZE;
@@ -1424,7 +1424,7 @@ fn parse_host_port(address: &str) -> std::result::Result<(String, u16), String> 
     let port = authority
         .port_u16()
         .ok_or_else(|| format!("address {address:?} requires a port"))?;
-    Ok((authority.host().to_owned(), port))
+    Ok((unbracket_ipv6(authority.host()).to_owned(), port))
 }
 
 fn format_authority(host: &str, port: u16) -> String {
@@ -1496,6 +1496,132 @@ fn io_error(error: impl std::fmt::Display) -> TransportError {
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn ipv6_literal_host_parsing_preserves_authority_round_trip() {
+        for (address, host, port) in [
+            ("[2001:db8::1]:443", "2001:db8::1", 443),
+            ("[::1]:53", "::1", 53),
+            ("[::ffff:192.0.2.1]:80", "::ffff:192.0.2.1", 80),
+            ("127.0.0.1:443", "127.0.0.1", 443),
+            ("example.com:443", "example.com", 443),
+        ] {
+            assert_eq!(parse_host_port(address).unwrap(), (host.to_owned(), port));
+            assert_eq!(format_authority(host, port), address);
+        }
+        for address in ["[::1]", "example.com", "[::1]:65536", "[::1:443"] {
+            assert!(parse_host_port(address).is_err(), "{address}");
+        }
+    }
+
+    #[test]
+    fn ipv6_literal_socks5_encoding_uses_ip_address_type() {
+        for (address, expected) in [
+            ("[2001:db8::1]:443", {
+                let mut bytes = vec![4];
+                bytes.extend_from_slice(&"2001:db8::1".parse::<Ipv6Addr>().unwrap().octets());
+                bytes.extend_from_slice(&443_u16.to_be_bytes());
+                bytes
+            }),
+            ("127.0.0.1:53", vec![1, 127, 0, 0, 1, 0, 53]),
+            ("example.com:80", b"\x03\x0bexample.com\x00\x50".to_vec()),
+        ] {
+            let mut bytes = Vec::new();
+            encode_address(address, &mut bytes).unwrap();
+            assert_eq!(bytes, expected);
+            assert_eq!(
+                decode_address(&bytes, 0).unwrap(),
+                (address.to_owned(), bytes.len())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ipv6_literal_direct_tcp_udp_bypass_custom_dns() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let dns = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let outbound = ConfigurableDirect::new_default(Resolver::Udp {
+                address: dns.local_addr().unwrap().to_string(),
+                timeout: Duration::from_millis(50),
+            });
+            let tcp = TcpListener::bind("[::1]:0").await.unwrap();
+            let address = tcp.local_addr().unwrap().to_string();
+            let (stream, ()) = tokio::join!(outbound.tcp(&address), async {
+                let (mut stream, _) = tcp.accept().await.unwrap();
+                stream.write_all(b"ipv6").await.unwrap();
+            });
+            let mut stream = stream.unwrap();
+            let mut payload = [0; 4];
+            stream.read_exact(&mut payload).await.unwrap();
+            assert_eq!(&payload, b"ipv6");
+
+            let ipv4_only = ConfigurableDirect {
+                mode: DirectMode::Only4,
+                resolver: outbound.resolver.clone(),
+                ..Default::default()
+            };
+            assert!(ipv4_only.tcp(&address).await.is_err());
+
+            let udp = UdpSocket::bind("[::1]:0").await.unwrap();
+            let address = udp.local_addr().unwrap().to_string();
+            let socket = outbound.udp(&address).await.unwrap();
+            socket.send_to(b"ping", &address).await.unwrap();
+            let (size, peer) = udp.recv_from(&mut payload).await.unwrap();
+            assert_eq!(&payload[..size], b"ping");
+            udp.send_to(b"pong", peer).await.unwrap();
+            let (size, source) = socket.recv_from(&mut payload).await.unwrap();
+            assert_eq!(&payload[..size], b"pong");
+            assert_eq!(source, address);
+            let socket = ipv4_only.udp(&address).await.unwrap();
+            assert!(socket.send_to(b"blocked", &address).await.is_err());
+            assert_eq!(
+                dns.try_recv_from(&mut payload).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        })
+        .await
+        .expect("IPv6 TCP/UDP round trip timed out");
+    }
+
+    #[tokio::test]
+    async fn ipv6_literal_acl_matches_ip_and_cidr_without_dns() {
+        let dns = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let exact: Arc<dyn ServerOutbound> = Arc::new(NamedErrorOutbound("exact"));
+        let cidr: Arc<dyn ServerOutbound> = Arc::new(NamedErrorOutbound("cidr"));
+        let fallback: Arc<dyn ServerOutbound> = Arc::new(NamedErrorOutbound("fallback"));
+        let rules = parse_acl(
+            "exact(2001:db8::1)\ncidr(2001:db8::/32)",
+            &HashMap::from([
+                ("exact".to_owned(), Arc::clone(&exact)),
+                ("cidr".to_owned(), Arc::clone(&cidr)),
+            ]),
+            None,
+        )
+        .unwrap();
+        let acl = AclOutbound {
+            rules,
+            default: Arc::clone(&fallback),
+            resolver: Resolver::Udp {
+                address: dns.local_addr().unwrap().to_string(),
+                timeout: Duration::from_millis(50),
+            },
+        };
+        for protocol in [AclProtocol::Tcp, AclProtocol::Udp] {
+            for (address, expected) in [
+                ("[2001:db8::1]:443", &exact),
+                ("[2001:db8::2]:443", &cidr),
+                ("[2001:db9::1]:443", &fallback),
+            ] {
+                let (selected, target) = acl.select(address, protocol).await.unwrap();
+                assert!(Arc::ptr_eq(&selected, expected), "{address}");
+                assert_eq!(target, address);
+            }
+        }
+        assert_eq!(
+            dns.try_recv_from(&mut [0; 512]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 
     #[derive(Debug)]
     struct NamedErrorOutbound(&'static str);

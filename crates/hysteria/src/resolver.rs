@@ -6,7 +6,7 @@ use hysteria_transport::TransportError;
 use rustls::pki_types::ServerName;
 use std::{
     future::Future,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicU16, Ordering},
@@ -116,7 +116,7 @@ impl Resolver {
             let host = url
                 .host_str()
                 .ok_or_else(|| CliError::new("resolver HTTPS URL requires a host"))?;
-            if let Ok(ip) = host.parse::<IpAddr>() {
+            if let Ok(ip) = unbracket_ipv6(host).parse::<IpAddr>() {
                 let port = url.port_or_known_default().unwrap_or(443);
                 builder = builder.resolve(&config.sni, SocketAddr::new(ip, port));
                 url.set_host(Some(&config.sni))
@@ -132,6 +132,7 @@ impl Resolver {
     }
 
     pub(crate) async fn resolve(&self, host: &str, port: u16) -> Resolved {
+        let host = unbracket_ipv6(host);
         if let Ok(ip) = host.parse::<IpAddr>() {
             return if ip.is_ipv4() {
                 Resolved {
@@ -458,9 +459,19 @@ fn dns_address(value: &str, port: u16) -> Result<String> {
 fn split_host(address: &str) -> Result<String> {
     address
         .parse::<http::uri::Authority>()
-        .map(|authority| authority.host().to_owned())
+        .map(|authority| unbracket_ipv6(authority.host()).to_owned())
         .map_err(|error| CliError::new(format!("invalid resolver address: {error}")))
 }
+
+// URI authorities retain IPv6 brackets; IP parsing, DNS and SOCKS5 require the
+// bare host. Do not reinterpret bracketed domains or malformed IPv6 as valid hosts.
+pub(crate) fn unbracket_ipv6(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .filter(|inner| inner.parse::<Ipv6Addr>().is_ok())
+        .unwrap_or(host)
+}
+
 fn format_authority(host: &str, port: u16) -> String {
     if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]:{port}")
@@ -488,9 +499,94 @@ mod tests {
     use axum::{Router, body::Bytes, routing::post};
     use rcgen::CertifiedKey;
     use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-    use std::net::Ipv6Addr;
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
+
+    #[test]
+    fn ipv6_literal_normalization_is_limited_to_valid_addresses() {
+        assert_eq!(unbracket_ipv6("[::1]"), "::1");
+        for host in [
+            "example.com",
+            "127.0.0.1",
+            "::1",
+            "[example.com]",
+            "[127.0.0.1]",
+            "[[::1]]",
+            "[::1",
+            "[::gg]",
+        ] {
+            assert_eq!(unbracket_ipv6(host), host);
+        }
+        assert_eq!(split_host("[::1]:853").unwrap(), "::1");
+    }
+
+    #[test]
+    fn ipv6_literal_https_resolver_applies_sni_override() {
+        let resolver = Resolver::https(&ResolverTlsConfig {
+            addr: "https://[::1]:8443/dns-query".to_owned(),
+            sni: "resolver.test".to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        let Resolver::Https { url, .. } = resolver else {
+            panic!("expected HTTPS resolver")
+        };
+        assert_eq!(url.host_str(), Some("resolver.test"));
+        assert_eq!(url.port(), Some(8443));
+        assert_eq!(url.path(), "/dns-query");
+    }
+
+    #[tokio::test]
+    async fn ipv6_literal_resolution_bypasses_all_dns_transports() {
+        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        tcp.set_nonblocking(true).unwrap();
+        for kind in ["system", "udp", "tcp", "tls", "https"] {
+            let plain = ResolverPlainConfig {
+                addr: tcp.local_addr().unwrap().to_string(),
+                timeout: "50ms".to_owned(),
+            };
+            let tls = ResolverTlsConfig {
+                addr: plain.addr.clone(),
+                timeout: "50ms".to_owned(),
+                sni: "localhost".to_owned(),
+                insecure: false,
+            };
+            let resolver = Resolver::build(&ResolverConfig {
+                kind: kind.to_owned(),
+                udp: ResolverPlainConfig {
+                    addr: udp.local_addr().unwrap().to_string(),
+                    ..plain.clone()
+                },
+                tcp: plain,
+                tls: tls.clone(),
+                https: ResolverTlsConfig {
+                    addr: format!("https://{}/dns-query", tls.addr),
+                    ..tls
+                },
+            })
+            .unwrap();
+            for (host, expected) in [
+                ("[2001:db8::1]", "2001:db8::1"),
+                ("[::ffff:192.0.2.1]", "::ffff:192.0.2.1"),
+                ("::1", "::1"),
+                ("127.0.0.1", "127.0.0.1"),
+            ] {
+                let result = resolver.resolve(host, 443).await;
+                let ip = expected.parse::<IpAddr>().unwrap();
+                assert_eq!(result.ipv4, ip.is_ipv4().then_some(ip), "{kind}: {host}");
+                assert_eq!(result.ipv6, ip.is_ipv6().then_some(ip), "{kind}: {host}");
+            }
+        }
+        assert_eq!(
+            udp.try_recv_from(&mut [0; 512]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            tcp.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 
     fn response(query: &[u8]) -> Vec<u8> {
         let qtype = u16::from_be_bytes(query[query.len() - 4..query.len() - 2].try_into().unwrap());

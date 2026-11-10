@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-rc.6] - 2026-11-10
+
+### Fixed
+
+- Recognize bracketed IPv6 literals before custom DNS resolution instead of
+  querying them as domain names; keep domain and IPv4 handling unchanged.
+- Normalize IPv6 hosts for direct TCP/UDP, ACL IP/CIDR matching and SOCKS5
+  address encoding, retaining brackets when formatting host/port authorities.
+- Handle IPv6 resolver endpoint hosts correctly for DNS-over-TLS server names
+  and DNS-over-HTTPS SNI overrides.
+
 ## [0.1.0-rc.5] - 2026-11-10
 
 ### Fixed
@@ -106,7 +117,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cross-platform packaging for the upstream 27-target release matrix.
 - Real Go/Rust interoperability tests in both client/server directions.
 
-[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.5...HEAD
+[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.6...HEAD
+[0.1.0-rc.6]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.5...v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.4...v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.3...v0.1.0-rc.4
 [0.1.0-rc.3]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.2...v0.1.0-rc.3
