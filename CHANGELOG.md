@@ -6,6 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-rc.5] - 2026-11-10
+
+### Fixed
+
+- Preserve TUN UDP sessions when their packet queues are full, dropping the new
+  datagram instead of replacing the session; avoid copying queued datagrams.
+- Report TUN TCP connect/transfer and UDP session/send/receive failures with
+  rate-limited diagnostics, without logging packet contents.
+- Log QUIC disconnect reasons immediately after transport closure, including
+  while idle; retain reconnection on the next proxy request.
+
+### Changed
+
+- Extend proxy tests to IPv6 TCP/UDP targets and peer-initiated QUIC closure
+  followed by reconnection; add TUN UDP queue saturation and closure regressions.
+
 ## [0.1.0-rc.4] - 2026-11-09
 
 ### Fixed
@@ -90,7 +106,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cross-platform packaging for the upstream 27-target release matrix.
 - Real Go/Rust interoperability tests in both client/server directions.
 
-[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.4...HEAD
+[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.5...HEAD
+[0.1.0-rc.5]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.4...v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.3...v0.1.0-rc.4
 [0.1.0-rc.3]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.2...v0.1.0-rc.3
 [0.1.0-rc.2]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.1...v0.1.0-rc.2

@@ -267,6 +267,11 @@ impl ProxyClient {
         self.connection.quinn().close_reason().is_some()
     }
 
+    /// Waits for the underlying QUIC connection to terminate and returns its reason.
+    pub async fn closed(&self) -> quinn::ConnectionError {
+        self.connection.quinn().closed().await
+    }
+
     pub fn close(&self, reason: &[u8]) {
         self.connection.close(reason);
     }

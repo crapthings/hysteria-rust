@@ -10,7 +10,8 @@ mod platform {
     use std::{
         collections::HashMap,
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-        time::Duration,
+        sync::Mutex,
+        time::{Duration, Instant},
     };
     use tokio::{io::copy_bidirectional, sync::mpsc};
 
@@ -91,16 +92,13 @@ mod platform {
             return Err(CliError::new("TUN TCP stack was not created"));
         };
         let tcp_client = Arc::clone(&client);
+        let errors = Arc::new(ErrorLog::default());
+        let tcp_errors = Arc::clone(&errors);
         tasks.spawn(async move {
-            while let Some((mut stream, source, destination)) = tcp_listener.next().await {
+            while let Some((stream, source, destination)) = tcp_listener.next().await {
                 let client = Arc::clone(&tcp_client);
-                tokio::spawn(async move {
-                    let Ok(mut tunnel) = client.tcp(&destination.to_string()).await else {
-                        return;
-                    };
-                    eprintln!("TUN TCP {source} -> {destination}");
-                    let _ = copy_bidirectional(&mut stream, &mut tunnel).await;
-                });
+                let errors = Arc::clone(&tcp_errors);
+                tokio::spawn(forward_tcp(stream, source, destination, client, errors));
             }
             Err(CliError::new("TUN TCP listener stopped"))
         });
@@ -108,7 +106,7 @@ mod platform {
         let Some(udp_socket) = udp_socket else {
             return Err(CliError::new("TUN UDP stack was not created"));
         };
-        tasks.spawn(run_udp(udp_socket, client, config.timeout()?));
+        tasks.spawn(run_udp(udp_socket, client, config.timeout()?, errors));
 
         match tasks.join_next().await {
             Some(Ok(result)) => result,
@@ -117,10 +115,70 @@ mod platform {
         }
     }
 
+    async fn forward_tcp(
+        mut stream: netstack_smoltcp::TcpStream,
+        source: SocketAddr,
+        destination: SocketAddr,
+        client: Arc<ClientHandle>,
+        errors: Arc<ErrorLog>,
+    ) {
+        let mut tunnel = match client.tcp(&destination.to_string()).await {
+            Ok(tunnel) => tunnel,
+            Err(error) => {
+                errors.report(format_args!(
+                    "TUN TCP {source} -> {destination} connect failed: {error}"
+                ));
+                return;
+            }
+        };
+        eprintln!("TUN TCP {source} -> {destination}");
+        if let Err(error) = copy_bidirectional(&mut stream, &mut tunnel).await {
+            errors.report(format_args!(
+                "TUN TCP {source} -> {destination} transfer failed: {error}"
+            ));
+        }
+    }
+
+    // Bound diagnostics during outages and packet bursts. Never log packet contents.
+    #[derive(Default)]
+    struct ErrorLog(Mutex<Option<(Instant, u64)>>);
+
+    impl ErrorLog {
+        fn report(&self, message: std::fmt::Arguments<'_>) {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((last, suppressed)) = state.as_mut() {
+                if last.elapsed() < Duration::from_secs(5) {
+                    *suppressed = suppressed.saturating_add(1);
+                    return;
+                }
+                eprintln!(
+                    "{message} ({} additional TUN errors suppressed)",
+                    *suppressed
+                );
+            } else {
+                eprintln!("{message}");
+            }
+            *state = Some((Instant::now(), 0));
+        }
+    }
+
+    // Only a closed receiver permits replacing a flow. A full queue drops the new
+    // datagram, preserving the existing remote session and its queued packets.
+    fn enqueue_packet(sender: &mpsc::Sender<Vec<u8>>, packet: Vec<u8>) -> Option<Vec<u8>> {
+        match sender.try_send(packet) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => None,
+            Err(mpsc::error::TrySendError::Closed(packet)) => Some(packet),
+        }
+    }
+
     async fn run_udp(
         udp_socket: netstack_smoltcp::UdpSocket,
         client: Arc<ClientHandle>,
         idle_timeout: Duration,
+        errors: Arc<ErrorLog>,
     ) -> Result<()> {
         let (mut read_half, mut write_half) = udp_socket.split();
         let (reply_sender, mut replies) = mpsc::channel(256);
@@ -135,12 +193,14 @@ mod platform {
         while let Some((packet, source, destination)) = read_half.next().await {
             flows.retain(|_, sender| !sender.is_closed());
             let key = (source, destination);
-            if flows
-                .get(&key)
-                .is_some_and(|sender| sender.try_send(packet.clone()).is_ok())
-            {
-                continue;
-            }
+            let packet = if let Some(sender) = flows.get(&key) {
+                let Some(packet) = enqueue_packet(sender, packet) else {
+                    continue;
+                };
+                packet
+            } else {
+                packet
+            };
             let (sender, receiver) = mpsc::channel(256);
             sender
                 .try_send(packet)
@@ -153,6 +213,7 @@ mod platform {
                 idle_timeout,
                 receiver,
                 reply_sender.clone(),
+                Arc::clone(&errors),
             ));
         }
         Err(CliError::new("TUN UDP listener stopped"))
@@ -165,9 +226,16 @@ mod platform {
         idle_timeout: Duration,
         mut packets: mpsc::Receiver<Vec<u8>>,
         replies: mpsc::Sender<(Vec<u8>, SocketAddr, SocketAddr)>,
+        errors: Arc<ErrorLog>,
     ) {
-        let Ok(mut session) = client.udp().await else {
-            return;
+        let mut session = match client.udp().await {
+            Ok(session) => session,
+            Err(error) => {
+                errors.report(format_args!(
+                    "TUN UDP {source} -> {destination} session failed: {error}"
+                ));
+                return;
+            }
         };
         loop {
             let event = tokio::time::timeout(idle_timeout, async {
@@ -179,11 +247,10 @@ mod platform {
             .await;
             match event {
                 Ok(UdpEvent::Local(Some(packet))) => {
-                    if session
-                        .send(&packet, &destination.to_string())
-                        .await
-                        .is_err()
-                    {
+                    if let Err(error) = session.send(&packet, &destination.to_string()).await {
+                        errors.report(format_args!(
+                            "TUN UDP {source} -> {destination} send failed: {error}"
+                        ));
                         break;
                     }
                 }
@@ -195,6 +262,13 @@ mod platform {
                         break;
                     }
                 }
+                Ok(UdpEvent::Remote(Err(error))) => {
+                    errors.report(format_args!(
+                        "TUN UDP {source} -> {destination} receive failed: {error}"
+                    ));
+                    break;
+                }
+                // Idle expiry and local flow closure are normal lifecycle events.
                 _ => break,
             }
         }
@@ -351,6 +425,29 @@ mod platform {
             route = route.with_table(base.table());
         }
         route
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn full_udp_queue_preserves_receiver_and_queued_packets() {
+            let (sender, mut receiver) = mpsc::channel(1);
+            assert!(enqueue_packet(&sender, vec![1]).is_none());
+            assert!(enqueue_packet(&sender, vec![2]).is_none());
+            assert!(!sender.is_closed());
+            assert_eq!(receiver.recv().await, Some(vec![1]));
+            assert!(enqueue_packet(&sender, vec![3]).is_none());
+            assert_eq!(receiver.recv().await, Some(vec![3]));
+        }
+
+        #[test]
+        fn closed_udp_queue_returns_packet_for_replacement() {
+            let (sender, receiver) = mpsc::channel(1);
+            drop(receiver);
+            assert_eq!(enqueue_packet(&sender, vec![4]), Some(vec![4]));
+        }
     }
 }
 

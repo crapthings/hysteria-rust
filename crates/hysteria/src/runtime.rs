@@ -336,6 +336,13 @@ struct ConnectedClient {
     server_address: SocketAddr,
     udp_enabled: bool,
     _port_mapping: Option<hysteria_realm::PortMappingLease>,
+    disconnect_monitor: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ConnectedClient {
+    fn drop(&mut self) {
+        self.disconnect_monitor.abort();
+    }
 }
 
 struct ClientState {
@@ -450,6 +457,7 @@ impl ClientHandle {
 }
 
 fn close_connected(connected: &ConnectedClient, reason: &'static [u8]) {
+    connected.disconnect_monitor.abort();
     connected.client.close(reason);
     connected
         .endpoint
@@ -548,11 +556,20 @@ async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
     .await?;
     let client = Arc::new(ProxyClient::new(connection).with_fast_open(config.fast_open));
     Ok(ConnectedClient {
+        disconnect_monitor: monitor_disconnect(&client),
         endpoint,
         client,
         server_address: info.server_address,
         udp_enabled: info.udp_enabled,
         _port_mapping: port_mapping,
+    })
+}
+
+fn monitor_disconnect(client: &Arc<ProxyClient>) -> tokio::task::JoinHandle<()> {
+    let client = Arc::clone(client);
+    tokio::spawn(async move {
+        let reason = client.closed().await;
+        eprintln!("QUIC disconnected: {reason}; reconnecting on next proxy request");
     })
 }
 
@@ -1346,33 +1363,35 @@ mod tests {
                         let client = client.unwrap();
                         let proxy = tokio::spawn(ProxyServerConnection::new(accepted).serve());
 
-                        let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
-                        let echo_address = echo.local_addr().unwrap();
-                        let echo_task = tokio::spawn(async move {
-                            let (mut stream, _) = echo.accept().await.unwrap();
-                            let mut payload = [0; 4];
-                            stream.read_exact(&mut payload).await.unwrap();
-                            stream.write_all(&payload).await.unwrap();
-                        });
-                        let mut tunnel = client.tcp(&echo_address.to_string()).await.unwrap();
-                        tunnel.write_all(b"ping").await.unwrap();
-                        let mut response = [0; 4];
-                        tunnel.read_exact(&mut response).await.unwrap();
-                        assert_eq!(&response, b"ping");
-                        echo_task.await.unwrap();
+                        for target_host in ["127.0.0.1", "::1"] {
+                            let echo = TcpListener::bind(format_host_port(target_host, 0)).await.unwrap();
+                            let echo_address = echo.local_addr().unwrap();
+                            let echo_task = tokio::spawn(async move {
+                                let (mut stream, _) = echo.accept().await.unwrap();
+                                let mut payload = [0; 4];
+                                stream.read_exact(&mut payload).await.unwrap();
+                                stream.write_all(&payload).await.unwrap();
+                            });
+                            let mut tunnel = client.tcp(&echo_address.to_string()).await.unwrap();
+                            tunnel.write_all(b"ping").await.unwrap();
+                            let mut response = [0; 4];
+                            tunnel.read_exact(&mut response).await.unwrap();
+                            assert_eq!(&response, b"ping");
+                            echo_task.await.unwrap();
 
-                        let echo = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-                        let echo_address = echo.local_addr().unwrap();
-                        let echo_task = tokio::spawn(async move {
-                            let mut payload = [0; 4];
-                            let (size, peer) = echo.recv_from(&mut payload).await.unwrap();
-                            echo.send_to(&payload[..size], peer).await.unwrap();
-                        });
-                        let mut udp = client.udp().unwrap();
-                        udp.send(b"pong", &echo_address.to_string()).await.unwrap();
-                        let (response, _) = udp.receive().await.unwrap();
-                        assert_eq!(response, b"pong");
-                        echo_task.await.unwrap();
+                            let echo = UdpSocket::bind(format_host_port(target_host, 0)).await.unwrap();
+                            let echo_address = echo.local_addr().unwrap();
+                            let echo_task = tokio::spawn(async move {
+                                let mut payload = [0; 4];
+                                let (size, peer) = echo.recv_from(&mut payload).await.unwrap();
+                                echo.send_to(&payload[..size], peer).await.unwrap();
+                            });
+                            let mut udp = client.udp().unwrap();
+                            udp.send(b"pong", &echo_address.to_string()).await.unwrap();
+                            let (response, _) = udp.receive().await.unwrap();
+                            assert_eq!(response, b"pong");
+                            echo_task.await.unwrap();
+                        }
                         handle.close().await;
                         proxy.abort();
                     })
@@ -1461,7 +1480,35 @@ mod tests {
                         let client = client.unwrap();
                         assert_eq!(accepted.auth_id, "test-user");
                         assert!(!client.is_closed());
-                        handle.invalidate(&client).await;
+                        accepted
+                            .quinn()
+                            .close(VarInt::from_u32(42), b"test disconnect");
+                        let reason = tokio::time::timeout(Duration::from_secs(5), client.closed())
+                            .await
+                            .expect("peer disconnect was not detected");
+                        assert!(matches!(
+                            reason,
+                            quinn::ConnectionError::ApplicationClosed(_)
+                        ));
+                        tokio::time::timeout(Duration::from_secs(5), async {
+                            loop {
+                                if handle
+                                    .state
+                                    .lock()
+                                    .await
+                                    .connected
+                                    .as_ref()
+                                    .unwrap()
+                                    .disconnect_monitor
+                                    .is_finished()
+                                {
+                                    break;
+                                }
+                                tokio::task::yield_now().await;
+                            }
+                        })
+                        .await
+                        .expect("disconnect monitor did not finish");
                         assert!(client.is_closed());
                     }
                     handle.close().await;
