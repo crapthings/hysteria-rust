@@ -1486,9 +1486,13 @@ mod tests {
                         let reason = tokio::time::timeout(Duration::from_secs(5), client.closed())
                             .await
                             .expect("peer disconnect was not detected");
+                        // Peer termination may arrive as a stateless reset rather
+                        // than its application close. Both must trigger detection
+                        // and reconnection; a timeout is still a test failure.
                         assert!(matches!(
                             reason,
                             quinn::ConnectionError::ApplicationClosed(_)
+                                | quinn::ConnectionError::Reset
                         ));
                         tokio::time::timeout(Duration::from_secs(5), async {
                             loop {
