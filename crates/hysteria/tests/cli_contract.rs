@@ -747,3 +747,28 @@ fn ech_prune_keeps_existing_keys_and_requires_explicit_selection() {
     assert_eq!(result.status.code(), Some(1));
     assert!(!missing.exists());
 }
+
+#[test]
+fn service_help_and_invalid_names_are_offline() {
+    for args in [
+        vec!["service", "--help"],
+        vec!["service", "install", "--help"],
+    ] {
+        let output = execute(&args, b"");
+        assert!(output.status.success());
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("--no-start"));
+        assert!(help.contains("--no-enable"));
+    }
+    let output = execute(
+        &["service", "install", "server", "--name", "../unsafe"],
+        b"",
+    );
+    assert_eq!(output.status.code(), Some(2));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let output = execute(&["service", "status"], b"");
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Linux running systemd"));
+    }
+}

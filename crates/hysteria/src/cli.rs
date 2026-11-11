@@ -11,6 +11,8 @@ use std::path::PathBuf;
   hysteria guide server       Set up a server step by step
   hysteria doctor server      Check local deployment conditions
   hysteria server             Start the server
+  hysteria service install server -c server.yaml
+                              Install a Linux systemd service
   hysteria client -c client.yaml
 
 Detailed help:
@@ -91,6 +93,22 @@ Listen address, authentication, TLS/ACME, ACL and traffic statistics are configu
 Doctor is offline; successful checks do not establish network reachability or client trust."
     )]
     Server(crate::server_view::ServerOptions),
+    /// Install and manage named system services (Linux systemd).
+    #[command(after_help = "Examples:
+  sudo hysteria service install server -c server.yaml
+  sudo hysteria service install client -c client.yaml
+  sudo hysteria service install server --name backup -c backup.yaml
+  hysteria service status
+  hysteria service logs backup --follow
+  sudo hysteria service restart backup
+  sudo hysteria service uninstall backup
+
+Installation starts the service and enables boot startup by default.
+Use --no-start / --no-enable to opt out. System services run as root.
+Configuration and binary stay in place; keep their paths available at boot.
+Without a name, actions select the only instance. With multiple instances,
+provide a name for actions and logs; status lists all instances.")]
+    Service(crate::service::ServiceOptions),
     /// Validate configuration offline.
     Check(crate::check::CheckOptions),
     /// Generate a server configuration template.

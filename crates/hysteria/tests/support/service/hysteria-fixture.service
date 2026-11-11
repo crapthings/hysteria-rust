@@ -1,0 +1,22 @@
+# hysteria-service-v1 {"name":"fixture","role":"server","executable":"/bin/true","config":"/tmp/a b/$NAME%test.yaml","directory":"/tmp"}
+[Unit]
+Description=Hysteria server (fixture)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+WorkingDirectory=/tmp
+ExecStartPre=:"/bin/true" check server --config "/tmp/a b/$NAME%%test.yaml"
+ExecStart=:"/bin/true" server --config "/tmp/a b/$NAME%%test.yaml" --disable-update-check
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

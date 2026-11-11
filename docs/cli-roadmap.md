@@ -33,7 +33,14 @@ history and QUIC quality metrics remain subsequent work.
 
 Define server-side user lifecycle and storage before adding convenience commands: provision, revoke, expire and rotate credentials without relying on a custom client. Keep existing authentication integrations and standard Go/third-party client compatibility. Validate configuration updates before replacing active state; define behavior for existing connections and failed reloads explicitly.
 
-Service installation, upgrades and rollback should remain explicit operations with platform-specific adapters. Avoid mixing privileged service installation into ordinary server startup.
+Linux systemd service registration and named instances are implemented in the
+CLI: install/start/stop/restart/status/logs/uninstall, with configuration validation
+before restart and preservation of configuration on uninstall. See
+[system services](cli.md#linux-system-services). This first implementation uses
+root system units and references persistent binary/configuration paths in place.
+User units, launchd/Windows adapters, service-account selection, upgrades and
+rollback remain future work. Privileged installation stays separate from ordinary
+server startup.
 
 ## Optional client management
 

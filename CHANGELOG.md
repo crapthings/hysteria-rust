@@ -45,6 +45,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add Linux systemd service management for named server/client instances, with
+  default start/boot enablement, pre-restart validation, status and journal access.
+  Preserve configuration and keys on uninstall; never overwrite existing units.
+
 - Offline `hysteria ech` key generation with private atomic file output,
   configurable public name/config ID/padding/AEADs, `--retain-keys` for overlap
   and `ech prune` to retire old keys without generating replacements.

@@ -263,3 +263,17 @@ MIT licensed; see [LICENSE](LICENSE). Hysteria 2 is created by
 their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
+
+### Linux system service
+
+On a systemd host, install a validated configuration as a background service:
+
+```shell
+sudo hysteria service install server -c server.yaml
+hysteria service status
+hysteria service logs
+```
+
+Installation starts the service and enables it at boot. For multiple instances,
+add `--name NAME`; clients use `install client`. See [service management](docs/cli.md#linux-system-services)
+for permissions, path handling and removal.

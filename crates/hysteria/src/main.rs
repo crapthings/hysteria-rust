@@ -8,6 +8,7 @@ mod ech_cli;
 /// Generates starter configurations without starting a server.
 mod init;
 mod server_view;
+mod service;
 /// Installs platform-specific graceful service termination handlers.
 mod shutdown;
 
@@ -114,6 +115,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::CheckUpdate => print_update().await,
         Command::Ech(options) => options.run(),
+        Command::Service(options) => options.run(&cli.config),
         Command::Cert {
             host,
             cert,
