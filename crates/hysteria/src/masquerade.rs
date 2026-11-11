@@ -15,7 +15,7 @@ use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tower::ServiceExt;
-use tower_http::services::ServeDir;
+mod files;
 
 const HOP_HEADERS: &[&str] = &[
     "connection",
@@ -58,9 +58,7 @@ impl Masquerade {
         let router = match config.kind.trim().to_ascii_lowercase().as_str() {
             "" | "404" => Router::new().fallback(not_found),
             "string" => string_router(config)?,
-            "file" => {
-                Router::new().fallback_service(ServeDir::new(PathBuf::from(&config.file.dir)))
-            }
+            "file" => files::router(PathBuf::from(&config.file.dir)),
             "proxy" => proxy_router(config)?,
             kind => {
                 return Err(CliError::new(format!(
@@ -94,7 +92,11 @@ impl Masquerade {
         } else {
             Some(bind_frontend(&config.listen_https, "HTTPS").await?)
         };
-        let https_port = parse_listen_port(&config.listen_https);
+        let https_port = tls_listener
+            .as_ref()
+            .map(TcpListener::local_addr)
+            .transpose()?
+            .map_or(443, |address| address.port());
         let mut tasks = Vec::with_capacity(2);
         let cleartext_address = cleartext_listener
             .as_ref()
@@ -198,11 +200,19 @@ async fn frontend_response(
 }
 
 fn redirect_to_https(request: &Request<Body>, https_port: u16) -> Response<Body> {
-    let host = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
+    let Some(authority) = request_host(request.uri(), request.headers())
+        .and_then(|host| host.parse::<http::uri::Authority>().ok())
+        .filter(|authority| {
+            !authority.as_str().contains('@')
+                && !authority.host().is_empty()
+                && (authority.as_str().len() == authority.host().len()
+                    || authority.port_u16().is_some())
+        })
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let host = authority.host();
+    // Authority::host retains brackets on IPv6 literals. Discard the HTTP port.
     let authority = if https_port == 0 || https_port == 443 {
         host.to_owned()
     } else {
@@ -221,10 +231,10 @@ fn redirect_to_https(request: &Request<Body>, https_port: u16) -> Response<Body>
     };
     let mut response = Response::new(body);
     *response.status_mut() = StatusCode::MOVED_PERMANENTLY;
-    response.headers_mut().insert(
-        header::LOCATION,
-        HeaderValue::from_str(&location).expect("a request-derived redirect is a valid header"),
-    );
+    let Ok(location) = HeaderValue::from_str(&location) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    response.headers_mut().insert(header::LOCATION, location);
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
@@ -256,12 +266,6 @@ fn normalize_listen(listen: &str) -> String {
     } else {
         listen.to_owned()
     }
-}
-
-fn parse_listen_port(listen: &str) -> u16 {
-    normalize_listen(listen)
-        .parse::<SocketAddr>()
-        .map_or(0, |address| address.port())
 }
 
 async fn serve_https(listener: TcpListener, acceptor: TlsAcceptor, router: Router) {
@@ -564,14 +568,13 @@ async fn proxy_request_inner(
     {
         headers.insert(header::CONTENT_LENGTH, value);
     }
-    let upstream = backend
-        .client
-        .request(parts.method, target)
-        .version(if upgrading {
-            axum::http::Version::HTTP_11
-        } else {
-            parts.version
-        })
+    // The upstream connection chooses its own HTTP version; an HTTP/2 frontend
+    // must be able to proxy to an HTTP/1.1 backend. Only Upgrade requires HTTP/1.1.
+    let mut outgoing = backend.client.request(parts.method, target);
+    if upgrading {
+        outgoing = outgoing.version(axum::http::Version::HTTP_11);
+    }
+    let upstream = outgoing
         .headers(headers)
         .body(reqwest::Body::wrap_stream(body.into_data_stream()))
         .send()
@@ -1045,9 +1048,109 @@ mod tests {
         assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
         assert_eq!(
             response.headers()[header::LOCATION],
-            "https://example.test/path?q=1"
+            format!(
+                "https://example.test:{}/path?q=1",
+                servers.https_address.unwrap().port()
+            )
         );
         assert!(!response.headers().contains_key(header::ALT_SVC));
+    }
+
+    #[tokio::test]
+    async fn https_redirect_replaces_ports_and_rejects_bad_authorities() {
+        use http_body_util::BodyExt as _;
+        for (host, port, expected) in [
+            ("example.test:8080", 443, "https://example.test/path?q=1"),
+            (
+                "example.test:8080",
+                8443,
+                "https://example.test:8443/path?q=1",
+            ),
+            ("[::1]:8080", 8443, "https://[::1]:8443/path?q=1"),
+            ("[::1]", 443, "https://[::1]/path?q=1"),
+        ] {
+            let request = Request::builder()
+                .method("HEAD")
+                .uri("/path?q=1")
+                .header(header::HOST, host)
+                .body(Body::empty())
+                .unwrap();
+            let response = redirect_to_https(&request, port);
+            assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+            assert_eq!(response.headers()[header::LOCATION], expected);
+            assert!(
+                response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .is_empty()
+            );
+        }
+        for host in [
+            None,
+            Some("user@example.test"),
+            Some("example.test:bad"),
+            Some("example.test/path"),
+        ] {
+            let mut request = Request::builder().uri("/");
+            if let Some(host) = host {
+                request = request.header(header::HOST, host);
+            }
+            assert_eq!(
+                redirect_to_https(&request.body(Body::empty()).unwrap(), 443).status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
+
+    fn test_tls_pair() -> (rustls::ServerConfig, rustls::ClientConfig) {
+        crate::tls::ensure_crypto_provider();
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let certificate = certified.cert.der().clone();
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            certified.signing_key.serialize_der(),
+        ));
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.clone()], key)
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(certificate).unwrap();
+        let mut client = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client.alpn_protocols = vec![b"h2".to_vec()];
+        (server, client)
+    }
+
+    #[tokio::test]
+    async fn http2_tls_frontend_proxies_to_http1_backend() {
+        use http_body_util::{BodyExt as _, Empty};
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let backend_address = listener.local_addr().unwrap();
+            let upstream = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                assert!(read_http_request(&mut stream).await.starts_with("GET /test?q=1 HTTP/1.1\r\n"));
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nbackend").await.unwrap();
+            });
+            let config = parse_config(&format!("type: proxy\nproxy: {{url: 'http://{backend_address}', rewriteHost: true}}\nlistenHTTPS: '127.0.0.1:0'\n"));
+            let (server_tls, client_tls) = test_tls_pair();
+            let frontends = Masquerade::build(&config).unwrap().start_tcp(&config, server_tls, 8443).await.unwrap().unwrap();
+            let stream = tokio::net::TcpStream::connect(frontends.https_address.unwrap()).await.unwrap();
+            let stream = tokio_rustls::TlsConnector::from(Arc::new(client_tls)).connect("localhost".try_into().unwrap(), stream).await.unwrap();
+            assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+            let (mut sender, connection) = hyper::client::conn::http2::handshake(hyper_util::rt::TokioExecutor::new(), hyper_util::rt::TokioIo::new(stream)).await.unwrap();
+            let mut drivers = tokio::task::JoinSet::new();
+            drivers.spawn(async move { let _ = connection.await; });
+            let response = sender.send_request(Request::builder().uri("https://localhost/test?q=1").body(Empty::<bytes::Bytes>::new()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::ALT_SVC], "h3=\":8443\"; ma=2592000");
+            assert_eq!(response.into_body().collect().await.unwrap().to_bytes(), "backend");
+            upstream.await.unwrap();
+        }).await.expect("HTTP/2 masquerade regression timed out");
     }
 
     async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {

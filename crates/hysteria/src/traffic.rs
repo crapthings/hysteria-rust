@@ -1,4 +1,7 @@
-use crate::{CliError, Result};
+use crate::{
+    CliError, Result,
+    status::{Listeners, ServerState, ServerStatus},
+};
 use axum::{
     Router,
     body::Bytes,
@@ -13,7 +16,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{Arc, Mutex, PoisonError},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::{net::TcpListener, task::JoinHandle};
 
@@ -27,6 +30,12 @@ pub(crate) struct TrafficEntry {
 
 #[derive(Debug, Default)]
 struct TrafficState {
+    totals: TrafficEntry,
+    udp_sessions: usize,
+    tcp_connect_failures: u64,
+    udp_queue_drops: u64,
+    ready: bool,
+    listeners: Listeners,
     stats: HashMap<String, TrafficEntry>,
     online: HashMap<String, usize>,
     kicked: HashSet<String>,
@@ -37,6 +46,8 @@ struct TrafficState {
 pub(crate) struct TrafficStats {
     state: Arc<Mutex<TrafficState>>,
     secret: Arc<str>,
+    started_at: SystemTime,
+    started: Instant,
 }
 
 impl TrafficStats {
@@ -44,6 +55,59 @@ impl TrafficStats {
         Self {
             state: Arc::new(Mutex::new(TrafficState::default())),
             secret: secret.into(),
+            started_at: SystemTime::now(),
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn with_start(mut self, started_at: SystemTime, started: Instant) -> Self {
+        self.started_at = started_at;
+        self.started = started;
+        self
+    }
+
+    pub(crate) fn ready(
+        &self,
+        quic: SocketAddr,
+        http: Option<SocketAddr>,
+        https: Option<SocketAddr>,
+    ) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.listeners.quic = Some(quic);
+        state.listeners.masquerade_http = http;
+        state.listeners.masquerade_https = https;
+        state.ready = true;
+    }
+
+    fn snapshot(&self) -> ServerStatus {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        ServerStatus {
+            schema_version: 1,
+            instance_id: format!(
+                "{}-{}",
+                std::process::id(),
+                self.started_at
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ),
+            version: env!("CARGO_PKG_VERSION").into(),
+            state: if state.ready {
+                ServerState::Ready
+            } else {
+                ServerState::Starting
+            },
+            started_at: chrono::DateTime::<chrono::Utc>::from(self.started_at).to_rfc3339(),
+            uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            listeners: state.listeners.clone(),
+            online_identities: state.online.len(),
+            authenticated_connections: state.online.values().sum(),
+            active_tcp_streams: state.streams.len(),
+            active_udp_sessions: state.udp_sessions,
+            upload_bytes: state.totals.tx,
+            download_bytes: state.totals.rx,
+            tcp_connect_failures: state.tcp_connect_failures,
+            udp_queue_drops: state.udp_queue_drops,
         }
     }
 
@@ -54,9 +118,15 @@ impl TrafficStats {
             ))
         })?;
         let address = listener.local_addr()?;
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .listeners
+            .statistics = Some(address);
         let router = Router::new()
             .route("/", get(index))
             .route("/traffic", get(traffic))
+            .route("/v1/status", get(status))
             .route("/online", get(online))
             .route("/kick", post(kick))
             .route("/dump/streams", get(dump_streams))
@@ -82,6 +152,8 @@ impl TrafficLogger for TrafficStats {
         if state.kicked.remove(id) {
             return false;
         }
+        state.totals.tx = state.totals.tx.saturating_add(tx);
+        state.totals.rx = state.totals.rx.saturating_add(rx);
         let entry = state.stats.entry(id.to_owned()).or_default();
         entry.tx = entry.tx.wrapping_add(tx);
         entry.rx = entry.rx.wrapping_add(rx);
@@ -98,6 +170,25 @@ impl TrafficLogger for TrafficStats {
                 state.online.remove(id);
             }
         }
+    }
+
+    fn udp_session_state(&self, active: bool) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.udp_sessions = if active {
+            state.udp_sessions.saturating_add(1)
+        } else {
+            state.udp_sessions.saturating_sub(1)
+        };
+    }
+
+    fn tcp_connect_failed(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.tcp_connect_failures = state.tcp_connect_failures.saturating_add(1);
+    }
+
+    fn udp_queue_dropped(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.udp_queue_drops = state.udp_queue_drops.saturating_add(1);
     }
 
     fn trace_stream(&self, stats: Arc<StreamStats>) {
@@ -127,6 +218,18 @@ impl Drop for TrafficStatsHttpServer {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+// Unlike the compatibility API, new monitoring endpoints require a secret.
+async fn status(State(service): State<TrafficStats>, headers: HeaderMap) -> Response {
+    if service.secret.is_empty() || !service.authorized(&headers) {
+        return unauthorized();
+    }
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::Json(service.snapshot()),
+    )
+        .into_response()
 }
 
 async fn index(State(service): State<TrafficStats>, headers: HeaderMap) -> Response {
@@ -494,6 +597,98 @@ mod tests {
         );
         assert!(!stats.log_traffic("alice", 1, 0));
         assert!(stats.log_traffic("alice", 1, 0));
+    }
+
+    #[tokio::test]
+    async fn status_is_authenticated_aggregate_only_and_independent_of_clear() {
+        crate::tls::ensure_crypto_provider();
+        let stats = TrafficStats::new("monitor-secret");
+        let server = stats.clone().start_http("127.0.0.1:0").await.unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let root = format!("http://{}", server.address);
+        let url = format!("{root}/v1/status");
+        assert_eq!(
+            client.get(&url).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            client
+                .get(&url)
+                .header("Authorization", "wrong")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(stats.snapshot().state, ServerState::Starting);
+        stats.ready("127.0.0.1:443".parse().unwrap(), None, None);
+        stats.log_online_state("private-user", true);
+        stats.log_online_state("private-user", true);
+        stats.log_traffic("private-user", 100, 200);
+        stats.udp_session_state(true);
+        stats.tcp_connect_failed();
+        stats.udp_queue_dropped();
+        client
+            .get(format!("{root}/traffic?clear=true"))
+            .header("Authorization", "monitor-secret")
+            .send()
+            .await
+            .unwrap();
+        let response = client
+            .get(&url)
+            .header("Authorization", "monitor-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "no-store"
+        );
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("private-user") && !body.contains("monitor-secret"));
+        let snapshot: ServerStatus = serde_json::from_str(&body).unwrap();
+        assert_eq!(snapshot.state, ServerState::Ready);
+        assert_eq!(
+            (
+                snapshot.online_identities,
+                snapshot.authenticated_connections
+            ),
+            (1, 2)
+        );
+        assert_eq!((snapshot.upload_bytes, snapshot.download_bytes), (100, 200));
+        assert_eq!(snapshot.active_udp_sessions, 1);
+        assert_eq!(
+            (snapshot.tcp_connect_failures, snapshot.udp_queue_drops),
+            (1, 1)
+        );
+        stats.udp_session_state(false);
+        stats.log_online_state("private-user", false);
+        assert_eq!(stats.snapshot().active_udp_sessions, 0);
+        assert_eq!(stats.snapshot().authenticated_connections, 1);
+        assert_eq!(
+            client
+                .post(&url)
+                .header("Authorization", "monitor-secret")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+        let unsecured = TrafficStats::new("")
+            .start_http("127.0.0.1:0")
+            .await
+            .unwrap();
+        assert_eq!(
+            client
+                .get(format!("http://{}/v1/status", unsecured.address))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[test]

@@ -123,6 +123,20 @@ errors, check the trusted CA and `tls.sni`. Unknown YAML fields are rejected;
 check the [examples](examples) and [supported configuration](PORT_STATUS.md)
 before migrating an existing setup.
 
+### Website masquerading
+
+Masquerade supports strings, static files and reverse proxies, with optional
+HTTP/HTTPS listeners. A reverse proxy accepts HTTP/2 on the HTTPS frontend even
+when its upstream serves HTTP/1.1. Upstream request versions are independent of
+the frontend connection; HTTP/1.1 Upgrade remains supported.
+
+In the development version, file mode serves `index.html` when present; otherwise
+it lists directory entries. Publish only a directory intended for public access,
+or provide an index page if a directory listing is unwanted. Listings are capped
+at 10,000 entries; larger directories return HTTP 503. This is not a filesystem
+sandbox: existing static-file symlink behavior is unchanged. Static TLS file
+replacement still requires a restart; this differs from managed ACME renewal.
+
 ### Experimental Chrome client profile
 
 Opt in on the **Rust client** with:
@@ -175,6 +189,22 @@ hysteria doctor server -c server.yaml --output json
 Checks local TLS material, certificate dates and selected referenced files in
 addition to configuration validation. Reports actionable failures and explicitly
 marks network/runtime conditions as unverified. See [CLI behavior](docs/cli.md).
+
+## View a running server
+
+In the development version, configure a loopback `trafficStats` listener with a
+separate secret, restart the server, then query it using the same configuration:
+
+```shell
+hysteria server status -c server.yaml
+hysteria server stats --watch -c server.yaml
+hysteria server status --output json -c server.yaml
+```
+
+English text is aligned and automatically highlighted on a terminal. These
+commands are read-only and never start another server. See
+[live monitoring](docs/cli.md#live-server-status-and-statistics) for setup,
+metric definitions, sampling and access-control boundaries.
 
 ## Upgrade and rollback
 

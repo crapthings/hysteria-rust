@@ -208,13 +208,20 @@ fn run_direction_with_sniff(direction: Direction<'_>, sniff: bool) {
         .unwrap();
     udp_echo.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
     let udp_echo_address = udp_echo.local_addr().unwrap();
-    let udp_payload = [payload, b"-udp"].concat();
-    let expected_udp = udp_payload.clone();
+    let udp_payloads = [[payload, b"-udp"].concat(), vec![0x5a; 3000]];
+    let expected_udp = udp_payloads.clone();
     let udp_echo_thread = thread::spawn(move || {
-        let mut buffer = [0_u8; 128];
-        let (size, peer) = udp_echo.recv_from(&mut buffer).unwrap();
-        assert_eq!(&buffer[..size], expected_udp);
-        udp_echo.send_to(&buffer[..size], peer).unwrap();
+        let mut buffer = [0_u8; 4096];
+        let mut seen = [false; 2];
+        while !seen.iter().all(|seen| *seen) {
+            let (size, peer) = udp_echo.recv_from(&mut buffer).unwrap();
+            let index = expected_udp
+                .iter()
+                .position(|expected| expected == &buffer[..size])
+                .expect("unexpected UDP payload");
+            seen[index] = true;
+            udp_echo.send_to(&buffer[..size], peer).unwrap();
+        }
     });
 
     let suffix = if payload.starts_with(b"rust-client") {
@@ -260,11 +267,9 @@ fn run_direction_with_sniff(direction: Direction<'_>, sniff: bool) {
     let mut reply = vec![0; payload.len()];
     tunnel.read_exact(&mut reply).unwrap();
     assert_eq!(reply, payload);
-    udp_round_trip(
-        udp_forwarding_address,
-        &udp_payload,
-        Duration::from_secs(12),
-    );
+    for payload in &udp_payloads {
+        udp_round_trip(udp_forwarding_address, payload, Duration::from_secs(12));
+    }
     drop(tunnel);
     join_until(echo_thread);
     join_until(udp_echo_thread);
@@ -277,7 +282,7 @@ fn udp_round_trip(address: SocketAddr, payload: &[u8], timeout: Duration) {
         .set_read_timeout(Some(Duration::from_millis(250)))
         .unwrap();
     let deadline = Instant::now() + timeout;
-    let mut buffer = [0_u8; 128];
+    let mut buffer = [0_u8; 4096];
     loop {
         socket.send_to(payload, address).unwrap();
         match socket.recv_from(&mut buffer) {

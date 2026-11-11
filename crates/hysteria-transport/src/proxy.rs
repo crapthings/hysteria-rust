@@ -69,6 +69,15 @@ pub trait TrafficLogger: Send + Sync + 'static {
     fn log_traffic(&self, id: &str, tx: u64, rx: u64) -> bool;
     fn log_online_state(&self, id: &str, online: bool);
 
+    /// Tracks live UDP relay tasks, including target setup and idle waiting.
+    fn udp_session_state(&self, _active: bool) {}
+
+    /// Counts failed TCP outbound calls (which may include DNS or policy rejection).
+    fn tcp_connect_failed(&self) {}
+
+    /// Counts datagrams dropped because an existing server-session queue is full.
+    fn udp_queue_dropped(&self) {}
+
     fn trace_stream(&self, _stats: Arc<StreamStats>) {}
 
     fn untrace_stream(&self, _connection_id: u32, _stream_id: u64) {}
@@ -577,6 +586,9 @@ async fn handle_tcp_stream(
     let mut target = match context.outbound.tcp(&request.address).await {
         Ok(target) => target,
         Err(error) => {
+            if let Some(logger) = &context.traffic_logger {
+                logger.tcp_connect_failed();
+            }
             if !should_hook {
                 let message = truncate_message(&error.to_string(), MAX_MESSAGE_LENGTH);
                 let _ = write_tcp_response(&mut send, false, &message).await;
@@ -940,6 +952,7 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct RecordedTraffic {
+        udp_sessions: usize,
         tx: u64,
         rx: u64,
         online: Vec<bool>,
@@ -962,6 +975,7 @@ mod tests {
         fn snapshot(&self) -> RecordedTraffic {
             let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
             RecordedTraffic {
+                udp_sessions: state.udp_sessions,
                 tx: state.tx,
                 rx: state.rx,
                 online: state.online.clone(),
@@ -973,6 +987,15 @@ mod tests {
     }
 
     impl TrafficLogger for RecordingLogger {
+        fn udp_session_state(&self, active: bool) {
+            let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            if active {
+                state.udp_sessions += 1;
+            } else {
+                state.udp_sessions -= 1;
+            }
+        }
+
         fn log_traffic(&self, _id: &str, tx: u64, rx: u64) -> bool {
             let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
             if state.reject_next {
@@ -1371,6 +1394,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(udp.receive().await.unwrap().0, b"seven!!");
+        assert_eq!(logger.snapshot().udp_sessions, 1);
         assert_eq!(logger.snapshot().tx, 11);
         assert_eq!(logger.snapshot().rx, 11);
         let active = logger.snapshot();
@@ -1386,6 +1410,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(1), relay).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(logger.snapshot().online, [true, false]);
+        assert_eq!(logger.snapshot().udp_sessions, 0);
         assert!(logger.snapshot().streams.is_empty());
         assert_eq!(logger.snapshot().untraced.len(), 1);
         assert_eq!(

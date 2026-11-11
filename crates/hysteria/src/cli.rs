@@ -76,6 +76,9 @@ Reads YAML/JSON configuration (default: config.yaml). Configure authentication a
   hysteria check server -c server.yaml    Validate configuration
   hysteria doctor server -c server.yaml   Inspect local TLS/deployment conditions
   hysteria server -c server.yaml          Start serving
+  hysteria server status -c server.yaml   View local readiness
+  hysteria server stats --watch -c server.yaml
+                                         Watch aggregate traffic
 
 Other options:
   hysteria server --config -             Read configuration from stdin until EOF
@@ -85,7 +88,7 @@ Stop with Ctrl+C or Unix SIGTERM. --disable-update-check disables automatic upda
 Listen address, authentication, TLS/ACME, ACL and traffic statistics are configured in YAML/JSON.
 Doctor is offline; successful checks do not establish network reachability or client trust."
     )]
-    Server,
+    Server(crate::server_view::ServerOptions),
     /// Validate configuration offline.
     Check(crate::check::CheckOptions),
     /// Generate a server configuration template.
@@ -168,7 +171,7 @@ mod tests {
             assert!(matches!(cli.command, None | Some(Command::Client)));
         }
         let cli = Cli::try_parse_from(["hysteria", "server", "-c", "-"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Server)));
+        assert!(matches!(cli.command, Some(Command::Server(_))));
         assert_eq!(cli.config, PathBuf::from("-"));
     }
 

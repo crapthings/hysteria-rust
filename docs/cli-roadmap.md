@@ -19,6 +19,16 @@ Initial typed error categories and bounded opt-in diagnostic causes are implemen
 
 `doctor server` now provides offline configuration, TLS material/date and selected local-file checks. Network and runtime conditions are explicitly unverified; future opt-in network checks must remain separate. Document each operation's side effects and avoid automatically changing host networking. Status/control APIs need authentication, versioning and a local-first exposure policy, independent of any specific GUI.
 
+## Live monitoring
+
+Implemented in the development source: read-only `server status` / `server stats`,
+watch mode, aligned English terminal output and JSON/NDJSON. The authenticated
+`/v1/status` endpoint extends the existing statistics interface with aggregate
+readiness, listener, connection, payload and selected failure counters. This is
+not a separate control service; see [CLI behavior](cli.md#live-server-status-and-statistics).
+Certificate renewal state, detailed error categories, per-user views, persistent
+history and QUIC quality metrics remain subsequent work.
+
 ## Server administration
 
 Define server-side user lifecycle and storage before adding convenience commands: provision, revoke, expire and rotate credentials without relying on a custom client. Keep existing authentication integrations and standard Go/third-party client compatibility. Validate configuration updates before replacing active state; define behavior for existing connections and failed reloads explicitly.

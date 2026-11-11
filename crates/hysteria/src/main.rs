@@ -6,6 +6,7 @@ mod cli;
 mod doctor_cli;
 /// Generates starter configurations without starting a server.
 mod init;
+mod server_view;
 /// Installs platform-specific graceful service termination handlers.
 mod shutdown;
 
@@ -52,7 +53,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             )
             .await
         }
-        Command::Server => {
+        Command::Server(options) => {
+            if let Some(command) = options.command {
+                return command.run(&cli.config).await.map(|()| ExitCode::SUCCESS);
+            }
             serve_server(
                 ServerConfig::load(&cli.config)?,
                 shutdown::signal()?,

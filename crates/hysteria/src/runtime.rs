@@ -43,6 +43,8 @@ pub async fn serve_server(
     shutdown: impl Future<Output = ()> + Send,
     update_checks: bool,
 ) -> Result<()> {
+    let started_at = std::time::SystemTime::now();
+    let started = std::time::Instant::now();
     config.validate()?;
     let (tls, _acme_runtime) = build_server_tls(&config).await?;
     let tcp_tls = tls.clone();
@@ -64,15 +66,16 @@ pub async fn serve_server(
     let request_hook = build_request_hook(&config)?;
     let masquerade = Arc::new(crate::masquerade::Masquerade::build(&config.masquerade)?);
     let masquerade_handler: Arc<dyn hysteria_transport::MasqueradeHandler> = masquerade.clone();
-    let (traffic_logger, _traffic_server) = if config.traffic_stats.listen.is_empty() {
-        (None, None)
+    let (traffic_logger, _traffic_server, status) = if config.traffic_stats.listen.is_empty() {
+        (None, None, None)
     } else {
-        let stats = crate::traffic::TrafficStats::new(config.traffic_stats.secret.clone());
+        let stats = crate::traffic::TrafficStats::new(config.traffic_stats.secret.clone())
+            .with_start(started_at, started);
         let listen = normalize_listen(&config.traffic_stats.listen);
         let server = stats.clone().start_http(&listen).await?;
         eprintln!("Traffic stats server listening on {}", server.address);
-        let logger: Arc<dyn TrafficLogger> = Arc::new(stats);
-        (Some(logger), Some(server))
+        let logger: Arc<dyn TrafficLogger> = Arc::new(stats.clone());
+        (Some(logger), Some(server), Some(stats))
     };
     let (mut server, _realm_runtime) =
         build_server_transport(&config, quic, handshake, authenticator, masquerade_handler).await?;
@@ -88,6 +91,13 @@ pub async fn serve_server(
         if let Some(address) = frontends.https_address {
             eprintln!("Masquerade HTTPS server listening on {address}");
         }
+    }
+    if let Some(status) = &status {
+        status.ready(
+            server_address,
+            masquerade_tcp.as_ref().and_then(|s| s.http_address),
+            masquerade_tcp.as_ref().and_then(|s| s.https_address),
+        );
     }
     start_server_update_checks(update_checks);
     tokio::pin!(shutdown);

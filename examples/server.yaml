@@ -22,3 +22,9 @@ masquerade:
 # acl:
 #   inline:
 #     - reject(geoip:private)
+
+# Optional local status/statistics. Use a separate random secret; keep this file private.
+# Restart the server after enabling, then run: hysteria server status -c server.yaml
+# trafficStats:
+#   listen: 127.0.0.1:9999
+#   secret: REPLACE_WITH_A_SEPARATE_LONG_RANDOM_SECRET

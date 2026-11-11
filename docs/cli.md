@@ -208,3 +208,105 @@ failures at the next interval. Server checks and `check-update` connect directly
 client background checks use the authenticated Hy2 tunnel. Requests have a
 10-second deadline. `--disable-update-check` / `HYSTERIA_DISABLE_UPDATE_CHECK`
 disable automatic checks. No command installs or replaces binaries.
+
+## Live server status and statistics
+
+The development CLI can query an already running server through its existing
+`trafficStats` HTTP interface. It does not start another server, load TLS keys,
+change configuration, clear counters, kick users or change network settings.
+Enable monitoring explicitly in the server configuration and restart that server:
+
+```yaml
+trafficStats:
+  listen: 127.0.0.1:9999
+  secret: REPLACE_WITH_A_SEPARATE_LONG_RANDOM_SECRET
+```
+
+Keep this file private. Use an independent secret, not the proxy password.
+The same configuration identifies the running service for these commands:
+
+```shell
+hysteria server status -c server.yaml
+hysteria server stats -c server.yaml
+hysteria server stats --watch -c server.yaml
+hysteria server stats --watch --interval 5s -c server.yaml
+hysteria server status --output json -c server.yaml
+hysteria server stats --watch --output json -c server.yaml
+```
+
+`hysteria server` still starts the foreground server. `doctor server` remains an
+offline inspection; `server status` observes the live process. A failed query
+means the monitoring interface could not be queried, not proof that QUIC is down.
+Old servers without the new endpoint return an upgrade hint.
+
+### Display and sampling
+
+All labels and guidance are English. Text uses aligned labels and right-aligned
+traffic columns. Auto color highlights READY in green, STARTING in yellow and
+nonzero error counters in yellow. It is disabled for redirected stdout,
+`NO_COLOR`, or `TERM=dumb`. `--color always|never` overrides auto color for text.
+JSON never contains ANSI sequences. Text from the peer is stripped of control
+and non-ASCII characters and truncated before display.
+
+A status query returns immediately. A one-shot stats query takes two samples,
+two seconds apart by default. `--interval` accepts 1 second through 1 hour.
+Watch mode displays its first snapshot immediately with rates unavailable until
+the next sample. Rates use the server's monotonic uptime difference; a changed
+instance ID, reversed counters or non-advancing clock discards the sample.
+They are sample averages, not instantaneous or lifetime-average speeds.
+
+Watch clears/redraws only an interactive text terminal; redirected text appends
+snapshots, while JSON writes one document per line (NDJSON). Ctrl+C or Unix
+SIGTERM exits successfully, including while a request is pending. Requests have
+a three-second timeout and a 64 KiB response cap. A failed query ends the command
+with status 1 instead of continuing to show stale values as healthy.
+
+### Metrics and boundaries
+
+The authenticated read-only `GET /v1/status` returns `schema_version: 1`, an
+instance ID, binary version, UTC startup timestamp, monotonic `uptime_ms`,
+`state`, bound listener addresses, and aggregate counters. CLI JSON includes
+these fields plus `rates` (null before a valid sample; otherwise sample seconds
+and upload/download bytes per second). Consumers must accept additional fields.
+
+| Field | Meaning |
+| --- | --- |
+| `state` | `starting` until local listeners/setup complete, then `ready`; no external reachability claim |
+| `online_identities` | Distinct currently authenticated identities, not people/devices |
+| `authenticated_connections` | Authenticated QUIC connections currently served by the proxy loop |
+| `active_tcp_streams` | Traced TCP proxy requests, including inspection and dialing |
+| `active_udp_sessions` | Live UDP relay tasks, including reassembly, target setup and idle waiting |
+| `upload_bytes` / `download_bytes` | Proxy payload counters from the client's perspective |
+| `tcp_connect_failures` | Failed TCP outbound calls; includes failures due to DNS/policy as well as dialing |
+| `udp_queue_drops` | Incoming server UDP datagrams dropped because an existing relay queue is full |
+
+Counters begin at process startup and reset on restart. They are independent of
+the compatibility `/traffic?clear=true` counters. TCP counts successfully written
+payload; UDP upload counts received Hysteria fragment payload before reassembly,
+and UDP download counts target payload before its QUIC send. UDP payload later
+dropped/rejected may therefore be included. These counters exclude QUIC framing,
+encryption, retransmission overhead and masquerade traffic; they are not billing
+records or proof of end-to-end delivery. Queue drops do not represent all network
+packet loss. Snapshot collection shares the existing short traffic-state lock.
+
+No usernames, client addresses, destinations, credentials or configuration body
+are included. Separate DNS/TLS/authentication failure counters, certificate and
+ACME renewal status, per-user views, historical storage and QUIC quality metrics
+are not part of this increment. Unsupported measurements are not reported as zero.
+
+### Access control
+
+The new endpoint always requires a nonempty configured secret in the existing
+`Authorization` header and returns `Cache-Control: no-store`. It exposes read-only GET/HEAD requests; POST is rejected.
+The CLI sends only this read-only request; it disables environment proxies and
+redirects and refuses non-loopback destinations. Literal wildcard listen addresses
+are mapped to their matching loopback address for querying; `localhost` maps to
+127.0.0.1. For IPv6-only use an explicit `[::1]:port`. Port zero cannot be queried
+from configuration because the actual ephemeral port is unknown.
+
+This is authenticated HTTP over loopback, not a Unix socket or Windows named
+pipe. Binding `trafficStats` publicly still exposes its existing management API;
+keep the listener on loopback. The secret also authorizes the legacy management
+endpoints, so it is not a read-only credential. Their behavior (including optional
+authentication when the legacy secret is empty) is unchanged. Neither the CLI's
+loopback restriction nor the new endpoint secures a publicly exposed legacy API.

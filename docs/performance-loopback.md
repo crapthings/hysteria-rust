@@ -156,3 +156,51 @@ Go/Rust binary interoperability now includes sniff-enabled requests in both
 directions with a two-second response deadline and default client fastOpen.
 Slow or absent application data (including server-first protocols) can still reach
 the configured sniff deadline; this fix only removes the mutual response/data wait.
+
+## Borrowed UDP encoding experiment (Rust 1.91.1)
+
+The send path now borrows the caller's payload until it is encoded into final
+Hysteria datagrams, then transfers each final Vec to Quinn via `Bytes::from`.
+It removes the initial payload Vec copy and intermediate per-fragment payload
+and address copies. It does not change the wire format, public `UdpMessage.data`
+type, maximum accepted datagram size or the existing fragmentation API.
+Payload is still copied once into each contiguous wire datagram; this is not
+end-to-end zero-copy networking. No new dependency was added.
+
+`Bytes` is already used at the Quinn boundary and in HTTP bodies. Moving owned
+Vecs through queues does not copy their payload. Receive-side `Bytes` migration
+would affect the codec, reassembly and consumers, so it was not included.
+Salamander/Gecko transformation buffers and ordinary Tokio TCP copy loops remain
+unchanged pending evidence that a broader buffer migration helps.
+
+Reproduce this codec-only comparison:
+
+```sh
+cargo run --locked --release -p hysteria-protocol --example udp_encode_bench
+```
+
+Both paths run in the same optimized executable and include header allocation,
+encoding and dropping final datagrams. The baseline additionally owns the input
+payload and materializes fragments as the former sender did. Seven batches of
+10,000 operations alternate order after warmup. MTU is 1200 bytes; all measured
+payload sizes fit the transport's 4096-byte encoded-size limit.
+
+Retained results on macOS ARM64, Rust 1.91.1 (median ns per input payload):
+
+| Payload bytes | Owned pipeline | Borrowed pipeline |
+| --- | --- | --- |
+| 64 | 65 | 46 |
+| 1000 | 127 | 74 |
+| 1200 | 284 | 100 |
+| 3000 | 472 | 167 |
+| 4000 | 602 | 220 |
+
+[Raw samples and environment](benchmarks/2026-11-11-udp-encode.json). Other host
+activity was uncontrolled; these are local codec timings, not a QUIC/network
+benchmark, allocation profiler result or evidence of equivalent application
+throughput gains. The earlier loopback measurements above predate this change.
+
+Validation includes fixed wire vectors, borrowed-versus-owned fragment encoding
+across address-length varint boundaries, Rust fragmented UDP relay tests, and
+Go interop extended to echo both small and 3000-byte UDP payloads in both
+client/server directions. No TUN or host-network configuration is required.

@@ -156,19 +156,29 @@ impl UdpMessage {
     ///
     /// Returns an error if the address is longer than the protocol limit.
     pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
+        self.encode_with_payload(&self.data)
+    }
+
+    /// Encodes the header fields with a borrowed payload instead of `self.data`.
+    /// This lets transports encode buffer slices directly into the final datagram
+    /// without allocating an intermediate owned payload for each fragment.
+    ///
+    /// # Errors
+    /// Returns an error if the address is longer than the protocol limit.
+    pub fn encode_with_payload(&self, payload: &[u8]) -> Result<Vec<u8>, ProtocolError> {
         if self.address.len() > MAX_MESSAGE_LENGTH {
             return Err(ProtocolError::InvalidAddressLength(
                 self.address.len() as u64
             ));
         }
-        let mut output = Vec::with_capacity(self.encoded_size());
+        let mut output = Vec::with_capacity(self.header_size() + payload.len());
         output.extend_from_slice(&self.session_id.to_be_bytes());
         output.extend_from_slice(&self.packet_id.to_be_bytes());
         output.push(self.fragment_id);
         output.push(self.fragment_count);
         encode_varint(self.address.len() as u64, &mut output)?;
         output.extend_from_slice(self.address.as_bytes());
-        output.extend_from_slice(&self.data);
+        output.extend_from_slice(payload);
         Ok(output)
     }
 
@@ -304,6 +314,54 @@ mod tests {
         let expected = b"\0\0\0\x01\0\x01\0\x01\x0eexample.com:80GET /nothing HTTP/1.1\r\n";
         assert_eq!(message.encode().unwrap(), expected);
         assert_eq!(UdpMessage::decode(expected).unwrap(), message);
+    }
+
+    #[test]
+    fn borrowed_payload_matches_owned_wire_encoding_and_fragment_boundaries() {
+        for address_len in [1, 14, 63, 64, MAX_MESSAGE_LENGTH] {
+            let mut header = UdpMessage {
+                session_id: 0x1234_5678,
+                packet_id: 9,
+                fragment_id: 0,
+                fragment_count: 1,
+                address: "a".repeat(address_len),
+                data: vec![0xff; 17],
+            };
+            for size in [1, 1000, 3000, 64000] {
+                let payload: Vec<u8> = (0..size).map(|i| u8::try_from(i % 251).unwrap()).collect();
+                let mut owned = header.clone();
+                owned.data.clone_from(&payload);
+                assert_eq!(
+                    header.encode_with_payload(&payload).unwrap(),
+                    owned.encode().unwrap()
+                );
+                let max_size = header.header_size() + 1100;
+                let fragments = crate::fragment_udp_message(&owned, max_size).unwrap();
+                let count = u8::try_from(fragments.len()).unwrap();
+                for (index, (chunk, fragment)) in payload.chunks(1100).zip(&fragments).enumerate() {
+                    header.fragment_id = u8::try_from(index).unwrap();
+                    header.fragment_count = count;
+                    assert_eq!(
+                        header.encode_with_payload(chunk).unwrap(),
+                        fragment.encode().unwrap()
+                    );
+                }
+                header.fragment_id = 0;
+                header.fragment_count = 1;
+            }
+        }
+        let invalid = UdpMessage {
+            session_id: 1,
+            packet_id: 0,
+            fragment_id: 0,
+            fragment_count: 1,
+            address: "a".repeat(MAX_MESSAGE_LENGTH + 1),
+            data: Vec::new(),
+        };
+        assert!(matches!(
+            invalid.encode_with_payload(b"payload"),
+            Err(ProtocolError::InvalidAddressLength(_))
+        ));
     }
 
     #[test]

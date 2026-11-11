@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Proxy HTTP/2 masquerade requests to HTTP/1.1 backends without forcing the
+  incoming protocol version onto the upstream connection. Keep HTTP/1.1 Upgrade.
+- Replace the incoming Host port in HTTPS redirects, preserve bracketed IPv6
+  literals and query strings, reject invalid authorities, and use the actual
+  bound HTTPS port for ephemeral listeners.
+
+- Stop server UDP relay tasks when their QUIC connection closes, rather than
+  retaining idle tasks and session counts until the UDP timeout.
+
 - Preserve ordinary UDP-forwarding and Linux TProxy sessions when packet queues
   are full. Share the tested TUN queue policy and remove redundant packet clones.
 
@@ -26,6 +35,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Static masquerade directory listings when index.html is absent, with sorted
+  escaped names, encoded links and directory-slash redirects. Existing file
+  streaming, HEAD and Range responses remain delegated to ServeDir. Listings
+  reject parent traversal and stop at 10,000 entries per directory (HTTP 503).
+
+- Read-only `server status` and `server stats` commands with English aligned text,
+  automatic color, watch mode and versioned JSON/NDJSON over the existing local
+  statistics interface. Add authenticated aggregate `/v1/status`, lifetime
+  payload counters independent of legacy clear, UDP session counts, TCP outbound
+  failure counts and server UDP queue-drop counts.
+
 - Typed CLI error categories, configuration troubleshooting hints and opt-in
   diagnostic causes, with additive structured check-report fields.
 
@@ -41,6 +61,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Explicit CLI behavior documentation and bounded command-contract regressions.
 
 ### Changed
+
+- Encode UDP sends directly from borrowed payload slices into final datagrams,
+  retaining the existing zero-copy Vec-to-Bytes handoff to Quinn. Remove initial
+  and per-fragment payload copies without changing the wire format or public
+  message data type. Add a reproducible codec benchmark and fragmented Go interop.
 
 - Remove the unused Realm `base64` dependency declaration.
 

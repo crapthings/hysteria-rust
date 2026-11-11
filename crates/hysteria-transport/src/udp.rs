@@ -1,6 +1,6 @@
 use crate::{RequestHook, ServerOutbound, TrafficLogger, TransportError};
 use bytes::Bytes;
-use hysteria_protocol::{Defragger, MAX_UDP_SIZE, UdpMessage, fragment_udp_message};
+use hysteria_protocol::{Defragger, MAX_UDP_SIZE, ProtocolError, UdpMessage};
 use portable_atomic::AtomicU64;
 use quinn::Connection;
 use std::{
@@ -22,31 +22,51 @@ struct DatagramSender {
 }
 
 impl DatagramSender {
-    async fn send(&self, mut message: UdpMessage) -> Result<(), TransportError> {
-        if message.encoded_size() > MAX_UDP_SIZE {
-            return Err(TransportError::DatagramTooLarge(message.encoded_size()));
+    async fn send(
+        &self,
+        session_id: u32,
+        address: &str,
+        data: &[u8],
+    ) -> Result<(), TransportError> {
+        // Keep only header metadata owned. The caller's payload remains borrowed
+        // until encoded into each final QUIC datagram, including under backpressure.
+        let mut message = UdpMessage {
+            session_id,
+            packet_id: 0,
+            fragment_id: 0,
+            fragment_count: 1,
+            address: address.to_owned(),
+            data: Vec::new(),
+        };
+        let encoded_size = message.header_size() + data.len();
+        if encoded_size > MAX_UDP_SIZE {
+            return Err(TransportError::DatagramTooLarge(encoded_size));
         }
         let max_size = self.connection.max_datagram_size().ok_or_else(|| {
             TransportError::Protocol("peer did not enable QUIC datagrams".to_owned())
         })?;
-        if message.encoded_size() <= max_size {
-            return self.send_one(&message).await;
+        if encoded_size <= max_size {
+            return self.send_one(&message, data).await;
         }
         message.packet_id = self.next_packet_id();
-        let fragments = fragment_udp_message(&message, max_size)
-            .map_err(|error| TransportError::Protocol(error.to_string()))?;
-        if fragments.is_empty() {
-            return Err(TransportError::DatagramTooLarge(message.encoded_size()));
+        let payload_size = max_size.saturating_sub(message.header_size());
+        if payload_size == 0 {
+            return Err(TransportError::DatagramTooLarge(encoded_size));
         }
-        for fragment in fragments {
-            self.send_one(&fragment).await?;
+        let count = data.len().div_ceil(payload_size);
+        message.fragment_count = u8::try_from(count).map_err(|_| {
+            TransportError::Protocol(ProtocolError::TooManyFragments(count).to_string())
+        })?;
+        for (index, payload) in data.chunks(payload_size).enumerate() {
+            message.fragment_id = u8::try_from(index).expect("fragment count fits in u8");
+            self.send_one(&message, payload).await?;
         }
         Ok(())
     }
 
-    async fn send_one(&self, message: &UdpMessage) -> Result<(), TransportError> {
+    async fn send_one(&self, message: &UdpMessage, payload: &[u8]) -> Result<(), TransportError> {
         let encoded = message
-            .encode()
+            .encode_with_payload(payload)
             .map_err(|error| TransportError::Protocol(error.to_string()))?;
         self.connection
             .send_datagram_wait(Bytes::from(encoded))
@@ -172,17 +192,7 @@ impl UdpSession {
     ///
     /// Returns an error for oversized messages or a closed QUIC connection.
     pub async fn send(&self, data: &[u8], address: &str) -> Result<(), TransportError> {
-        self.inner
-            .sender
-            .send(UdpMessage {
-                session_id: self.session_id,
-                packet_id: 0,
-                fragment_id: 0,
-                fragment_count: 1,
-                address: address.to_owned(),
-                data: data.to_vec(),
-            })
-            .await
+        self.inner.sender.send(self.session_id, address, data).await
     }
 
     /// Receives and defragments the next UDP payload and its source address.
@@ -279,7 +289,13 @@ pub(crate) fn spawn_server_udp(
                 .get(&session_id)
                 .map(|entry| entry.sender.clone());
             if let Some(existing) = existing {
-                let _ = existing.try_send(message);
+                if matches!(
+                    existing.try_send(message),
+                    Err(mpsc::error::TrySendError::Full(_))
+                ) && let Some(logger) = &context.traffic_logger
+                {
+                    logger.udp_queue_dropped();
+                }
                 continue;
             }
 
@@ -310,16 +326,47 @@ pub(crate) fn spawn_server_udp(
     })
 }
 
+struct SessionCountGuard(Option<Arc<dyn TrafficLogger>>);
+
+impl SessionCountGuard {
+    fn new(logger: Option<Arc<dyn TrafficLogger>>) -> Self {
+        if let Some(logger) = &logger {
+            logger.udp_session_state(true);
+        }
+        Self(logger)
+    }
+}
+
+impl Drop for SessionCountGuard {
+    fn drop(&mut self) {
+        if let Some(logger) = &self.0 {
+            logger.udp_session_state(false);
+        }
+    }
+}
+
 async fn run_server_session(
     session_id: u32,
     token: u64,
+    receiver: mpsc::Receiver<UdpMessage>,
+    context: Arc<ServerUdpContext>,
+) {
+    let _session_count = SessionCountGuard::new(context.traffic_logger.clone());
+    tokio::select! {
+        () = relay_server_session(session_id, receiver, Arc::clone(&context)) => {},
+        _ = context.sender.connection.closed() => {},
+    }
+    remove_server_session(&context.sessions, session_id, token);
+}
+
+async fn relay_server_session(
+    session_id: u32,
     mut receiver: mpsc::Receiver<UdpMessage>,
     context: Arc<ServerUdpContext>,
 ) {
     let mut defragger = Defragger::default();
     let first = loop {
         let Some(message) = timeout_receive(&mut receiver, context.idle_timeout).await else {
-            remove_server_session(&context.sessions, session_id, token);
             return;
         };
         if let Some(message) = defragger.feed(message) {
@@ -330,11 +377,9 @@ async fn run_server_session(
     let Some((held, destination)) =
         collect_hook_packets(first, &mut receiver, &mut defragger, &context).await
     else {
-        remove_server_session(&context.sessions, session_id, token);
         return;
     };
     let Ok(socket) = context.outbound.udp(&destination).await else {
-        remove_server_session(&context.sessions, session_id, token);
         return;
     };
     for message in held {
@@ -347,7 +392,6 @@ async fn run_server_session(
             continue;
         }
         if socket.send_to(&message.data, address).await.is_err() {
-            remove_server_session(&context.sessions, session_id, token);
             return;
         }
     }
@@ -389,14 +433,7 @@ async fn run_server_session(
                 }
                 if context
                     .sender
-                    .send(UdpMessage {
-                        session_id,
-                        packet_id: 0,
-                        fragment_id: 0,
-                        fragment_count: 1,
-                        address: source,
-                        data: buffer[..size].to_vec(),
-                    })
+                    .send(session_id, &source, &buffer[..size])
                     .await
                     .is_err()
                 {
@@ -405,7 +442,6 @@ async fn run_server_session(
             }
         }
     }
-    remove_server_session(&context.sessions, session_id, token);
 }
 
 // At most eight complete datagrams of at most 65535 bytes each, with a

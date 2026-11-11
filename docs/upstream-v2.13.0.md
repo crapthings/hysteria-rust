@@ -75,3 +75,22 @@ this review. Existing rc.6 artifacts and tags are unchanged.
    permissions and separate public client output.
 3. Review Chrome 154 and quic-go protocol changes separately, retaining the
    ordinary path and testing each vendor patch before adoption.
+
+## Masquerade follow-up
+
+Development-source fixes after the review include inbound HTTP/2 to HTTP/1.1
+reverse proxying, correct Host-port replacement in HTTPS redirects (including
+IPv6), and directory listings when a static directory has no index.html.
+The previous Rust directory response was 404 while the pinned Go server returned
+a listing. File bodies/ranges remain served by tower-http; this is not a claim
+of byte-for-byte equivalence to all Go FileServer headers and URL normalization.
+Listings sort and escape names, encode links, handle HEAD and trailing-slash
+redirects, and cap enumeration at 10,000 entries (503 above the cap).
+
+The new HTTP/2 regression negotiates h2 over a real loopback TLS connection and
+verifies the backend receives HTTP/1.1 and its response reaches the client.
+Redirect regressions cover original ports, IPv6, missing/invalid authorities,
+HEAD, query strings and ephemeral HTTPS listeners. File regressions cover index
+precedence, listing, encoded filenames, HTML escaping, missing files, traversal
+rejection and byte ranges. Existing Upgrade and streaming proxy tests remain.
+These changes do not implement certificate hot reload or HTTP/3 WebSockets.
