@@ -1191,6 +1191,8 @@ pub struct ClientConnectionData {
 }
 
 impl ClientConnectionData {
+    pub(crate) fn ech_status(&self) -> EchStatus { self.ech_status }
+
     fn new() -> Self {
         Self {
             early_data: EarlyData::new(),

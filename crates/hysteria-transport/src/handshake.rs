@@ -162,6 +162,7 @@ pub struct ClientHandshake {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandshakeInfo {
+    pub ech_accepted: bool,
     pub udp_enabled: bool,
     pub actual_tx: u64,
     pub server_address: SocketAddr,
@@ -503,6 +504,10 @@ async fn authenticate_client_connection(
         crate::set_brutal_bandwidth(&connection, actual_tx)?;
     }
     let info = HandshakeInfo {
+        ech_accepted: connection
+            .handshake_data()
+            .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+            .is_some_and(|data| data.ech_accepted),
         udp_enabled: auth_response.udp_enabled,
         actual_tx,
         server_address,
@@ -1317,6 +1322,7 @@ mod tests {
         assert_eq!(
             info,
             HandshakeInfo {
+                ech_accepted: false,
                 udp_enabled: true,
                 actual_tx: 1_000_000,
                 server_address,

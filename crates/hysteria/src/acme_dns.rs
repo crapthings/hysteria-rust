@@ -223,7 +223,7 @@ impl DnsSolver {
     ) -> std::result::Result<RecordHandle, String> {
         let id = match &self.provider {
             Provider::Cloudflare { token } => {
-                let zones: CfEnvelope<Vec<CfZone>> = json(
+                let zones: Vec<CfZone> = cloudflare_json(
                     self.client
                         .get("https://api.cloudflare.com/client/v4/zones")
                         .bearer_auth(token)
@@ -232,17 +232,16 @@ impl DnsSolver {
                 )
                 .await?;
                 let zone_id = zones
-                    .result
                     .into_iter()
                     .find(|item| item.name.trim_end_matches('.') == zone)
                     .ok_or_else(|| format!("Cloudflare zone {zone} was not found"))?
                     .id;
-                let created: CfEnvelope<CfRecord> = json(
+                let created: CfRecord = cloudflare_json(
                     self.client.post(format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"))
                         .bearer_auth(token).json(&serde_json::json!({"type":"TXT", "name":fqdn, "content":value, "ttl":DNS_TTL})),
                     "Cloudflare record creation",
                 ).await?;
-                format!("{zone_id}:{}", created.result.id)
+                format!("{zone_id}:{}", created.id)
             }
             Provider::DuckDns { token, domain } => {
                 let domain = if domain.is_empty() {
@@ -415,7 +414,7 @@ impl DnsSolver {
                     .id
                     .split_once(':')
                     .ok_or_else(|| "invalid Cloudflare record handle".to_owned())?;
-                empty(self.client.delete(format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}")).bearer_auth(token), "Cloudflare record cleanup").await
+                cloudflare_json::<CfRecord>(self.client.delete(format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}")).bearer_auth(token), "Cloudflare record cleanup").await.map(|_| ())
             }
             Provider::DuckDns { token, domain } => {
                 let domain = if domain.is_empty() {
@@ -671,7 +670,38 @@ fn bounded(value: &str) -> String {
 
 #[derive(Deserialize)]
 struct CfEnvelope<T> {
-    result: T,
+    success: bool,
+    result: Option<T>,
+}
+
+// Do not include provider response bodies: they may contain credentials or
+// challenge values. HTTP success alone does not mean the API operation worked.
+async fn cloudflare_json<T: DeserializeOwned>(
+    request: RequestBuilder,
+    operation: &str,
+) -> std::result::Result<T, String> {
+    let response = request
+        .send()
+        .await
+        .map_err(|_| format!("{operation} failed to send request"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "{operation} returned HTTP {status}; check API token permissions and zone access"
+        ));
+    }
+    let envelope: CfEnvelope<T> = response
+        .json()
+        .await
+        .map_err(|_| format!("{operation} returned invalid JSON"))?;
+    if !envelope.success {
+        return Err(format!(
+            "{operation} was rejected by the API; check API token permissions and zone access"
+        ));
+    }
+    envelope
+        .result
+        .ok_or_else(|| format!("{operation} response is missing result"))
 }
 
 #[derive(Deserialize)]
@@ -740,6 +770,52 @@ struct VultrRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cloudflare_checks_http_and_api_success_without_leaking_response() {
+        use axum::{
+            Json, Router,
+            http::{HeaderMap, StatusCode},
+            routing::get,
+        };
+        crate::tls::ensure_crypto_provider();
+        let app = Router::new()
+            .route("/ok", get(|headers: HeaderMap| async move {
+                assert_eq!(headers["authorization"], "Bearer test-token");
+                Json(serde_json::json!({"success":true,"result":{"id":"record-id"}}))
+            }))
+            .route("/rejected", get(|| async { Json(serde_json::json!({"success":false,"result":{"id":"must-not-accept"},"errors":[{"message":"secret-value"}]})) }))
+            .route("/missing", get(|| async { Json(serde_json::json!({"success":true})) }))
+            .route("/invalid", get(|| async { "secret-value" }))
+            .route("/forbidden", get(|| async { (StatusCode::FORBIDDEN, "secret-value") }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::builder().no_proxy().build().unwrap();
+        let result: CfRecord = cloudflare_json(
+            client
+                .get(format!("{endpoint}/ok"))
+                .bearer_auth("test-token"),
+            "Cloudflare test",
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.id, "record-id");
+        for path in ["rejected", "missing", "invalid", "forbidden"] {
+            let error = cloudflare_json::<CfRecord>(
+                client.get(format!("{endpoint}/{path}")),
+                "Cloudflare test",
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(error.contains("Cloudflare test"));
+            assert!(!error.contains("secret-value"));
+        }
+        server.abort();
+    }
 
     #[tokio::test]
     async fn njalla_rpc_authenticates_and_checks_api_errors() {

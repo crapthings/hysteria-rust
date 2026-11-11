@@ -4,6 +4,7 @@ mod check;
 mod cli;
 /// Formats offline deployment diagnostics.
 mod doctor_cli;
+mod ech_cli;
 /// Generates starter configurations without starting a server.
 mod init;
 mod server_view;
@@ -112,6 +113,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             Ok(())
         }
         Command::CheckUpdate => print_update().await,
+        Command::Ech(options) => options.run(),
         Command::Cert {
             host,
             cert,

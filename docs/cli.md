@@ -310,3 +310,87 @@ keep the listener on loopback. The secret also authorizes the legacy management
 endpoints, so it is not a read-only credential. Their behavior (including optional
 authentication when the legacy secret is empty) is unchanged. Neither the CLI's
 loopback restriction nor the new endpoint secures a publicly exposed legacy API.
+
+## Generate and rotate ECH keys
+
+The development CLI supports offline key generation:
+
+```shell
+hysteria ech --public-name public.example.com
+hysteria ech --public-name public.example.com -o private/ech.pem \
+  --aead aes-128-gcm,aes-256-gcm,chacha20-poly1305
+```
+
+The required public name is the visible outer SNI, not the real name used to
+verify the proxy server's certificate. Use an ASCII/punycode DNS name without
+scheme, port, wildcard or trailing dot. ECH does not replace TLS certificates,
+hide the server IP address, or encrypt DNS queries.
+
+Output contains an `ECH KEYS` private PEM block and its corresponding public
+`ECH CONFIGS` block. The terminal prints only public metadata and pasteable
+server/client configuration. Never share the entire PEM or place it in the
+masquerade web directory. `--output -` is rejected. On Unix, output is mode 0600;
+on Windows protect the destination directory with the appropriate ACLs.
+Writes use a temporary file in the same directory and atomic publication.
+Existing files require `--overwrite`; symlink/directory overwrite is refused.
+This command never modifies a running server or its YAML configuration.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--public-name` | Required | Visible outer DNS name |
+| `--output`, `-o` | `ech.pem` | Private key file |
+| `--config-id` | `-1` | Random unused ID; explicit values 0–255 |
+| `--max-name-length` | `0` | Inner-name padding hint, not a name-length limit |
+| `--aead` | `aes-128-gcm` | Ordered comma-separated AEADs; also AES-256-GCM and ChaCha20-Poly1305 |
+| `--retain-keys` | None | Existing private PEM whose keys remain active during rotation |
+| `--overwrite` | Off | Explicit atomic replacement of a regular file |
+
+Generated keys use X25519/HKDF-SHA256 and the Go-compatible PEM container.
+`--retain-keys` and `ech prune` are Rust CLI extensions for staged rotation.
+Retained keys must parse, have matching public/private material and use distinct
+config IDs. A new explicit ID must not collide with them. The new key is first
+in the published config list. Private and public ECH file reads are capped at
+1 MiB; protocol config-list length limits still apply.
+
+For an overlap period:
+
+```shell
+hysteria ech --public-name public.example.com \
+  --retain-keys private/ech.pem -o private/ech-next.pem
+```
+
+1. Update `ech.keyPath` to the new file and restart the server. Both old and new
+   clients can connect during overlap.
+2. Distribute the new **public** `tls.ech` value. Keep `tls.sni` set to the real
+   server name and retain normal certificate verification.
+3. After clients have migrated, retain only the new ID printed by generation
+   (42 below is an example), point the server at the pruned file and restart:
+
+```shell
+hysteria ech prune --input private/ech-next.pem --keep-id 42 \
+  --output private/ech-active.pem
+```
+
+`prune` never generates a key. It preserves selected private/public key bytes and
+preference order, and rejects empty, missing or ambiguous IDs. Multiple IDs can
+be comma-separated or repeated. Output publication follows the same private,
+atomic, explicit-overwrite rules. Existing clients holding the new config still
+work; clients holding only a retired config fail closed. The source file remains
+unchanged unless it is explicitly selected as output with `--overwrite`.
+
+There is no live ECH key reload or automatic client config update. Old-only
+clients fail once their key is no longer accepted. The server continues to
+accept clients without ECH; enabling server keys does not force all clients to
+use ECH.
+
+On successful client startup/reconnection and `ping`, the connection message
+reports `ECH: accepted` or `ECH: not negotiated`, derived from completed TLS
+handshake data. GREASE is never reported as accepted. The startup server key
+count means keys are configured, not that every connection used ECH.
+
+If real ECH is rejected, certificate authentication uses the outer public name
+and configured/system CAs independently of `tls.insecure` and the inner
+`tls.pinSHA256`. Even after that certificate authenticates the rejection, the
+connection fails before application traffic; the CLI does not automatically
+retry without ECH. Accepted ECH connections retain their configured inner-name
+certificate policy. Prefer normal certificate verification for ordinary use.

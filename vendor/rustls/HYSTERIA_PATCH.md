@@ -50,3 +50,24 @@ ECH retry handling now uses upstream `PreviousClientHello`; ALPS preserves its
 0-RTT restrictions while upstream checks the selected PSK index. The Chrome
 version check uses `Protocol::Quic`. See
 [dependency update validation](../../docs/tls-http-dependency-upgrade.md).
+
+## ECH rejection policy and key validation
+
+Local additions on the 0.23.46 baseline:
+
+- `ServerCertVerifier::verify_ech_rejection` has a backward-compatible default
+  delegating to ordinary certificate verification. TLS 1.3 calls it only after
+  a real ECH offer is rejected. Hysteria overrides it with strict public-name
+  verification using CA roots, independently of insecure mode and inner pins.
+  The existing fail-closed check before application traffic remains intact.
+- QUIC `ClientConnection::ech_status` exposes the existing TLS negotiation state.
+  Callers must wait for TLS completion before treating it as authenticated.
+- `EchServerKey::from_raw` checks the key pair with a local HPKE seal/open before
+  accepting it. This performs cryptography/random generation at startup only.
+  `config_id` is public to support collision-free staged key generation.
+
+Tests cover trusted/untrusted/wrong-name rejection certificates, ignored inner
+pins on rejection, accepted ECH, ordinary clients on an ECH server, stale and
+retired keys, all generated AEADs and overlapping rotation. Run workspace tests,
+the Go bidirectional/Chrome commands and the isolated upstream rustls library
+suite described in [dependency validation](../../docs/tls-http-dependency-upgrade.md).

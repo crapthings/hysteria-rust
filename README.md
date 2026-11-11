@@ -190,6 +190,19 @@ Checks local TLS material, certificate dates and selected referenced files in
 addition to configuration validation. Reports actionable failures and explicitly
 marks network/runtime conditions as unverified. See [CLI behavior](docs/cli.md).
 
+## Generate ECH keys
+
+In the development version:
+
+```shell
+hysteria ech --public-name public.example.com -o ech.pem
+```
+
+Keep the generated PEM private; copy only the printed public configuration to
+clients. The public name is the visible outer SNI; retain the real name in
+`tls.sni` and the existing TLS certificate. See
+[ECH setup and rotation](docs/cli.md#generate-and-rotate-ech-keys).
+
 ## View a running server
 
 In the development version, configure a loopback `trafficStats` listener with a
@@ -221,7 +234,7 @@ metric definitions, sampling and access-control boundaries.
 | [CLI development](docs/cli-roadmap.md) | Independent server/client scope and subsequent increments |
 | [Configuration examples](examples) | Server/client starter files and optional ACL settings |
 | [Compatibility status](PORT_STATUS.md) | Supported features, platforms, and pinned Go reference |
-| [ACME DNS providers](docs/acme-dns-providers.md) | Porkbun, Njalla, and Namecheap setup |
+| [ACME DNS providers](docs/acme-dns-providers.md) | Cloudflare, Porkbun, Njalla, and Namecheap setup |
 | [Chrome QUIC status](docs/chrome-quic-port.md) | Experimental client profile and validation |
 | [Vendor guide](vendor/README.md) | Patched dependencies and standalone protocol tests |
 | [Changelog](CHANGELOG.md) | Release history |

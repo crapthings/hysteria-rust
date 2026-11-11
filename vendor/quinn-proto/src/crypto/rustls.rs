@@ -63,6 +63,10 @@ impl crypto::Session for TlsSession {
         }
         Some(Box::new(HandshakeData {
             protocol: self.inner.alpn_protocol().map(|x| x.into()),
+            ech_accepted: !self.inner.is_handshaking() && match &self.inner {
+                Connection::Client(session) => session.ech_status() == rustls::client::EchStatus::Accepted,
+                Connection::Server(session) => session.ech_accepted().is_some(),
+            },
             peer_application_settings: self.inner.peer_application_settings().map(|x| x.into()),
             server_name: match self.inner {
                 Connection::Client(_) => None,
@@ -258,6 +262,9 @@ impl crypto::HeaderKey for Box<dyn HeaderProtectionKey> {
 
 /// Authentication data for (rustls) TLS session
 pub struct HandshakeData {
+    /// True only after TLS completion with real ECH accepted; GREASE is false.
+    /// Fetch a fresh snapshot after connection establishment.
+    pub ech_accepted: bool,
     /// The negotiated application protocol, if ALPN is in use
     ///
     /// Guaranteed to be set if a nonempty list of protocols was specified for this connection.

@@ -1,8 +1,5 @@
-#[path = "support/ech.rs"]
-mod ech;
 #[path = "support/thread.rs"]
 mod fixture_thread;
-use ech::generate_ech_key;
 use fixture_thread::join_until;
 use rcgen::generate_simple_self_signed;
 use std::{
@@ -112,7 +109,21 @@ fn go_and_rust_binaries_relay_obfuscated_tcp_and_udp_in_both_directions() {
     fs::write(&cert, certified.cert.pem()).unwrap();
     fs::write(&key, certified.signing_key.serialize_pem()).unwrap();
     let ech_key = directory.path().join("ech.pem");
-    let ech_config = generate_ech_key(&ech_key);
+    let ech_config = hysteria_cli::ech::generate(&hysteria_cli::ech::Options {
+        public_name: "public.example.com".into(),
+        output: ech_key.clone(),
+        config_id: Some(42),
+        max_name_length: 128,
+        aeads: vec![
+            hysteria_cli::ech::Aead::Aes128Gcm,
+            hysteria_cli::ech::Aead::Aes256Gcm,
+            hysteria_cli::ech::Aead::ChaCha20Poly1305,
+        ],
+        overwrite: false,
+        retain_keys: None,
+    })
+    .unwrap()
+    .client_config;
 
     run_direction(Direction {
         directory: directory.path(),

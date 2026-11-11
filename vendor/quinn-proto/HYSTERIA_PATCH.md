@@ -101,3 +101,11 @@ standalone quinn-proto rustfmt check also reports pre-existing snapshot style
 differences (confirmed against the saved 0.11.16 tree, including bloom_token_log
 and cid_generator). The upgrade retains upstream formatting rather than mixing
 a crate-wide style rewrite into protocol changes.
+
+## ECH observation
+
+`crypto::rustls::HandshakeData::ech_accepted` exposes real ECH acceptance on both
+client/server connections only after the TLS session completes. Early snapshots
+and GREASE report false; retrieve fresh handshake data after establishment.
+Hysteria copies this value into its client handshake result for diagnostics.
+The transport wire format and congestion configuration are unchanged.

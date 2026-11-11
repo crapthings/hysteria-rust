@@ -13,7 +13,7 @@ an ECH reporting correction, and a quic-go update.
 
 ## Follow-up implementation
 
-The development source implements bounded multi-datagram QUIC sniffing; the
+The development source implements bounded multi-datagram QUIC sniffing and the `ech` key-generation command; the
 comparison below records the state found during the original review. See
 [QUIC sniffing behavior](quic-sniffing.md) for implementation bounds and regressions.
 

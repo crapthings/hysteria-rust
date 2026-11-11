@@ -83,6 +83,8 @@ Reads YAML/JSON configuration (default: config.yaml). Configure authentication a
 Other options:
   hysteria server --config -             Read configuration from stdin until EOF
   hysteria cert --host example.com       Generate a self-signed certificate
+  hysteria ech --public-name public.example.com
+                                         Generate ECH keys offline
 
 Stop with Ctrl+C or Unix SIGTERM. --disable-update-check disables automatic update queries.
 Listen address, authentication, TLS/ACME, ACL and traffic statistics are configured in YAML/JSON.
@@ -133,6 +135,8 @@ Doctor is offline; successful checks do not establish network reachability or cl
     },
     /// Check for a newer release.
     CheckUpdate,
+    /// Generate private ECH keys and public client configuration offline.
+    Ech(crate::ech_cli::EchOptions),
     /// Generate a self-signed certificate and key.
     Cert {
         /// Comma-separated DNS names or IP addresses for the certificate.

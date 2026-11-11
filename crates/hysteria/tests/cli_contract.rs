@@ -595,3 +595,155 @@ fn server_tls_errors_classify_missing_and_invalid_material() {
     assert!(text.contains("[tls_invalid]"));
     assert!(!text.contains("private-secret"));
 }
+
+/// Key generation is offline, never prints private material and refuses implicit overwrite.
+#[test]
+fn ech_command_generates_private_keys_and_public_pasteable_configuration() {
+    let directory = tempfile::tempdir().unwrap();
+    let output_path = directory.path().join("ech.pem");
+    let path = output_path.to_str().unwrap();
+    let result = execute(
+        &[
+            "ech",
+            "--public-name",
+            "public.example.com",
+            "--config-id",
+            "42",
+            "-o",
+            path,
+        ],
+        b"",
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let pem = fs::read_to_string(&output_path).unwrap();
+    assert!(pem.contains("BEGIN ECH KEYS") && pem.contains("BEGIN ECH CONFIGS"));
+    let private_blob = pem
+        .split("-----BEGIN ECH KEYS-----\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    let text = String::from_utf8(result.stdout).unwrap();
+    assert!(!text.contains(private_blob));
+    assert!(!text.contains("BEGIN ECH KEYS"));
+    assert!(
+        text.contains("keyPath:") && text.contains("  ech:") && text.contains("Restart the server")
+    );
+    assert!(text.contains("New config ID   42"));
+    let duplicate = execute(
+        &["ech", "--public-name", "public.example.com", "-o", path],
+        b"",
+    );
+    assert_eq!(duplicate.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&output_path).unwrap(), pem);
+    for args in [
+        vec!["ech"],
+        vec![
+            "ech",
+            "--public-name",
+            "public.example.com",
+            "--config-id",
+            "256",
+        ],
+        vec![
+            "ech",
+            "--public-name",
+            "public.example.com",
+            "--max-name-length",
+            "256",
+        ],
+        vec![
+            "ech",
+            "--public-name",
+            "public.example.com",
+            "--aead",
+            "unsupported",
+        ],
+    ] {
+        assert_eq!(execute(&args, b"").status.code(), Some(2));
+    }
+    let invalid = execute(
+        &[
+            "ech",
+            "--public-name",
+            "https://bad.example.com",
+            "-o",
+            path,
+        ],
+        b"",
+    );
+    assert_eq!(invalid.status.code(), Some(1));
+    let overwrite = execute(
+        &[
+            "ech",
+            "--public-name",
+            "public.example.com",
+            "--overwrite",
+            "-o",
+            path,
+        ],
+        b"",
+    );
+    assert!(overwrite.status.success());
+    assert_ne!(fs::read_to_string(&output_path).unwrap(), pem);
+}
+
+#[test]
+fn ech_prune_keeps_existing_keys_and_requires_explicit_selection() {
+    let directory = tempfile::tempdir().unwrap();
+    let original = directory.path().join("original.pem");
+    let generated = hysteria_cli::ech::generate(&hysteria_cli::ech::Options {
+        public_name: "public.example.com".into(),
+        output: original.clone(),
+        config_id: Some(42),
+        max_name_length: 0,
+        aeads: vec![hysteria_cli::ech::Aead::Aes128Gcm],
+        overwrite: false,
+        retain_keys: None,
+    })
+    .unwrap();
+    let pruned = directory.path().join("pruned.pem");
+    let args = [
+        "ech",
+        "prune",
+        "--input",
+        original.to_str().unwrap(),
+        "--keep-id",
+        "42",
+        "-o",
+        pruned.to_str().unwrap(),
+    ];
+    let output = execute(&args, b"");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("ECH KEYS PRUNED") && text.contains(&generated.client_config));
+    assert!(!text.contains("BEGIN ECH KEYS"));
+    assert_eq!(fs::read(&pruned).unwrap(), fs::read(&original).unwrap());
+    assert_eq!(execute(&args, b"").status.code(), Some(1));
+    assert_eq!(execute(&["ech", "prune"], b"").status.code(), Some(2));
+    let missing = directory.path().join("missing.pem");
+    let result = execute(
+        &[
+            "ech",
+            "prune",
+            "--input",
+            original.to_str().unwrap(),
+            "--keep-id",
+            "43",
+            "-o",
+            missing.to_str().unwrap(),
+        ],
+        b"",
+    );
+    assert_eq!(result.status.code(), Some(1));
+    assert!(!missing.exists());
+}

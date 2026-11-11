@@ -1,16 +1,16 @@
 use crate::{CliError, Result, tls};
 use base64::Engine as _;
-use std::{fs, path::Path, sync::Arc};
+use std::{fs, io::Read as _, path::Path, sync::Arc};
 
 const ECH_KEYS_LABEL: &str = "ECH KEYS";
 
-struct ServerEchKey {
-    private_key: Vec<u8>,
-    config: Vec<u8>,
+pub(crate) struct ServerEchKey {
+    pub(crate) private_key: Vec<u8>,
+    pub(crate) config: Vec<u8>,
 }
 
 pub(crate) struct ServerEchMaterial {
-    keys: Vec<ServerEchKey>,
+    pub(crate) keys: Vec<ServerEchKey>,
     config_list: Vec<u8>,
 }
 
@@ -39,18 +39,27 @@ impl ServerEchMaterial {
 }
 
 pub(crate) fn load(path: &Path) -> Result<ServerEchMaterial> {
-    let contents = fs::read_to_string(path).map_err(|error| {
-        CliError::new(format!(
-            "failed to read ech.keyPath {}: {error}",
-            path.display()
-        ))
-    })?;
+    let mut contents = String::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(1024 * 1024 + 1).read_to_string(&mut contents))
+        .map_err(|error| {
+            CliError::new(format!(
+                "failed to read ech.keyPath {}: {error}",
+                path.display()
+            ))
+        })?;
+    if contents.len() > 1024 * 1024 {
+        return Err(CliError::new("ECH key file exceeds 1 MiB"));
+    }
     let blob = pem_block(&contents, ECH_KEYS_LABEL)?.ok_or_else(|| {
         CliError::new(format!(
-            "invalid ECH keys: no {ECH_KEYS_LABEL:?} PEM block found (generate one with `sing-box generate ech-keypair <public_name>`)"
+            "invalid ECH keys: no {ECH_KEYS_LABEL:?} PEM block found (generate one with `hysteria ech --public-name <public_name>`)"
         ))
     })?;
-    let keys = parse_keys(&blob)?;
+    from_keys(parse_keys(&blob)?)
+}
+
+pub(crate) fn from_keys(keys: Vec<ServerEchKey>) -> Result<ServerEchMaterial> {
     if keys.is_empty() {
         return Err(CliError::new("invalid ECH keys: no key entries"));
     }
@@ -64,6 +73,16 @@ pub(crate) fn load(path: &Path) -> Result<ServerEchMaterial> {
     })?;
     let encoded_length = u16::try_from(body_length)
         .map_err(|_| CliError::new("invalid ECH keys: config list is too large"))?;
+    for key in &keys {
+        rustls::server::EchServerKey::from_raw(
+            &key.config,
+            key.private_key.clone(),
+            rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES,
+        )
+        .map_err(|_| {
+            CliError::new("invalid ECH key configuration or mismatched public/private key")
+        })?;
+    }
     let mut config_list = Vec::with_capacity(body_length + 2);
     config_list.extend_from_slice(&encoded_length.to_be_bytes());
     for key in &keys {
@@ -177,17 +196,16 @@ mod tests {
 
     #[test]
     fn loads_go_compatible_key_blob_and_derives_config_list() {
-        let config = [0xfe, 0x0d, 0x00, 0x01, 0x00];
+        let generated = generated_material();
+        let key = &generated.keys[0];
         let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(key_pem(&[7; 32], &config).as_bytes())
+        file.write_all(key_pem(&key.private_key, &key.config).as_bytes())
             .unwrap();
         let material = load(file.path()).unwrap();
         assert_eq!(material.key_count(), 1);
-        let mut list = vec![0, u8::try_from(config.len()).unwrap()];
-        list.extend_from_slice(&config);
         assert_eq!(
             material.encoded_config_list(),
-            base64::engine::general_purpose::STANDARD.encode(list)
+            generated.encoded_config_list()
         );
     }
 
@@ -250,6 +268,210 @@ mod tests {
         );
         let (accepted, connected) = tokio::join!(server.accept(), client);
         accepted.unwrap().close(b"ECH accepted");
-        connected.unwrap().0.close(b"ECH accepted");
+        let (connection, info) = connected.unwrap();
+        assert!(info.ech_accepted);
+        connection.close(b"ECH accepted");
+    }
+    fn pump_tls(
+        config: rustls::ClientConfig,
+        server: rustls::ServerConfig,
+        name: &'static str,
+    ) -> std::result::Result<rustls::client::EchStatus, rustls::Error> {
+        let mut client = rustls::ClientConnection::new(Arc::new(config), name.try_into().unwrap())?;
+        let mut server = rustls::ServerConnection::new(Arc::new(server))?;
+        for _ in 0..32 {
+            let mut bytes = Vec::new();
+            while client.wants_write() {
+                client.write_tls(&mut bytes).unwrap();
+            }
+            if !bytes.is_empty() {
+                server.read_tls(&mut bytes.as_slice()).unwrap();
+                server.process_new_packets()?;
+            }
+            bytes.clear();
+            while server.wants_write() {
+                server.write_tls(&mut bytes).unwrap();
+            }
+            if !bytes.is_empty() {
+                client.read_tls(&mut bytes.as_slice()).unwrap();
+                client.process_new_packets()?;
+            }
+            if !client.is_handshaking() && !server.is_handshaking() {
+                return Ok(client.ech_status());
+            }
+        }
+        panic!("in-memory ECH handshake did not terminate");
+    }
+
+    fn certificate_server(
+        names: &[&str],
+    ) -> (rustls::ServerConfig, rcgen::CertifiedKey<rcgen::KeyPair>) {
+        crate::tls::ensure_crypto_provider();
+        let certified = rcgen::generate_simple_self_signed(
+            names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![certified.cert.der().clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                    certified.signing_key.serialize_der(),
+                )),
+            )
+            .unwrap();
+        (server, certified)
+    }
+
+    #[test]
+    fn ech_rejection_requires_public_trust_even_with_insecure_and_matching_pin() {
+        use sha2::{Digest as _, Sha256};
+        let directory = tempfile::tempdir().unwrap();
+        let trusted = directory.path().join("trusted.pem");
+        let (_, unrelated) = certificate_server(&["unrelated.example.com"]);
+        std::fs::write(&trusted, unrelated.cert.pem()).unwrap();
+        let (server, certificate) = certificate_server(&["public.example.com"]);
+        let pin: [u8; 32] = Sha256::digest(certificate.cert.der()).into();
+        let ech = generated_material().encoded_config_list();
+        let client =
+            crate::tls::client_config(Some(&trusted), true, Some(pin), None, Some(&ech)).unwrap();
+        let error = pump_tls(client, server, "localhost").unwrap_err();
+        assert!(
+            matches!(error, rustls::Error::InvalidCertificate(_)),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn ech_rejection_checks_public_name_but_does_not_apply_inner_pin() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca = directory.path().join("ca.pem");
+        let ech = generated_material().encoded_config_list();
+        for public_name in ["wrong.example.com", "public.example.com"] {
+            let (server, certificate) = certificate_server(&[public_name]);
+            std::fs::write(&ca, certificate.cert.pem()).unwrap();
+            let client =
+                crate::tls::client_config(Some(&ca), true, Some([0; 32]), None, Some(&ech))
+                    .unwrap();
+            let error = pump_tls(client, server, "localhost").unwrap_err();
+            if public_name == "wrong.example.com" {
+                assert!(
+                    matches!(error, rustls::Error::InvalidCertificate(_)),
+                    "{error:?}"
+                );
+            } else {
+                // A trusted public-name certificate authenticates the rejection,
+                // but ECH-required still prevents an application connection.
+                assert!(
+                    matches!(
+                        error,
+                        rustls::Error::PeerIncompatible(
+                            rustls::PeerIncompatible::ServerRejectedEncryptedClientHello(_)
+                        )
+                    ),
+                    "{error:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_ech_plain_clients_and_stale_keys_have_distinct_results() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca = directory.path().join("ca.pem");
+        let (mut server, certificate) = certificate_server(&["localhost", "public.example.com"]);
+        std::fs::write(&ca, certificate.cert.pem()).unwrap();
+        let material = generated_material();
+        let public = material.encoded_config_list();
+        material.apply(&mut server).unwrap();
+        let client =
+            crate::tls::client_config(Some(&ca), false, None, None, Some(&public)).unwrap();
+        assert_eq!(
+            pump_tls(client, server.clone(), "localhost").unwrap(),
+            rustls::client::EchStatus::Accepted
+        );
+        let client = crate::tls::client_config(Some(&ca), false, None, None, None).unwrap();
+        assert_eq!(
+            pump_tls(client, server.clone(), "localhost").unwrap(),
+            rustls::client::EchStatus::NotOffered
+        );
+        let stale = generated_material().encoded_config_list();
+        let client = crate::tls::client_config(Some(&ca), true, None, None, Some(&stale)).unwrap();
+        assert!(matches!(
+            pump_tls(client, server, "localhost"),
+            Err(rustls::Error::PeerIncompatible(
+                rustls::PeerIncompatible::ServerRejectedEncryptedClientHello(_)
+            ))
+        ));
+    }
+    #[test]
+    fn generated_aeads_and_overlapping_rotation_complete_real_handshakes() {
+        use crate::ech::{Aead, Options, generate};
+        let directory = tempfile::tempdir().unwrap();
+        let ca = directory.path().join("ca.pem");
+        let (server_base, certificate) = certificate_server(&["localhost", "public.example.com"]);
+        std::fs::write(&ca, certificate.cert.pem()).unwrap();
+        let old_path = directory.path().join("old.pem");
+        let mut options = Options {
+            public_name: "public.example.com".into(),
+            output: old_path.clone(),
+            config_id: Some(12),
+            max_name_length: 0,
+            aeads: vec![Aead::Aes128Gcm],
+            overwrite: false,
+            retain_keys: None,
+        };
+        let old = generate(&options).unwrap();
+        for (index, aead) in [Aead::Aes128Gcm, Aead::Aes256Gcm, Aead::ChaCha20Poly1305]
+            .into_iter()
+            .enumerate()
+        {
+            options.output = directory.path().join(format!("{index}.pem"));
+            options.aeads = vec![aead];
+            options.config_id = Some(13);
+            let generated = generate(&options).unwrap();
+            let mut server = server_base.clone();
+            load(&options.output).unwrap().apply(&mut server).unwrap();
+            let client = crate::tls::client_config(
+                Some(&ca),
+                false,
+                None,
+                None,
+                Some(&generated.client_config),
+            )
+            .unwrap();
+            assert_eq!(
+                pump_tls(client, server, "localhost").unwrap(),
+                rustls::client::EchStatus::Accepted
+            );
+        }
+        options.output = directory.path().join("rotated.pem");
+        options.retain_keys = Some(old_path);
+        let rotated = generate(&options).unwrap();
+        let mut server = server_base.clone();
+        load(&options.output).unwrap().apply(&mut server).unwrap();
+        for config in [&old.client_config, &rotated.client_config] {
+            let client =
+                crate::tls::client_config(Some(&ca), false, None, None, Some(config)).unwrap();
+            assert_eq!(
+                pump_tls(client, server.clone(), "localhost").unwrap(),
+                rustls::client::EchStatus::Accepted
+            );
+        }
+        let retired = directory.path().join("retired.pem");
+        crate::ech::prune(&options.output, &retired, &[13], false).unwrap();
+        load(&retired).unwrap().apply(&mut server).unwrap();
+        let client =
+            crate::tls::client_config(Some(&ca), true, None, None, Some(&old.client_config))
+                .unwrap();
+        assert!(matches!(
+            pump_tls(client, server, "localhost"),
+            Err(rustls::Error::PeerIncompatible(
+                rustls::PeerIncompatible::ServerRejectedEncryptedClientHello(_)
+            ))
+        ));
     }
 }

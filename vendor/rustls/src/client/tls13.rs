@@ -1210,17 +1210,18 @@ impl State<ClientConnectionData> for ExpectCertificateVerify<'_> {
 
         let now = self.config.current_time()?;
 
-        let cert_verified = self
-            .config
-            .verifier
-            .verify_server_cert(
-                end_entity,
-                intermediates,
-                &self.server_name,
-                &self.server_cert.ocsp_response,
-                now,
+        let certificate_result = if cx.data.ech_status == EchStatus::Rejected {
+            self.config.verifier.verify_ech_rejection(
+                end_entity, intermediates, &self.server_name,
+                &self.server_cert.ocsp_response, now,
             )
-            .map_err(|err| {
+        } else {
+            self.config.verifier.verify_server_cert(
+                end_entity, intermediates, &self.server_name,
+                &self.server_cert.ocsp_response, now,
+            )
+        };
+        let cert_verified = certificate_result.map_err(|err| {
                 cx.common
                     .send_cert_verify_error_alert(err)
             })?;

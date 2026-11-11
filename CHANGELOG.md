@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Check Cloudflare ACME DNS API success envelopes for zone lookup, TXT creation
+  and cleanup; omit response bodies from Cloudflare errors to avoid exposing
+  credentials or challenge values.
+
+- Authenticate rejected ECH handshakes against the public name and CA roots even
+  with `tls.insecure` enabled; inner certificate pins no longer apply to the
+  rejection certificate. Rejected ECH still fails before application traffic.
+- Reject malformed/mismatched server ECH key pairs before startup and bound ECH
+  file reads to 1 MiB.
+
 - Proxy HTTP/2 masquerade requests to HTTP/1.1 backends without forcing the
   incoming protocol version onto the upstream connection. Keep HTTP/1.1 Upgrade.
 - Replace the incoming Host port in HTTPS redirects, preserve bracketed IPv6
@@ -34,6 +44,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Preserve sniffed UDP destinations on subsequent messages to the same target.
 
 ### Added
+
+- Offline `hysteria ech` key generation with private atomic file output,
+  configurable public name/config ID/padding/AEADs, `--retain-keys` for overlap
+  and `ech prune` to retire old keys without generating replacements.
+- Authenticated ECH acceptance reporting on client connection/reconnection and
+  ping; GREASE and ordinary connections report not negotiated.
 
 - Static masquerade directory listings when index.html is absent, with sorted
   escaped names, encoded links and directory-slash redirects. Existing file

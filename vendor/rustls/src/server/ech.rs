@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use crate::crypto::hpke::{EncapsulatedSecret, Hpke, HpkeOpener, HpkePrivateKey, HpkeSuite};
+use crate::crypto::hpke::{EncapsulatedSecret, Hpke, HpkeOpener, HpkePrivateKey, HpkePublicKey, HpkeSuite};
 use crate::enums::HandshakeType;
 use crate::error::{Error, PeerMisbehaved};
 use crate::hash_hs::HandshakeHash;
@@ -94,9 +94,8 @@ impl EchKeyResolver for FixedEchKeys {
 /// new configs in DNS while still accepting connections encrypted to old configs
 /// during the DNS TTL transition period.
 ///
-/// **Note:** `from_raw` does not validate that the private key matches the
-/// config's public key. A mismatched key will cause ECH decryption to fail
-/// at connection time rather than at construction time.
+/// `from_raw` validates that the private key matches the config's public key
+/// using a local HPKE seal/open operation before accepting the key.
 ///
 /// See <https://datatracker.ietf.org/doc/html/rfc9849#section-7.1> for the
 /// server-side ECH decryption procedure.
@@ -128,7 +127,8 @@ impl EchServerKey {
     /// are retained.
     ///
     /// Returns an error if the config cannot be parsed, is not a V18 config,
-    /// has trailing data, or no matching HPKE suite is found.
+    /// has trailing data, no matching HPKE suite is found, or the HPKE key-pair
+    /// check fails (including invalid keys or random generation failure).
     pub fn from_raw(
         config_bytes: &[u8],
         private_key_bytes: Vec<u8>,
@@ -171,10 +171,19 @@ impl EchServerKey {
         hpke_info.extend_from_slice(b"tls ech\0");
         config.encode(&mut hpke_info);
 
+        // Reject malformed or mismatched key files before accepting connections.
+        let private_key = HpkePrivateKey::from(private_key_bytes);
+        let public_key = HpkePublicKey(contents.key_config.public_key.0.clone());
+        let suite = matching_suites[0];
+        let (enc, ciphertext) = suite.seal(&hpke_info, b"", b"ECH key check", &public_key)?;
+        if suite.open(&enc, &hpke_info, b"", &ciphertext, &private_key)? != b"ECH key check" {
+            return Err(Error::General("ECH public/private key mismatch".into()));
+        }
+
         Ok(Self {
             config,
             contents,
-            private_key: HpkePrivateKey::from(private_key_bytes),
+            private_key,
             hpke_suites: matching_suites,
             is_retry_config: true,
             hpke_info,
@@ -190,7 +199,8 @@ impl EchServerKey {
         self
     }
 
-    pub(crate) fn config_id(&self) -> u8 {
+    /// Public configuration identifier used to distinguish active rotation keys.
+    pub fn config_id(&self) -> u8 {
         self.contents.key_config.config_id
     }
 }

@@ -9,7 +9,13 @@ use rustls::{
     sign::CertifiedKey,
 };
 use sha2::{Digest, Sha256};
-use std::{fmt, fs::File, io::BufReader, path::Path, sync::Arc};
+use std::{
+    fmt,
+    fs::File,
+    io::{BufReader, Read as _},
+    path::Path,
+    sync::Arc,
+};
 use x509_parser::{extensions::GeneralName, prelude::FromDer};
 
 pub(crate) fn ensure_crypto_provider() {
@@ -157,12 +163,24 @@ pub(crate) fn client_config(
                     })?,
             )
         };
+        let mut verifier = HysteriaServerVerifier::new(normal_verifier, pin);
+        if ech.is_some() && insecure && ca_path.is_none() {
+            // Load system roots only if ECH is actually rejected. A successful
+            // explicitly-insecure inner handshake does not require a CA bundle.
+            verifier.ech_rejection_system_roots = true;
+        } else if ech.is_some() {
+            verifier.ech_rejection = Some(
+                rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+                    .build()
+                    .map_err(|error| {
+                        invalid_material("invalid ECH public-name CA configuration")
+                            .with_source(error)
+                    })?,
+            );
+        }
         builder
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(HysteriaServerVerifier::new(
-                normal_verifier,
-                pin,
-            )))
+            .with_custom_certificate_verifier(Arc::new(verifier))
     } else {
         builder.with_root_certificates(roots)
     };
@@ -178,6 +196,8 @@ pub(crate) fn client_config(
 #[derive(Clone)]
 struct HysteriaServerVerifier {
     normal: Option<Arc<rustls::client::WebPkiServerVerifier>>,
+    ech_rejection: Option<Arc<rustls::client::WebPkiServerVerifier>>,
+    ech_rejection_system_roots: bool,
     pin: Option<[u8; 32]>,
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
@@ -189,6 +209,8 @@ impl HysteriaServerVerifier {
     ) -> Self {
         Self {
             normal,
+            ech_rejection: None,
+            ech_rejection_system_roots: false,
             pin,
             provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
         }
@@ -203,11 +225,17 @@ pub(crate) fn parse_ech_config_list(value: &str) -> Result<Vec<u8>> {
     if let Some(decoded) = decode_ech_config_list(value) {
         return Ok(decoded);
     }
-    let data = std::fs::read(value).map_err(|error| {
-        CliError::new(format!(
-            "tls.ech is neither a valid base64 config list nor a readable file: {error}"
-        ))
-    })?;
+    let mut data = Vec::new();
+    File::open(value)
+        .and_then(|file| file.take(1024 * 1024 + 1).read_to_end(&mut data))
+        .map_err(|error| {
+            CliError::new(format!(
+                "tls.ech is neither a valid base64 config list nor a readable file: {error}"
+            ))
+        })?;
+    if data.len() > 1024 * 1024 {
+        return Err(CliError::new("tls.ech file exceeds 1 MiB"));
+    }
     if let Some(contents) = decode_ech_pem(&data)? {
         validate_ech_config_list(&contents)?;
         return Ok(contents);
@@ -319,6 +347,39 @@ impl ServerCertVerifier for HysteriaServerVerifier {
             }
         }
         Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_ech_rejection(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        public_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+        // ECH rejection authenticates the outer server, not the intended inner
+        // server. Neither insecure nor the inner certificate pin applies here.
+        let system_verifier;
+        let verifier = if self.ech_rejection_system_roots {
+            let roots = native_root_store().map_err(|_| {
+                rustls::Error::General(
+                    "cannot load CA roots for ECH public-name verification".into(),
+                )
+            })?;
+            system_verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+                .build()
+                .map_err(|_| {
+                    rustls::Error::General(
+                        "no usable CA roots for ECH public-name verification".into(),
+                    )
+                })?;
+            &system_verifier
+        } else {
+            self.ech_rejection.as_ref().ok_or_else(|| {
+                rustls::Error::General("ECH rejection verifier is unavailable".into())
+            })?
+        };
+        verifier.verify_server_cert(end_entity, intermediates, public_name, ocsp_response, now)
     }
 
     fn verify_tls12_signature(

@@ -220,6 +220,12 @@ mod connection {
             self.inner.core.is_early_data_accepted()
         }
 
+        /// Returns the ECH negotiation state. Check handshake completion before
+        /// treating acceptance as authenticated.
+        pub fn ech_status(&self) -> crate::client::EchStatus {
+            self.inner.core.data.ech_status()
+        }
+
         /// Returns the number of TLS1.3 tickets that have been received.
         pub fn tls13_tickets_received(&self) -> u32 {
             self.inner.tls13_tickets_received

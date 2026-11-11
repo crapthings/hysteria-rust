@@ -342,6 +342,7 @@ pub async fn serve_client(
 }
 
 struct ConnectedClient {
+    ech_accepted: bool,
     endpoint: Endpoint,
     client: Arc<ProxyClient>,
     server_address: SocketAddr,
@@ -402,8 +403,14 @@ impl ClientHandle {
         }
         let connected = connect_client(&self.config).await?;
         eprintln!(
-            "connected to {} (UDP relay: {})",
-            connected.server_address, connected.udp_enabled
+            "connected to {} (UDP relay: {}, ECH: {})",
+            connected.server_address,
+            connected.udp_enabled,
+            if connected.ech_accepted {
+                "accepted"
+            } else {
+                "not negotiated"
+            }
         );
         let client = Arc::clone(&connected.client);
         state.connected = Some(connected);
@@ -565,6 +572,7 @@ async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
     .map_err(CliError::connection)?;
     let client = Arc::new(ProxyClient::new(connection).with_fast_open(config.fast_open));
     Ok(ConnectedClient {
+        ech_accepted: info.ech_accepted,
         disconnect_monitor: monitor_disconnect(&client),
         endpoint,
         client,
@@ -788,8 +796,14 @@ pub async fn ping(config: ClientConfig, address: &str) -> Result<std::time::Dura
     config.validate_connection()?;
     let connected = connect_client(&config).await?;
     eprintln!(
-        "connected to {} (UDP relay: {})",
-        connected.server_address, connected.udp_enabled
+        "connected to {} (UDP relay: {}, ECH: {})",
+        connected.server_address,
+        connected.udp_enabled,
+        if connected.ech_accepted {
+            "accepted"
+        } else {
+            "not negotiated"
+        }
     );
     let result = async {
         let started = std::time::Instant::now();

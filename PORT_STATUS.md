@@ -73,7 +73,7 @@ Known differences from v2.13.0:
 - QUIC domain sniffing now reassembles up to eight Initial-bearing datagrams
   within a fixed 200 ms collection window. This is bounded fallback behavior,
   not unlimited capture; see [sniffing behavior](docs/quic-sniffing.md).
-- The upstream `ech` key-generation CLI is not implemented; ECH runtime support exists.
+- The development CLI implements `ech` key generation and explicit overlapping-key rotation; live key reload and automatic client configuration distribution are not implemented.
 - TUN uses a different stack; Rust's `route.strict` still performs Linux/Windows
   actions and is retained even though upstream removed its option.
 - Interoperability tests do not establish feature parity, Chrome fingerprint

@@ -5,6 +5,7 @@ mod auth;
 pub mod cert;
 pub mod config;
 pub mod doctor;
+pub mod ech;
 mod geo;
 mod http_proxy;
 mod masquerade;
