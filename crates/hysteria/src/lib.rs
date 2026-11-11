@@ -4,6 +4,7 @@ mod acme_namecheap;
 mod auth;
 pub mod cert;
 pub mod client_egress;
+pub mod client_events;
 mod client_stream;
 mod client_udp;
 pub mod config;
@@ -27,6 +28,7 @@ mod tls;
 mod traffic;
 mod transparent;
 mod tun;
+mod tun_diagnostics;
 mod udp_queue;
 pub mod update;
 

@@ -554,7 +554,10 @@ local TLS trust/client identity/ECH loading, and SOCKS5/HTTP listener exposure o
 identical-address conflicts. It reports unchecked network/bind conditions as
 `skip`. Non-loopback listeners and disabled verification are warnings, not hidden
 changes. Hostname listener resolution, wildcard binding conflicts, actual port
-availability and TUN/system integration are not verified offline.
+availability and end-to-end system integration are not verified offline. Configured
+TUN adds [read-only startup observations](client-tun-routing.md#read-only-startup-diagnosis),
+including Linux device/capability, protected-route, cache and DNS-configuration checks.
+Device creation, cache ownership and actual DNS capture remain unverified.
 
 `--connect` explicitly permits address resolution and a temporary authenticated
 QUIC connection to the configured server. It does not bind the configured proxy
@@ -564,18 +567,31 @@ the network phase; local configuration/material checks precede it. Realm probes 
 UDP punching. Configurations enabling `realm.portMapping.enabled` or external
 FD control are rejected before the probe, to avoid router/control side effects.
 
-Reports distinguish address resolution from the combined QUIC/TLS/Hysteria
-handshake. The combined handshake currently does not expose a separate reliable
-result for each failure phase. A timeout has unknown cause; it is not reported
-as a proven TLS, password or firewall fault. UDP capability advertised by the
-server is not an actual UDP forwarding test. Remote egress and forwarding remain
-unverified; `ping TARGET -c client.yaml` tests an explicit TCP target separately.
+Reports distinguish address resolution, QUIC/TLS, Hysteria HTTP/3 authentication,
+and optional TCP/UDP forwarding. Add `--tcp HOST:PORT` or `--udp-echo HOST:PORT`
+with `--connect` to test explicit remote targets; both bypass client routing.
+UDP requires an echo endpoint you control. No forwarding target is contacted by
+default, and advertised UDP support alone is not a forwarding pass. All active
+phases share the timeout budget. See [client diagnosis and lifecycle events](client-observability.md)
+for exact phase meanings and runtime `--events json` output.
+[Connection recovery](client-recovery.md) documents demand-driven retries, the
+one-second failure cooldown, and which TCP/UDP sessions can recover.
 
 Text uses aligned English check identifiers and terminal-only status highlights
 (respecting `NO_COLOR` and `TERM=dumb`). JSON retains schema version 1 with
 `mode: client`, stable check identifiers, `passed` and per-check statuses.
 Warnings/skips alone do not fail the command. Diagnostic failures exit 3;
 argument errors exit 2. File and stdin configuration are both supported.
+
+## Named client profiles
+
+Use `profile import --name NAME` to save a sharing link from stdin or a terminal
+prompt. `profile list`, `profile show NAME` and `profile remove NAME` manage saved
+files. `client --profile NAME` and `doctor client --profile NAME --connect` select
+one for the current invocation, mutually exclusive with `-c`.
+
+There is no implicit active profile or live switching. See [client profiles](client-profiles.md)
+for storage locations, safe summaries, overwrite rules, JSON and permissions.
 
 ## Export a client link from the server
 
@@ -705,7 +721,9 @@ router mapping behavior are not established by these local tests.
 
 Use `capabilities --output json` for compiled feature/API support and
 `route explain HOST:PORT --protocol tcp -c client.yaml --output json` for an
-**offline** decision using the same algorithm as forwarding. Client routing v1
+**offline** decision using the same algorithm as forwarding. Add `--trace` for
+per-rule evaluation; `route lint` reports fully shadowed rules and `route template`
+prints a routing-only configuration fragment. Client routing v1
 supports SOCKS5, HTTP, explicit TCP/UDP forwarding and opt-in
 [protected Linux TUN with Fake-IP DNS](client-tun-routing.md). Other-platform TUN
 routing, transparent routing, process matching and persistent IPC remain unsupported. See the complete

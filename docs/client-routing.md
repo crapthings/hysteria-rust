@@ -44,7 +44,8 @@ are preserved. With `routing`, proxy connection establishment is deferred until
 a request selects `proxy`, so direct access remains usable while the proxy is
 unavailable. Listeners becoming ready do not imply proxy readiness. The existing
 `server` and `auth` fields are still required, even for a direct-default profile.
-A failed proxy request never falls back to direct.
+A failed proxy request never falls back to direct. Failed connection attempts have
+a one-second retry cooldown; see [connection recovery](client-recovery.md).
 
 The schema rejects unknown fields. `version` is required and must be `1`;
 `default` defaults to `proxy`; `rules` defaults to an empty list. Maximum 4096
@@ -78,6 +79,68 @@ return ASCII IDNA hostnames for portable direct dialing. Protocols
 are `tcp`, `udp` or `*`; ports can be `*`, one nonzero port or an inclusive range,
 for example `tcp/22`, `udp/10000-20000`, `*/443`. An omitted protocol/port matches
 both protocols on all ports.
+
+## Templates, rule review and explanation
+
+```shell
+hysteria route template lan-bypass
+hysteria route lint --profile jp1
+hysteria route explain example.com:443 --trace --profile jp1
+```
+
+Templates print a **routing-only fragment**, not a complete client configuration.
+Review and merge it into a configuration yourself; no file is read or changed by
+`route template`. It accepts `--output yaml` (default) or `--output json`.
+
+| Template | Behavior |
+| --- | --- |
+| `proxy-all` | No explicit rules; default proxy |
+| `lan-bypass` | Direct literal private/loopback addresses and exact `localhost`; default proxy |
+| `block-udp443` | Reject UDP destination port 443; default proxy |
+
+`lan-bypass` does not resolve domains to discover LAN addresses. Add explicit
+domain rules for names that should go direct. `block-udp443` does not block every
+possible QUIC endpoint or guarantee that applications fall back to TCP. Templates
+are explicit opt-ins; existing profiles and defaults are never changed.
+
+`route lint` validates the configuration and reports a rule only when its entire
+host/protocol/port range is covered by **one earlier rule**. It handles exact/suffix
+domains, normalized IDNA names, literal IP/CIDR ranges and the expanded LAN/loopback
+presets. A different action does not make the later rule reachable: first match
+still wins. Identical actions can also produce a shadow warning.
+
+Partial overlaps and coverage requiring the union of multiple earlier rules are
+not reported. No warnings therefore does not prove every rule is reachable or
+that routing meets your intent. The analysis runs only when requested, never on
+the forwarding path. It does not query DNS, reorder rules or rewrite configuration.
+
+```shell
+hysteria route lint -c client.yaml --output json
+hysteria route lint -c client.yaml --strict
+```
+
+By default, warnings exit 0; `--strict` exits 3 if any are found. Invalid
+configuration also exits 3, using the existing configuration-error envelope.
+Warnings do not make `check client` fail or prevent runtime startup. A valid lint
+report has `schema_version: 1`, `routing_version: 1`, `routing_enabled`,
+`rules_total`, `valid: true`, `strict`, `analysis: "single_rule_full_coverage"`, and
+`warnings`. Each warning has `code: "rule_shadowed"`, one-based `rule` and
+`covered_by`, plus `action` and `covering_action`. It contains no credentials or
+full configuration.
+
+`route explain` displays the normalized destination, selected outbound, original
+matched rule and a human-readable reason. `--trace` adds one record per rule:
+
+- `protocol_mismatch`, `port_mismatch` or `host_mismatch`: the first failed check
+  for that rule, in the same order as runtime matching;
+- `matched`: the first matching rule;
+- `not_evaluated`: a preceding rule already matched.
+
+Trace includes rule text and may reveal private routing domains; authentication
+and connection credentials are omitted. It is an offline explanation of the
+selected file/profile, not a query of the running process. All commands preserve
+the existing first-match semantics. Text is aligned, highlighted on terminals and
+plain when redirected; JSON never includes ANSI formatting.
 
 ## DNS and data-path semantics
 
@@ -134,13 +197,14 @@ hysteria route explain example.com:443 --protocol tcp -c client.yaml --output js
 create devices or check privileges. It reports:
 
 - `schema_version: 1`, `core_version` and `platform`;
-- `configuration_check`, `route_explain`;
+- `configuration_check`, `route_explain`, `route_trace`, `route_lint` and `routing_templates`;
 - supported routing version/actions/matchers/protocols/inbounds;
 - explicit false values for process/GeoIP/GeoSite/live-reload capabilities;
 - whether TUN is compiled in, separately from platform-dependent `routing_supported` / `fake_dns` and
   `permission_check: "not_performed"`;
-- `control.transport: "cli-json"` with persistent IPC, events, configuration
-  application and privileged-helper support all currently false.
+- `control.transport: "cli-json"` with lifecycle events on stdout NDJSON; persistent IPC, configuration
+  application and privileged-helper support remain false. See
+  [client observability](client-observability.md).
 
 Use the capability fields, not assumptions based on the operating system or
 package version. A compiled feature is not proof of permissions or readiness.
@@ -161,13 +225,18 @@ A successful `route explain` result has the following shape:
   "outbound": "direct",
   "matched_rule": 4,
   "reason": "first_matching_rule",
-  "dns_performed": false
+  "dns_performed": false,
+  "routing_enabled": true,
+  "rules_total": 5,
+  "matched_rule_text": "direct(suffix:example.org)"
 }
 ```
 
 `matched_rule` is one-based, or null for the default. Reasons are
 `first_matching_rule`, `default_outbound` or `routing_disabled`.
-The result contains no proxy credential or full configuration.
+The original decision fields remain unchanged. `trace` is omitted unless requested;
+when present, its entries contain `rule`, `outcome` and `text`. The result contains
+no proxy credential or full configuration.
 
 **Explanation evaluates the supplied file/stdin configuration, not a running
 process's effective configuration.** It shares the exact rule algorithm with

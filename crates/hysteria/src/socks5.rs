@@ -33,6 +33,7 @@ pub(crate) async fn serve(config: Socks5Config, client: Arc<ClientHandle>) -> Re
         .await
         .map_err(|error| CliError::bind("SOCKS5 listener", error))?;
     eprintln!("SOCKS5 proxy listening on {}", listener.local_addr()?);
+    client.local_ready("socks5");
     loop {
         let (stream, _) = listener.accept().await?;
         let config = config.clone();

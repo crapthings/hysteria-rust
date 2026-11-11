@@ -30,6 +30,9 @@ pub(crate) struct Cli {
         help = "Configuration file, or - to read YAML/JSON from standard input"
     )]
     pub(crate) config: PathBuf,
+    /// Use a named client profile for this invocation; mutually exclusive with --config.
+    #[arg(long, global = true, conflicts_with = "config", value_parser = crate::profile::profile_name)]
+    pub(crate) profile: Option<String>,
     #[arg(
         long,
         global = true,
@@ -41,11 +44,17 @@ pub(crate) struct Cli {
     /// Include available diagnostic causes in command error reports.
     #[arg(long, global = true)]
     pub(crate) diagnostic: bool,
+    /// Client lifecycle format; JSON writes NDJSON to stdout, diagnostics stay on stderr.
+    #[arg(long, global = true, value_enum)]
+    pub(crate) events: Option<crate::check::OutputFormat>,
 }
 
 /// Separates long-running roles from bounded diagnostic and administrative commands.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Import, list, inspect or remove private client profiles.
+    #[command(display_order = 30)]
+    Profile(crate::profile::ProfileOptions),
     /// Run the local proxy client.
     #[command(
         long_about = "Run the local Hysteria 2 proxy client in the foreground.
@@ -53,17 +62,22 @@ pub(crate) enum Command {
 Reads YAML/JSON configuration (default: config.yaml). Configure a server, authentication and at least one local proxy/forwarding mode. Relative file paths use the working directory.",
         after_help = "Setup:
   hysteria guide client -c client.yaml       Guided setup / link import
+  hysteria profile import --name jp1         Save a sharing link from stdin/prompt
+  hysteria profile list                      List saved client profiles
   hysteria init client -c client.yaml        Editable template
 
 Run:
   hysteria client -c client.yaml             Start local proxies
+  hysteria client --profile jp1               Use a saved profile for this run
   hysteria service install client -c client.yaml
                                              Linux background service (root)
 
 Check and diagnose:
   hysteria check client -c client.yaml       Validate configuration offline
   hysteria doctor client -c client.yaml      Inspect local inputs
-  hysteria route explain example.com:443 -c client.yaml
+  hysteria route template lan-bypass         Print a routing fragment
+  hysteria route lint --profile jp1           Review rule order
+  hysteria route explain example.com:443 --trace -c client.yaml
                                              Explain routing without DNS
   hysteria doctor client --connect -c client.yaml
                                              Test server authentication
@@ -75,6 +89,7 @@ Share:
   hysteria share -c client.yaml              Export a link / optional QR
 
 Advanced input:
+  hysteria client --events json              Lifecycle events on stdout (NDJSON)
   hysteria client --config -                 Read configuration from stdin
 
 Stop with Ctrl+C or Unix SIGTERM. Relative paths use the working directory.
@@ -156,7 +171,7 @@ Realm setup is offline and never enables router port mapping."
     /// Diagnose local inputs; optionally test a client connection with --connect.
     #[command(display_order = 70)]
     Doctor(crate::doctor_cli::DoctorOptions),
-    /// Explain client routing decisions without sending traffic.
+    /// Generate routing templates, review rule order and explain decisions offline.
     #[command(display_order = 75)]
     Route(crate::routing_cli::RouteOptions),
     /// Report platform and integration capabilities (JSON by default).

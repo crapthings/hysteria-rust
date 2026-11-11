@@ -15,7 +15,7 @@ This adds an offline command without changing server runtime or protocol behavio
 
 ## Next: diagnosis and observability
 
-Initial typed error categories and bounded opt-in diagnostic causes are implemented; see [error reporting](errors.md) for coverage and remaining unclassified paths. Structured runtime events remain planned. Define their schema before promising stable machine output for long-running commands. Separate configuration errors, local resource failures, DNS, TLS, authentication, transport and remote outbound failures. Diagnostics must distinguish observations from guesses; a UDP timeout alone does not identify a firewall or an authentication failure.
+Initial typed error categories and bounded opt-in diagnostic causes are implemented; see [error reporting](errors.md) for coverage and remaining unclassified paths. Versioned client lifecycle events are available through `client --events json`; see [observability](client-observability.md). Persistent status/control IPC remains future work. Separate configuration errors, local resource failures, DNS, TLS, authentication, transport and remote outbound failures. Diagnostics must distinguish observations from guesses; a UDP timeout alone does not identify a firewall or an authentication failure.
 
 `doctor server` now provides offline configuration, TLS material/date and selected local-file checks. Network and runtime conditions are explicitly unverified; future opt-in network checks must remain separate. Document each operation's side effects and avoid automatically changing host networking. Status/control APIs need authentication, versioning and a local-first exposure policy, independent of any specific GUI.
 
@@ -44,19 +44,20 @@ server startup.
 
 ## Optional client management
 
-Profile libraries, server groups and ordered client rules are additional application capabilities, not changes to the Hysteria wire protocol. If implemented in this workspace, give them independent configuration, lifecycle and tests outside the transport/protocol crates. Clarify how TCP, UDP, DNS, process attribution and direct routing behave before exposing GUI controls or claiming cross-platform parity.
+User-scoped client profiles now support URI import, safe summaries, explicit selection and removal; see [client profiles](client-profiles.md). Server groups and client rules are application capabilities, not changes to the Hysteria wire protocol. If implemented in this workspace, give them independent configuration, lifecycle and tests outside the transport/protocol crates. Clarify how TCP, UDP, DNS, process attribution and direct routing behave before exposing GUI controls or claiming cross-platform parity.
 
-A full Surge-like rules engine is not included in the first CLI increment. No additional routing engine has been introduced by this work.
+Client routing v1 provides ordered rules; a full Surge-like rules engine remains outside the current scope.
 
 ## Client first-use experience
 
 Implemented: `init client`, `guide client`, standard sharing-link import,
 loopback-only SOCKS5 defaults, offline `doctor client` and an opt-in bounded
-`--connect` probe. The probe distinguishes address resolution from the combined
-QUIC/TLS/authentication result and does not guess timeout causes. See
+`--connect` probe. The probe distinguishes address resolution, QUIC/TLS and HTTP/3 authentication
+and does not guess timeout causes. See
 [client setup](cli.md#client-setup-and-diagnosis). Realm sharing/import, guided setup and phased active probes are implemented.
-Finer QUIC/TLS/authentication diagnostics, profiles and client runtime status/events
-remain subsequent work.
+QUIC/TLS and HTTP/3 authentication now have separate diagnostic results, explicit
+TCP/UDP forwarding probes and versioned client lifecycle events. Server groups
+and persistent runtime status/control remain subsequent work.
 
 Server-side `server share` now exports a standard direct-mode client URI from an
 explicit public address and selected credentials. Generation and import share
@@ -67,9 +68,27 @@ a full client configuration instead of this exporter.
 
 Implemented: ordered domain/suffix/IP/CIDR/private-network/protocol/port rules,
 proxy/direct/reject dispatch for SOCKS5, HTTP and explicit forwarding, offline
-`route explain`, and `capabilities` JSON. See [client routing](client-routing.md).
+`route explain` with an optional evaluation trace, conservative `route lint`,
+explicit routing templates, and `capabilities` JSON. See [client routing](client-routing.md).
 Protected Linux TUN now has explicit egress protection and persistent Fake-IP DNS;
 see [configuration and validation limits](client-tun-routing.md). Isolated real Linux TUN
-acceptance tests passed; public-network and system resolver validation remain pending. Other-platform protection, transparent routing,
-process matching, rule sets and persistent control IPC/events remain later
+acceptance tests passed; isolated systemd-resolved DNS integration also passed.
+Whole-host resolver combinations and public-network validation remain pending. Other-platform protection, transparent routing,
+process matching, rule sets and persistent control IPC remain later
 increments; GUI consumers can use CLI JSON now.
+
+## Client recovery reliability
+
+Implemented: one-second failure/cancellation cooldown for queued requests, ordered
+per-connection disconnect notifications and stale-failure protection. Tests cover
+concurrent handshakes, cancellation, short/long loopback packet loss and lazy
+server restart. Real interface handover and OS sleep/wake remain platform acceptance
+work; see [recovery behavior](client-recovery.md).
+
+## TUN pre-start diagnosis
+
+`doctor client` now inspects configured TUN prerequisites without creating devices,
+changing routes/DNS, acquiring cache ownership or writing mappings. Protected Linux
+mode reuses runtime policy validation and reports route/capability/interface/DNS
+observations; cache parsing is shared with runtime. Ownership, write probes and
+end-to-end readiness remain explicitly unverified. See [TUN diagnosis](client-tun-routing.md#read-only-startup-diagnosis).

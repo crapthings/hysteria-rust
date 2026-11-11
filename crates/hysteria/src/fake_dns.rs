@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     sync::Mutex,
 };
-const LIMIT: usize = 4096;
+pub(crate) const LIMIT: usize = 4096;
 const V4: u32 = u32::from_be_bytes([198, 18, 0, 0]);
 const V6: u128 = 0xfd00_0198_0018_0000_0000_0000_0000_0000;
 #[derive(Clone, Debug, Deserialize)]
@@ -86,50 +86,12 @@ impl FakeDns {
         let lock = options.open(lock_path)?;
         lock.try_lock()
             .map_err(|_| CliError::new("Fake-IP cache is already in use or cannot be locked"))?;
-        let names = match fs::symlink_metadata(&config.cache) {
-            Ok(meta) => {
-                if !meta.is_file() {
-                    return Err(CliError::new(
-                        "Fake-IP cache must be a regular file, not a symlink",
-                    ));
-                }
-                let mut bytes = Vec::new();
-                fs::File::open(&config.cache)?
-                    .take(2 * 1024 * 1024 + 1)
-                    .read_to_end(&mut bytes)?;
-                if bytes.len() > 2 * 1024 * 1024 {
-                    return Err(CliError::new("Fake-IP cache exceeds 2 MiB"));
-                }
-                let stored: Stored = serde_json::from_slice(&bytes).map_err(|_| {
-                    CliError::new("invalid Fake-IP cache; refusing to reset mappings")
-                })?;
-                if stored.version != 1 || stored.names.len() > LIMIT {
-                    return Err(CliError::new("unsupported Fake-IP cache"));
-                }
-                stored.names
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-        let mut ids = HashMap::new();
-        for (i, name) in names.iter().enumerate() {
-            if canonical(name)? != *name
-                || ids
-                    .insert(name.clone(), u32::try_from(i + 1).unwrap_or(0))
-                    .is_some()
-            {
-                return Err(CliError::new("invalid or duplicate Fake-IP cache name"));
-            }
-        }
+        let map = load_map(&config.cache)?;
         let dns = Self {
             cache_lock: lock,
             reported: std::sync::atomic::AtomicBool::new(false),
             path: config.cache.clone(),
-            map: Mutex::new(Map {
-                closed: false,
-                names,
-                ids,
-            }),
+            map: Mutex::new(map),
         };
         // Verify persistence before changing interfaces/routes; never announce unpersisted IPs.
         dns.persist(
@@ -271,6 +233,51 @@ impl FakeDns {
             .map(Some)
             .map_err(|_| CliError::new("cannot encode DNS reply"))
     }
+}
+/// Read-only validation shared with runtime loading; never acquire a lock or persist.
+pub(crate) fn inspect_cache(path: &std::path::Path) -> Result<usize> {
+    Ok(load_map(path)?.names.len())
+}
+fn load_map(path: &std::path::Path) -> Result<Map> {
+    let names = match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                return Err(CliError::new(
+                    "Fake-IP cache must be a regular file, not a symlink",
+                ));
+            }
+            let mut bytes = Vec::new();
+            fs::File::open(path)?
+                .take(2 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 2 * 1024 * 1024 {
+                return Err(CliError::new("Fake-IP cache exceeds 2 MiB"));
+            }
+            let stored: Stored = serde_json::from_slice(&bytes)
+                .map_err(|_| CliError::new("invalid Fake-IP cache; refusing to reset mappings"))?;
+            if stored.version != 1 || stored.names.len() > LIMIT {
+                return Err(CliError::new("unsupported Fake-IP cache"));
+            }
+            stored.names
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut ids = HashMap::new();
+    for (i, name) in names.iter().enumerate() {
+        if canonical(name)? != *name
+            || ids
+                .insert(name.clone(), u32::try_from(i + 1).unwrap_or(0))
+                .is_some()
+        {
+            return Err(CliError::new("invalid or duplicate Fake-IP cache name"));
+        }
+    }
+    Ok(Map {
+        closed: false,
+        names,
+        ids,
+    })
 }
 fn canonical(name: &str) -> Result<String> {
     let name = idna::domain_to_ascii(name.trim_end_matches('.'))

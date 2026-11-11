@@ -21,7 +21,7 @@ pub use error::TransportError;
 pub use handshake::{
     AuthenticatedConnection, Authenticator, ClientHandshake, HandshakeInfo, HysteriaServer,
     MasqueradeBodyStream, MasqueradeHandler, MasqueradeRequest, MasqueradeResponse,
-    ServerHandshake, connect,
+    ServerHandshake, connect, connect_with_tls_observer,
 };
 pub use obfs_socket::{
     ObfuscationConfig, RealmPunchController, UdpSocketFactory, bind_obfuscated_endpoint,

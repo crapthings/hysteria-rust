@@ -61,6 +61,9 @@ struct CheckError {
 
 /// Loads and validates configuration without invoking runtime listeners, DNS queries or update checks.
 impl CheckOptions {
+    pub(crate) fn is_client(&self) -> bool {
+        matches!(self.mode, CheckMode::Client)
+    }
     pub(crate) fn run(&self, path: &Path, diagnostic: bool) -> Result<ExitCode> {
         let result = match self.mode {
             CheckMode::Client => ClientConfig::load(path).and_then(|config| config.validate()),

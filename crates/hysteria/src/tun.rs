@@ -94,6 +94,7 @@ mod platform {
         let Some(udp_socket) = udp_socket else {
             return Err(CliError::new("TUN UDP stack was not created"));
         };
+        client.local_ready("tun");
         tasks.spawn(run_udp(
             udp_socket,
             client,
@@ -107,6 +108,28 @@ mod platform {
             Some(Err(error)) => Err(CliError::new(format!("TUN task failed: {error}"))),
             None => Err(CliError::new("all TUN tasks stopped")),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn inspect_policy() -> std::io::Result<()> {
+        linux_policy::PolicyRules::preflight_routed()
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn inspect_routes(
+        tun_index: u32,
+        egress_index: u32,
+        resolver: IpAddr,
+    ) -> Result<(bool, bool, bool)> {
+        let routes = RouteManager::new()?.list()?;
+        Ok((
+            validate_fake_routes(&routes, tun_index, true).is_ok(),
+            select_linux_table(&routes).is_some(),
+            routes.iter().any(|route| {
+                route.table() == 254
+                    && route.if_index() == Some(egress_index)
+                    && route.contains(&resolver)
+            }),
+        ))
     }
 
     fn setup_device(config: &TunConfig) -> Result<(tun_rs::AsyncDevice, Option<RouteSet>)> {
@@ -664,4 +687,17 @@ pub(crate) async fn test_dns_tcp(
     client: &ClientHandle,
 ) -> Result<()> {
     platform::dns_tcp(stream, client).await
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn inspect_policy() -> std::io::Result<()> {
+    platform::inspect_policy()
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn inspect_routes(
+    tun_index: u32,
+    egress_index: u32,
+    resolver: std::net::IpAddr,
+) -> Result<(bool, bool, bool)> {
+    platform::inspect_routes(tun_index, egress_index, resolver)
 }

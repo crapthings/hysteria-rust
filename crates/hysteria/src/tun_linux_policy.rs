@@ -284,6 +284,10 @@ fn request(
     multipart: bool,
 ) -> io::Result<Vec<RuleMessage>> {
     let mut socket = Socket::new(NETLINK_ROUTE)?;
+    if multipart {
+        socket2::SockRef::from(&socket)
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+    }
     socket.bind_auto()?;
     socket.connect(&SocketAddr::new(0, 0))?;
 

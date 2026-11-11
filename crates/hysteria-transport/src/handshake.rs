@@ -412,11 +412,27 @@ pub async fn connect(
     server_name: &str,
     handshake: ClientHandshake,
 ) -> Result<(AuthenticatedConnection, HandshakeInfo), TransportError> {
+    connect_with_tls_observer(endpoint, server_address, server_name, handshake, || {}).await
+}
+
+/// Connects with a callback after QUIC/TLS completes, before HTTP/3 authentication.
+/// The callback observes progress only and must not block.
+///
+/// # Errors
+/// Returns the same connection and authentication errors as [`connect`].
+pub async fn connect_with_tls_observer(
+    endpoint: &Endpoint,
+    server_address: SocketAddr,
+    server_name: &str,
+    handshake: ClientHandshake,
+    tls_completed: impl FnOnce() + Send,
+) -> Result<(AuthenticatedConnection, HandshakeInfo), TransportError> {
     let connection = endpoint
         .connect(server_address, server_name)
         .map_err(|error| TransportError::Connect(error.to_string()))?
         .await
         .map_err(|error| TransportError::Connect(error.to_string()))?;
+    tls_completed();
     authenticate_client_connection(connection, server_address, handshake).await
 }
 

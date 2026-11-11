@@ -21,15 +21,24 @@ pub(crate) struct DoctorOptions {
     /// Attempt an authenticated server connection (client only; no proxy listeners).
     #[arg(long)]
     connect: bool,
-    /// Connection probe deadline, 1s to 60s; applies only with --connect.
+    /// Shared network deadline, 1s to 60s, including optional forwarding probes.
     #[arg(long, default_value = "10s", value_parser = probe_timeout)]
     timeout: std::time::Duration,
+    /// Test a remote TCP connection through Hysteria (HOST:PORT; bypasses client routing).
+    #[arg(long, requires = "connect", value_parser = probe_target)]
+    tcp: Option<String>,
+    /// Send a random payload to a UDP echo target you control and verify its reply.
+    #[arg(long, requires = "connect", value_parser = probe_target)]
+    udp_echo: Option<String>,
     /// Report format; JSON includes versioned check identifiers and statuses.
     #[arg(long, value_enum, default_value = "text")]
     output: crate::check::OutputFormat,
 }
 
 impl DoctorOptions {
+    pub(crate) fn is_client(&self) -> bool {
+        matches!(self.mode, Mode::Client)
+    }
     pub(crate) async fn run(&self, path: &Path) -> Result<ExitCode> {
         if self.connect && matches!(self.mode, Mode::Server) {
             return Err(CliError::new(
@@ -38,7 +47,18 @@ impl DoctorOptions {
         }
         let report = match self.mode {
             Mode::Server => hysteria_cli::doctor::server(path),
-            Mode::Client => hysteria_cli::doctor::client(path, self.connect, self.timeout).await,
+            Mode::Client => {
+                hysteria_cli::doctor::client_with_probes(
+                    path,
+                    self.connect,
+                    self.timeout,
+                    &hysteria_cli::doctor::ForwardProbes {
+                        tcp: self.tcp.clone(),
+                        udp_echo: self.udp_echo.clone(),
+                    },
+                )
+                .await
+            }
         };
         let mut stdout = io::stdout().lock();
         match self.output {
@@ -104,4 +124,18 @@ fn probe_timeout(value: &str) -> std::result::Result<std::time::Duration, String
         return Err("timeout must be between 1s and 60s".into());
     }
     Ok(duration)
+}
+
+fn probe_target(value: &str) -> std::result::Result<String, String> {
+    let config = hysteria_cli::routing::RoutingConfig {
+        version: 1,
+        default: hysteria_cli::routing::Action::Proxy,
+        rules: vec![],
+    };
+    hysteria_cli::routing::Router::compile(&config)
+        .and_then(|router| router.decide(value, hysteria_cli::routing::Protocol::Tcp))
+        .map_err(|_| {
+            "expected a hostname/IP and nonzero port; bracket IPv6 addresses".to_owned()
+        })?;
+    Ok(value.to_owned())
 }

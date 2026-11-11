@@ -34,6 +34,7 @@ mod linux {
     ) -> Result<()> {
         let listener = TcpListener::bind(normalize_listen(&config.listen)).await?;
         eprintln!("TCP redirect listening on {}", listener.local_addr()?);
+        client.local_ready("tcp_redirect");
         loop {
             let (stream, _) = listener.accept().await?;
             let target = original_destination(&stream)?;
@@ -49,6 +50,7 @@ mod linux {
         let socket = transparent_listener(address)?;
         let listener = TcpListener::from_std(socket)?;
         eprintln!("TCP TProxy listening on {}", listener.local_addr()?);
+        client.local_ready("tcp_tproxy");
         loop {
             let (stream, _) = listener.accept().await?;
             let target = stream.local_addr()?;
@@ -63,6 +65,7 @@ mod linux {
         let address = resolve_one(&normalize_listen(&config.listen)).await?;
         let socket = transparent_udp_listener(address)?;
         eprintln!("UDP TProxy listening on {}", socket.local_addr()?);
+        client.local_ready("udp_tproxy");
         let idle_timeout = config.timeout()?;
         let mut flows = HashMap::<(SocketAddr, SocketAddr), mpsc::Sender<Vec<u8>>>::new();
         let mut buffer = vec![0; 65_535];

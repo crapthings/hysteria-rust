@@ -8,6 +8,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Coalesce failed/cancelled client connection attempts with a one-second cooldown,
+  preventing queued requests from each starting another failed handshake. Preserve
+  demand-driven retry and independent direct routes.
+- Emit one ordered disconnect notification even when a request replaces the closed
+  connection before its monitor runs; retain protection against stale failures.
+
 - Cancel pending client handshakes on shutdown so an unreachable server cannot
   hold the connection-state lock and delay SIGTERM cleanup. Verified on Linux TUN.
 
@@ -47,6 +53,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Preserve sniffed UDP destinations on subsequent messages to the same target.
 
 ### Added
+
+- Document isolated jp1 systemd-resolved acceptance: explicit per-link DNS enables
+  Fake-IP and dual-stack forwarding, with normal-stop DNS restoration. Record that
+  starting TUN alone did not guarantee DNS capture; host networking was preserved.
+
+- Extend client doctor with read-only TUN device/capability, protected-route,
+  interface, cache and DNS-configuration observations. Share runtime cache/policy
+  validation, without acquiring cache locks or changing host networking.
+
+- Add routing-only templates, conservative full-shadow warnings with `route lint`,
+  and per-rule `route explain --trace`. Keep first-match behavior and existing
+  decision JSON fields; analysis never changes configuration or resolves DNS.
+
+- Add private named client profiles with stdin URI import, safe list/show output,
+  atomic explicit replacement/removal, and per-invocation `--profile` selection.
+  Existing configuration-file use is preserved; no implicit default is changed.
+
+- Add client QUIC/TLS and HTTP/3 authentication diagnostic phases, explicit remote
+  TCP/UDP echo probes, and ordered lifecycle events through `client --events json`.
+  Local readiness is separate from server connectivity; lazy routing stays lazy.
 
 - Add versioned client routing for domain/suffix/IP/CIDR/private-network and
   protocol/port rules with proxy/direct/reject outbounds across SOCKS5, HTTP and

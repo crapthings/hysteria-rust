@@ -6,6 +6,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
+mod analysis;
+pub use analysis::{RuleTrace, ShadowWarning};
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
@@ -22,7 +25,7 @@ pub enum Protocol {
     Udp,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoutingConfig {
     pub version: u32,
@@ -38,6 +41,30 @@ struct Rule {
     protocol: AclProtocol,
     first: u16,
     last: u16,
+}
+
+impl Rule {
+    fn mismatch(
+        &self,
+        host: &str,
+        ips: &[IpAddr],
+        protocol: AclProtocol,
+        port: u16,
+    ) -> Option<&'static str> {
+        if self.protocol != AclProtocol::Both && self.protocol != protocol {
+            Some("protocol_mismatch")
+        } else if self.first != 0 && !(self.first..=self.last).contains(&port) {
+            Some("port_mismatch")
+        } else if !self
+            .matchers
+            .iter()
+            .any(|matcher| matcher.matches(host, ips))
+        {
+            Some("host_mismatch")
+        } else {
+            None
+        }
+    }
 }
 
 /// Compiled immutable rule snapshot, shared by execution and explanation.
@@ -147,14 +174,11 @@ impl Router {
             Protocol::Tcp => AclProtocol::Tcp,
             Protocol::Udp => AclProtocol::Udp,
         };
-        let found = self.rules.iter().enumerate().find(|(_, rule)| {
-            (rule.protocol == AclProtocol::Both || rule.protocol == protocol_match)
-                && (rule.first == 0 || (rule.first..=rule.last).contains(&port))
-                && rule
-                    .matchers
-                    .iter()
-                    .any(|matcher| matcher.matches(&host, &ips))
-        });
+        let found = self
+            .rules
+            .iter()
+            .enumerate()
+            .find(|(_, rule)| rule.mismatch(&host, &ips, protocol_match, port).is_none());
         // Match using the same Unicode normalization as server ACL matchers,
         // but dial an ASCII IDNA name so system resolvers receive a portable host.
         let host = if ips.is_empty() {

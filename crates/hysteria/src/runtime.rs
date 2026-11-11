@@ -8,7 +8,7 @@ use crate::{
 };
 use hysteria_transport::{
     ClientHandshake, HysteriaServer, ProxyClient, ProxyServerConnection, ServerHandshake,
-    TrafficLogger, chrome_client_endpoint_config, chrome_client_transport_config, connect,
+    TrafficLogger, chrome_client_endpoint_config, chrome_client_transport_config,
     make_chrome_client_config_with_congestion, make_client_config_with_congestion,
     make_server_config_with_congestion, obfuscated_endpoint_from_socket,
     obfuscated_endpoint_from_socket_with_config, port_hopping_endpoint_from_socket_with_config,
@@ -324,20 +324,61 @@ pub async fn serve_client(
     shutdown: impl Future<Output = ()> + Send,
     update_checks: bool,
 ) -> Result<()> {
+    serve_client_observed(
+        config,
+        shutdown,
+        update_checks,
+        crate::client_events::ClientEvents::default(),
+    )
+    .await
+}
+
+/// Runs the client with lifecycle observations. Local readiness is per inbound,
+/// and does not imply authenticated server connectivity or working forwarding.
+///
+/// # Errors
+/// Returns configuration, startup or listener failures.
+pub async fn serve_client_observed(
+    config: ClientConfig,
+    shutdown: impl Future<Output = ()> + Send,
+    update_checks: bool,
+    events: crate::client_events::ClientEvents,
+) -> Result<()> {
+    events.emit("starting", None, None);
+    let result = serve_client_inner(config, shutdown, update_checks, &events).await;
+    if let Err(error) = &result {
+        events.emit("failed", None, Some(error.code().as_str()));
+    }
+    events.emit("stopped", None, None);
+    result
+}
+
+async fn serve_client_inner(
+    config: ClientConfig,
+    shutdown: impl Future<Output = ()> + Send,
+    update_checks: bool,
+    events: &crate::client_events::ClientEvents,
+) -> Result<()> {
     config.validate()?;
-    let client = ClientHandle::new(config.clone(), update_checks).await?;
-    let mut tasks = spawn_client_tasks(config, &client);
     tokio::pin!(shutdown);
+    let client = tokio::select! {
+        biased;
+        () = &mut shutdown => { events.emit("stopping", None, None); return Ok(()); },
+        result = ClientHandle::new_observed(config.clone(), update_checks, events.clone()) => result?,
+    };
+    let mut tasks = spawn_client_tasks(config, &client);
     let result = tokio::select! {
         () = &mut shutdown => Ok(()),
         task = tasks.join_next() => match task {
             Some(Ok(result)) => result,
-            Some(Err(error)) => Err(CliError::new(format!("forwarding task failed: {error}"))),
+            Some(Err(_)) => Err(CliError::new("forwarding task failed")),
             None => Err(CliError::new("all forwarding tasks stopped")),
         },
     };
+    events.emit("stopping", None, None);
     tasks.abort_all();
     client.close().await;
+    while tasks.join_next().await.is_some() {}
     result
 }
 
@@ -349,6 +390,7 @@ struct ConnectedClient {
     udp_enabled: bool,
     _port_mapping: Option<hysteria_realm::PortMappingLease>,
     disconnect_monitor: tokio::task::JoinHandle<()>,
+    disconnect_notice: Arc<DisconnectNotice>,
 }
 
 impl Drop for ConnectedClient {
@@ -358,13 +400,74 @@ impl Drop for ConnectedClient {
 }
 
 struct ClientState {
+    last_failure: Option<(tokio::time::Instant, crate::ErrorCode)>,
     connected: Option<ConnectedClient>,
     closed: bool,
     update_started: bool,
 }
 
+const RETRY_COOLDOWN: Duration = Duration::from_secs(1);
+
+// Cancellation must release the lock and record an attempted-but-incomplete connection,
+// not leave a burst of queued requests free to each start a new handshake.
+struct ConnectionAttempt<'a> {
+    state: &'a mut ClientState,
+    events: &'a crate::client_events::ClientEvents,
+    finished: bool,
+}
+impl ConnectionAttempt<'_> {
+    fn success(&mut self) {
+        self.state.last_failure = None;
+        self.finished = true;
+    }
+    fn failure(&mut self, code: crate::ErrorCode) {
+        self.state.last_failure = Some((tokio::time::Instant::now(), code));
+        self.events
+            .emit("connection_failed", None, Some(code.as_str()));
+        self.finished = true;
+    }
+}
+impl Drop for ConnectionAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.state.last_failure = Some((
+                tokio::time::Instant::now(),
+                crate::ErrorCode::ConnectionFailed,
+            ));
+            self.events.emit("connection_cancelled", None, None);
+        }
+    }
+}
+
+struct DisconnectNotice {
+    events: crate::client_events::ClientEvents,
+    reported: std::sync::Mutex<bool>,
+}
+impl DisconnectNotice {
+    fn new(events: crate::client_events::ClientEvents) -> Arc<Self> {
+        Arc::new(Self {
+            events,
+            reported: std::sync::Mutex::new(false),
+        })
+    }
+    fn report(&self) {
+        // Serialize completion, not only the flag, so a replacement's connecting
+        // event cannot overtake the old connection's disconnected notification.
+        let mut reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*reported {
+            self.events.emit("disconnected", None, None);
+            eprintln!("QUIC disconnected; reconnecting on next proxy request");
+            *reported = true;
+        }
+    }
+}
+
 /// A shared client connection that can connect on first use and reconnect after closure.
 pub(crate) struct ClientHandle {
+    events: crate::client_events::ClientEvents,
     fake_dns: Option<Arc<crate::fake_dns::FakeDns>>,
     stop_signal: tokio::sync::watch::Sender<bool>,
     routing: Option<crate::routing::Router>,
@@ -374,7 +477,20 @@ pub(crate) struct ClientHandle {
 }
 
 impl ClientHandle {
+    #[cfg(test)]
     async fn new(config: ClientConfig, update_checks: bool) -> Result<Arc<Self>> {
+        Self::new_observed(
+            config,
+            update_checks,
+            crate::client_events::ClientEvents::default(),
+        )
+        .await
+    }
+    async fn new_observed(
+        config: ClientConfig,
+        update_checks: bool,
+        events: crate::client_events::ClientEvents,
+    ) -> Result<Arc<Self>> {
         let lazy = config.lazy || config.routing.is_some();
         let routing = config
             .routing
@@ -390,18 +506,22 @@ impl ClientHandle {
             .map(Arc::new);
         let (stop_signal, _) = tokio::sync::watch::channel(false);
         let handle = Arc::new(Self {
+            events,
             fake_dns,
             stop_signal,
             routing,
             config,
             state: Mutex::new(ClientState {
+                last_failure: None,
                 connected: None,
                 closed: false,
                 update_started: false,
             }),
             update_checks,
         });
-        if !lazy {
+        if lazy {
+            handle.events.emit("waiting_for_request", None, None);
+        } else {
             handle.client().await?;
         }
         Ok(handle)
@@ -418,15 +538,49 @@ impl ClientHandle {
             return Ok(Arc::clone(&connected.client));
         }
         if let Some(connected) = state.connected.take() {
+            connected.disconnect_notice.report();
             close_connected(&connected, b"reconnecting");
+        }
+        if let Some((failed_at, code)) = state.last_failure
+            && failed_at.elapsed() < RETRY_COOLDOWN
+        {
+            return Err(CliError::classified(
+                code,
+                "recent connection attempt failed; retry on a later request",
+                Some(
+                    "Connection failures have a one-second retry cooldown; configured direct routes are unaffected.",
+                ),
+            ));
         }
         // A pending handshake holds the state lock. Cancel it before close waits
         // for that lock, including when the remote server silently drops packets.
-        let connected = tokio::select! {
+        self.events.emit("connecting", None, None);
+        let mut attempt = ConnectionAttempt {
+            state: &mut state,
+            events: &self.events,
+            finished: false,
+        };
+        let result = tokio::select! {
             biased;
             () = self.stopped() => return Err(CliError::new("client is closed")),
-            result = connect_client(&self.config) => result?,
+            result = connect_client(&self.config) => result,
         };
+        let mut connected = match result {
+            Ok(connected) => {
+                attempt.success();
+                connected
+            }
+            Err(error) => {
+                attempt.failure(error.code());
+                return Err(error);
+            }
+        };
+        drop(attempt);
+        connected.disconnect_monitor.abort();
+        self.events.emit("connected", None, None);
+        connected.disconnect_notice = DisconnectNotice::new(self.events.clone());
+        connected.disconnect_monitor =
+            monitor_disconnect(&connected.client, Arc::clone(&connected.disconnect_notice));
         eprintln!(
             "connected to {} (UDP relay: {}, ECH: {})",
             connected.server_address,
@@ -444,6 +598,10 @@ impl ClientHandle {
             tokio::spawn(crate::update::background_client(Arc::clone(&client)));
         }
         Ok(client)
+    }
+
+    pub(crate) fn local_ready(&self, component: &'static str) {
+        self.events.emit("local_ready", Some(component), None);
     }
 
     pub(crate) async fn tcp(
@@ -558,6 +716,7 @@ impl ClientHandle {
             .is_some_and(|connected| Arc::ptr_eq(&connected.client, client))
             && let Some(connected) = state.connected.take()
         {
+            connected.disconnect_notice.report();
             close_connected(&connected, b"connection closed");
         }
     }
@@ -671,12 +830,28 @@ fn close_connected(connected: &ConnectedClient, reason: &'static [u8]) {
 
 async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
     let target = resolve_client_target(config).await?;
-    connect_client_target(config, target).await
+    connect_client_target(config, target, || {}).await
+}
+
+fn client_tls(config: &ClientConfig) -> Result<rustls::ClientConfig> {
+    let ca = (!config.tls.ca.is_empty()).then(|| Path::new(&config.tls.ca));
+    let pin = (!config.tls.pin_sha256.is_empty())
+        .then(|| crate::config::normalize_certificate_pin(&config.tls.pin_sha256))
+        .transpose()?;
+    let client_identity = (!config.tls.client_certificate.is_empty()).then(|| {
+        (
+            Path::new(&config.tls.client_certificate),
+            Path::new(&config.tls.client_key),
+        )
+    });
+    let ech = (!config.tls.ech.is_empty()).then_some(config.tls.ech.as_str());
+    tls::client_config(ca, config.tls.insecure, pin, client_identity, ech)
 }
 
 async fn connect_client_target(
     config: &ClientConfig,
     target: ClientTarget,
+    tls_completed: impl FnOnce() + Send,
 ) -> Result<ConnectedClient> {
     let ClientTarget {
         server_host,
@@ -691,18 +866,7 @@ async fn connect_client_target(
     } else {
         config.tls.sni.clone()
     };
-    let ca = (!config.tls.ca.is_empty()).then(|| Path::new(&config.tls.ca));
-    let pin = (!config.tls.pin_sha256.is_empty())
-        .then(|| crate::config::normalize_certificate_pin(&config.tls.pin_sha256))
-        .transpose()?;
-    let client_identity = (!config.tls.client_certificate.is_empty()).then(|| {
-        (
-            Path::new(&config.tls.client_certificate),
-            Path::new(&config.tls.client_key),
-        )
-    });
-    let ech = (!config.tls.ech.is_empty()).then_some(config.tls.ech.as_str());
-    let tls = tls::client_config(ca, config.tls.insecure, pin, client_identity, ech)?;
+    let tls = client_tls(config)?;
     let congestion = config
         .congestion
         .settings(config.bandwidth.disable_loss_compensation)?;
@@ -754,7 +918,7 @@ async fn connect_client_target(
     };
     endpoint.set_default_client_config(quic);
     let (up, down) = config.bandwidth.values()?;
-    let (connection, info) = connect(
+    let (connection, info) = hysteria_transport::connect_with_tls_observer(
         &endpoint,
         server_address,
         &server_name,
@@ -763,13 +927,16 @@ async fn connect_client_target(
             max_rx: down,
             max_tx: up,
         },
+        tls_completed,
     )
     .await
     .map_err(CliError::connection)?;
     let client = Arc::new(ProxyClient::new(connection).with_fast_open(config.fast_open));
+    let disconnect_notice = DisconnectNotice::new(crate::client_events::ClientEvents::default());
     Ok(ConnectedClient {
         ech_accepted: info.ech_accepted,
-        disconnect_monitor: monitor_disconnect(&client),
+        disconnect_monitor: monitor_disconnect(&client, Arc::clone(&disconnect_notice)),
+        disconnect_notice,
         endpoint,
         client,
         server_address: info.server_address,
@@ -787,11 +954,14 @@ fn client_socket_options(config: &ClientConfig) -> ClientQuicSocketOptions {
     options
 }
 
-fn monitor_disconnect(client: &Arc<ProxyClient>) -> tokio::task::JoinHandle<()> {
+fn monitor_disconnect(
+    client: &Arc<ProxyClient>,
+    notice: Arc<DisconnectNotice>,
+) -> tokio::task::JoinHandle<()> {
     let client = Arc::clone(client);
     tokio::spawn(async move {
-        let reason = client.closed().await;
-        eprintln!("QUIC disconnected: {reason}; reconnecting on next proxy request");
+        let _ = client.closed().await;
+        notice.report();
     })
 }
 
@@ -1028,6 +1198,12 @@ pub(crate) fn parse_optional_duration(
 #[derive(Default)]
 pub(crate) struct ProbeProgress {
     pub resolved: bool,
+    pub tls_completed: bool,
+    /// Present only after authentication: (UDP advertised, ECH accepted).
+    pub connection: Option<(bool, bool)>,
+    /// None=not attempted, Some(false)=started but failed or incomplete.
+    pub tcp: Option<bool>,
+    pub udp: Option<bool>,
     /// 1=STUN, 2=rendezvous, 3=punch, 4=ready for QUIC.
     pub realm_stage: usize,
 }
@@ -1036,6 +1212,7 @@ pub(crate) struct ProbeProgress {
 pub(crate) async fn probe_client(
     config: &ClientConfig,
     progress: &mut ProbeProgress,
+    probes: &crate::doctor::ForwardProbes,
 ) -> Result<(bool, bool)> {
     let target = if config.server.starts_with("realm:") || config.server.starts_with("realm+http:")
     {
@@ -1044,7 +1221,33 @@ pub(crate) async fn probe_client(
         resolve_client_target(config).await?
     };
     progress.resolved = true;
-    let connected = connect_client_target(config, target).await?;
+    let mut config = config.clone();
+    config.fast_open = false; // TCP diagnosis must wait for the remote connect response.
+    let connected =
+        connect_client_target(&config, target, || progress.tls_completed = true).await?;
+    progress.connection = Some((connected.udp_enabled, connected.ech_accepted));
+    if let Some(target) = &probes.tcp {
+        progress.tcp = Some(false);
+        progress.tcp = Some(connected.client.tcp(target).await.is_ok());
+    }
+    if let Some(target) = &probes.udp_echo {
+        progress.udp = Some(false);
+        if connected.udp_enabled
+            && let Ok(mut session) = connected.client.udp()
+        {
+            let mut payload = [0u8; 32];
+            getrandom::fill(&mut payload)
+                .map_err(|_| CliError::new("cannot generate probe payload"))?;
+            if session.send(&payload, target).await.is_ok() {
+                progress.udp = Some(
+                    session
+                        .receive()
+                        .await
+                        .is_ok_and(|(data, _)| data == payload),
+                );
+            }
+        }
+    }
     let result = (connected.udp_enabled, connected.ech_accepted);
     close_connected_and_wait(&connected, b"diagnosis complete").await;
     Ok(result)
@@ -1414,6 +1617,7 @@ async fn run_tcp_forwarding(config: TcpForwarding, client: Arc<ClientHandle>) ->
         listener.local_addr()?,
         config.remote
     );
+    client.local_ready("tcp_forwarding");
     loop {
         let (mut local, _) = listener.accept().await?;
         let client = Arc::clone(&client);
@@ -1438,6 +1642,7 @@ async fn run_udp_forwarding(config: UdpForwarding, client: Arc<ClientHandle>) ->
         socket.local_addr()?,
         config.remote
     );
+    client.local_ready("udp_forwarding");
     let timeout = config.timeout()?;
     let mut peers: HashMap<SocketAddr, mpsc::Sender<Vec<u8>>> = HashMap::new();
     let mut buffer = vec![0; 65_535];
@@ -2039,3 +2244,7 @@ mod fake_ip_routing_tests {
         client.close().await;
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_recovery_tests.rs"]
+mod recovery_tests;

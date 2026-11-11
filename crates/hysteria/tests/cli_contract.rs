@@ -1412,3 +1412,15 @@ fn protected_tun_configuration_is_linux_only_and_checks_are_offline() {
     );
     assert!(!cache.exists());
 }
+
+#[test]
+fn forwarding_diagnosis_requires_explicit_network_opt_in_and_valid_target() {
+    for arguments in [
+        vec!["doctor", "client", "--tcp", "example.com:443"],
+        vec!["doctor", "client", "--udp-echo", "example.com:50081"],
+        vec!["doctor", "client", "--connect", "--tcp", "example.com:0"],
+        vec!["doctor", "client", "--connect", "--udp-echo", "example.com"],
+    ] {
+        assert_eq!(execute(&arguments, b"").status.code(), Some(2));
+    }
+}

@@ -7,8 +7,9 @@ process matching and privileged helpers are not implemented.
 
 The implementation has automated socket, DNS and routing tests, plus real Linux
 TUN installation/forwarding/cleanup validation in isolated network namespaces on
-jp1. See the [acceptance report](linux-tun-jp1-2026-11-11.md). System resolver
-integration, public-network performance and long-running operation remain unverified;
+jp1. See the [acceptance report](linux-tun-jp1-2026-11-11.md). Isolated [systemd-resolved integration](linux-resolved-jp1-2026-11-12.md) has also
+passed; whole-host integration, public-network performance and long-running operation
+remain unverified;
 this is not a production-readiness or performance claim.
 
 ## Configuration
@@ -49,9 +50,60 @@ hysteria check client -c client.yaml --output json
 hysteria route explain example.com:443 -c client.yaml --output json
 ```
 
-These commands do not create a device, install routes, open the mapping cache or
-change system DNS. Explain takes the original domain; it cannot consult a running
+These check/explain commands do not create a device, install routes, open the
+mapping cache or change system DNS. Explain takes the original domain; it cannot consult a running
 client's Fake-IP cache.
+
+## Read-only startup diagnosis
+
+```shell
+hysteria doctor client -c client.yaml
+hysteria doctor client --profile laptop-tun --output json
+```
+
+When a client configuration includes TUN, `doctor client` automatically adds
+local pre-start observations. It never creates/opens the TUN device, installs
+routes, changes system DNS, acquires the cache lock or writes the cache. Ordinary
+`check client` remains configuration-only. Linux kernel checks run in the doctor's
+current namespace and permission context; use the intended service context for a
+meaningful result. Running as UID 0 does not imply all container capabilities.
+
+| Check | Observation |
+| --- | --- |
+| `tun_device` | `/dev/net/tun` exists as a character device; open/ioctl is untested |
+| `tun_capabilities` | Effective CAP_NET_ADMIN is present or missing; LSM/seccomp/device restrictions remain possible |
+| `tun_interface` | Whether the configured TUN name already exists; ownership is not inferred |
+| `tun_egress_interface` | Protected egress interface exists and is administratively up; carrier/connectivity is unverified |
+| `tun_ipv6` | Whether IPv6 is globally disabled |
+| `tun_policy` | Read-only policy snapshot passes the same validator used by protected-TUN startup |
+| `tun_fake_ip_routes` / `tun_route_table` | Observed pool conflicts and availability of a dedicated-table candidate |
+| `tun_resolver_route` | An observed main-table route covers the numeric resolver through the chosen interface |
+| `tun_cache_directory` / `tun_cache` | Parent existence and bounded schema/mapping validation, without exposing domain history |
+| `tun_cache_privacy` | Warns about Unix group/other permissions; permissions are not changed |
+| `tun_cache_lock` | Invalid lock paths fail; ownership remains skipped, even if a regular lock file exists |
+| `tun_dns_integration` | Reads resolver configuration and flags stub/capture uncertainty; no DNS query is sent |
+| `tun_runtime` | Device setup, protected socket options and actual end-to-end operation remain skipped |
+
+Protected routing checks apply only with `tun.egress`. Legacy TUN gets basic Linux
+device/capability observations but no protected-routing guarantee. Other platforms
+report unsupported preflight work as skipped. Route enumeration can be incomplete;
+observations never reserve a table/interface or establish reachability.
+
+An existing lock file does not mean stale ownership. Custom rules or a matching
+interface name may belong to an active client, another VPN, or a previous crash.
+Doctor cannot establish ownership from those observations and never deletes them.
+It suggests read-only inspection such as `ip -4 rule show`, `ip -6 rule show`,
+`ip -4 route show table all`, `ip -6 route show table all`, `ip link show` and
+`resolvectl status` (if available). Compare against the deployment baseline and
+identify the owning process before any targeted manual cleanup; do not flush all
+rules or delete a lock file in use.
+
+Missing cache directories fail; absent cache files are normal before first start.
+Corrupt/unsupported mappings fail without reset. A full valid cache warns because
+existing mappings remain usable but new domains receive SERVFAIL. Write access,
+space, atomic replacement and exclusive ownership are intentionally untested.
+Passing checks do not guarantee startup. Local failures prevent a subsequent
+`--connect` network probe; all results retain the existing doctor JSON/exit contract.
 
 ## Traffic and DNS behavior
 
@@ -84,7 +136,9 @@ client's Fake-IP cache.
   per DNS TCP connection, and 4096 TUN UDP flows.
 
 The client **does not change system DNS**. A local resolver whose upstream traffic
-bypasses TUN cannot supply Fake-IP mappings. In particular, systemd-resolved may
+bypasses TUN cannot supply Fake-IP mappings. On jp1, both standard-port and
+nonstandard-port physical-link DNS still returned real IPs after TUN startup;
+successful DNS alone did not prove capture. In particular, systemd-resolved may
 bind upstream queries to physical interfaces; this can require explicit per-link
 DNS configuration. In an isolated test environment, after TUN starts, an operator
 can point resolved at the synthetic DNS address:
@@ -92,10 +146,14 @@ can point resolved at the synthetic DNS address:
 ```shell
 sudo resolvectl dns hytun0 198.18.0.1
 sudo resolvectl domain hytun0 '~.'
+sudo resolvectl flush-caches
 ```
 
 Review the host's DNS setup first and revert operator-added settings when testing
-ends. These commands are not run automatically. DoH/DoT are not intercepted or
+ends. The isolated systemd 255 test restored its physical-link DNS after normal
+TUN teardown without a manual flush; application caches and other host setups may
+behave differently. The test used DNSSEC/DoT disabled and does not establish
+compatibility with strict DNSSEC or encrypted resolver modes. These commands are not run automatically. DoH/DoT are not intercepted or
 decrypted; cached real IPs and IP-only requests can only use IP rules. This is not
 a complete DNS-leak prevention or destination firewall guarantee.
 

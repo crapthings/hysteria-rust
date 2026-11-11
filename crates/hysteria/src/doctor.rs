@@ -26,7 +26,7 @@ pub struct Check {
 }
 
 impl Report {
-    fn add(
+    pub(crate) fn add(
         &mut self,
         id: &'static str,
         status: &'static str,
@@ -181,9 +181,27 @@ fn check_validity(report: &mut Report, path: &Path) {
     }
 }
 
+/// Optional explicit remote targets. These probes bypass client routing to test the server.
+#[derive(Default)]
+pub struct ForwardProbes {
+    pub tcp: Option<String>,
+    pub udp_echo: Option<String>,
+}
+
 /// Inspects client inputs offline, optionally attempting a bounded authenticated connection.
 /// No local proxy listener, TUN, system proxy or route configuration is started.
 pub async fn client(path: &Path, connect: bool, timeout: std::time::Duration) -> Report {
+    client_with_probes(path, connect, timeout, &ForwardProbes::default()).await
+}
+
+/// Runs client diagnostics with opt-in TCP connect and UDP echo targets.
+/// All network phases share one deadline; no local listeners or host networking are changed.
+pub async fn client_with_probes(
+    path: &Path,
+    connect: bool,
+    timeout: std::time::Duration,
+    probes: &ForwardProbes,
+) -> Report {
     let mut report = Report {
         schema_version: 1,
         mode: "client",
@@ -239,7 +257,7 @@ pub async fn client(path: &Path, connect: bool, timeout: std::time::Duration) ->
     }
     client_local_checks(&mut report, &config);
     if connect && report.passed {
-        client_network_checks(&mut report, &config, timeout).await;
+        client_network_checks(&mut report, &config, timeout, probes).await;
     } else {
         report.add(
             "server_resolution",
@@ -254,7 +272,22 @@ pub async fn client(path: &Path, connect: bool, timeout: std::time::Duration) ->
             "Use doctor client --connect after offline checks pass.",
         );
     }
-    report.add("forwarding", "skip", "Local binding, remote forwarding and system integration were not tested", "Use ping with an explicit target to test TCP forwarding. No system proxy, routes or DNS were changed.");
+    for id in [
+        "quic_tls",
+        "hysteria_auth",
+        "tcp_forwarding",
+        "udp_forwarding",
+    ] {
+        if !report.checks.iter().any(|check| check.id == id) {
+            report.add(id, "skip", "Not attempted", "Active checks require --connect and successful preceding phases; forwarding also requires an explicit target.");
+        }
+    }
+    report.add(
+        "forwarding",
+        "skip",
+        "Local proxy binding and system integration were not tested",
+        "Only explicit forwarding targets are tested. No system proxy, routes or DNS were changed.",
+    );
     report
 }
 
@@ -262,8 +295,8 @@ fn client_local_checks(report: &mut Report, config: &ClientConfig) {
     if config.server.starts_with("realm+http:") || config.realm.insecure {
         report.add("realm_security", "warn", "Rendezvous transport is plaintext or its certificate verification is disabled", "Prefer realm:// with normal rendezvous verification; tls.insecure controls a separate proxy TLS connection.");
     }
-    if config.tun.is_some() {
-        report.add("tun_runtime", "skip", "TUN permissions, policy routing, cache ownership and system DNS integration are not exercised offline", "Routed TUN requires Linux protected egress; validate in an isolated Linux environment.");
+    if let Some(tun) = &config.tun {
+        crate::tun_diagnostics::inspect(report, tun);
     }
     let ca = (!config.tls.ca.is_empty()).then(|| Path::new(&config.tls.ca));
     let pin = (!config.tls.pin_sha256.is_empty())
@@ -353,6 +386,7 @@ async fn client_network_checks(
     report: &mut Report,
     config: &ClientConfig,
     timeout: std::time::Duration,
+    probes: &ForwardProbes,
 ) {
     let realm = config.server.starts_with("realm:") || config.server.starts_with("realm+http:");
     if (realm && config.realm.port_mapping.enabled)
@@ -366,9 +400,11 @@ async fn client_network_checks(
         );
     } else {
         let mut progress = crate::runtime::ProbeProgress::default();
-        let result =
-            tokio::time::timeout(timeout, crate::runtime::probe_client(config, &mut progress))
-                .await;
+        let result = tokio::time::timeout(
+            timeout,
+            crate::runtime::probe_client(config, &mut progress, probes),
+        )
+        .await;
         if realm {
             for (stage, id, label) in [
                 (1, "realm_stun", "STUN discovery"),
@@ -411,10 +447,84 @@ async fn client_network_checks(
             );
             return;
         }
-        match result {
-                Ok(Ok((udp, ech))) => report.add("server_connection", "pass", format!("QUIC/TLS and Hysteria authentication completed; UDP advertised: {udp}; ECH accepted: {ech}"), "This does not test remote TCP/UDP forwarding or server egress."),
-                Ok(Err(error)) => report.add("server_connection", "fail", format!("Connection did not complete ({})", error.code().as_str()), "Check DNS, reachability, TLS and authentication. This result alone does not identify the failed phase."),
-                Err(_) => report.add("server_connection", "fail", "Connection probe timed out; cause is unknown", "A timeout does not establish an authentication, certificate or firewall failure."),
-            }
+        connection_checks(report, &progress, &result);
+        for (id, requested, started, passed, hint) in [
+            (
+                "tcp_forwarding",
+                probes.tcp.is_some(),
+                progress.tcp.is_some(),
+                progress.tcp == Some(true),
+                "Check the target listener and server ACL/egress. A TCP connect does not verify the application protocol.",
+            ),
+            (
+                "udp_forwarding",
+                probes.udp_echo.is_some(),
+                progress.udp.is_some(),
+                progress.udp == Some(true),
+                "Use a UDP echo target you control; check server UDP support, ACL and target reachability. Timeout alone cannot identify the failing hop.",
+            ),
+        ] {
+            report.add(
+                id,
+                if !requested || !started {
+                    "skip"
+                } else if passed {
+                    "pass"
+                } else {
+                    "fail"
+                },
+                if !requested {
+                    "No explicit target supplied"
+                } else if !started {
+                    "Not attempted before the preceding failure or deadline"
+                } else if passed {
+                    "Remote forwarding probe completed"
+                } else {
+                    "Remote forwarding probe did not complete"
+                },
+                hint,
+            );
+        }
+    }
+}
+
+fn connection_checks(
+    report: &mut Report,
+    progress: &crate::runtime::ProbeProgress,
+    result: &std::result::Result<Result<(bool, bool)>, tokio::time::error::Elapsed>,
+) {
+    report.add("quic_tls", if progress.tls_completed { "pass" } else { "fail" },
+        if progress.tls_completed { "QUIC/TLS handshake completed with configured trust policy" } else { "QUIC/TLS handshake did not complete" },
+        if progress.tls_completed { "" } else { "Check local socket permissions, UDP reachability, obfuscation, certificate trust and SNI. QUIC and TLS share this phase; a timeout does not identify the cause." });
+    report.add("hysteria_auth", if progress.connection.is_some() { "pass" } else if progress.tls_completed { "fail" } else { "skip" },
+        if progress.connection.is_some() { "Hysteria HTTP/3 authentication completed" } else { "Hysteria authentication did not complete" },
+        if progress.tls_completed && progress.connection.is_none() { "Check credentials and Hysteria server compatibility. An HTTP/3 failure or timeout is not proof of a wrong password." } else { "" });
+    if progress.connection.is_some() {
+        report.add(
+            "server_connection",
+            "pass",
+            format!(
+                "Server authenticated; UDP advertised: {}; ECH accepted: {}",
+                progress.connection.unwrap_or_default().0,
+                progress.connection.unwrap_or_default().1
+            ),
+            "UDP advertisement alone does not prove UDP forwarding.",
+        );
+    } else {
+        let code = match result {
+            Ok(Err(error)) => error.code().as_str(),
+            Err(_) => "timeout",
+            _ => "connection_failed",
+        };
+        report.add(
+            "server_connection",
+            "fail",
+            if result.is_err() {
+                "Connection probe timed out; cause is unknown".to_owned()
+            } else {
+                format!("Connection did not complete ({code})")
+            },
+            "Review the first failed phase above.",
+        );
     }
 }

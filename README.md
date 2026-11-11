@@ -101,12 +101,13 @@ These additions are not included in rc.6. Run `hysteria help`,
 | Task | Command / guide |
 | --- | --- |
 | Create a configuration | `hysteria guide server -c server.yaml` or `guide client`; use `init` for an editable template |
+| Save / select a server | [`profile import`, `profile list`, `client --profile`](docs/client-profiles.md) |
 | Validate offline | `hysteria check client -c client.yaml --output json` (also supports `server`) |
-| Diagnose connectivity | `hysteria doctor client --connect -c client.yaml` |
+| Diagnose / observe a client | [`doctor client --connect` / `client --events json`](docs/client-observability.md) |
 | Monitor a server | [`server status` / `server stats --watch`](docs/cli.md#live-server-status-and-statistics) |
 | Install a Linux service | [`service install`](docs/cli.md#linux-system-services), with named instances |
 | Share connection settings | [`server share`](docs/cli.md#export-a-client-link-from-the-server), including Realm URIs |
-| Route client traffic | [Domain/IP rules, `route explain` and JSON capabilities](docs/client-routing.md) |
+| Route client traffic | [Templates, rule checks and `route explain --trace`](docs/client-routing.md) |
 | Use routed TUN | [Protected Linux TUN and Fake-IP DNS](docs/client-tun-routing.md) |
 
 Routed TUN is Linux-only and has passed isolated acceptance tests. Whole-host

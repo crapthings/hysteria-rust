@@ -8,6 +8,7 @@ mod doctor_cli;
 mod ech_cli;
 /// Generates starter configurations without starting a server.
 mod init;
+mod profile;
 mod routing_cli;
 mod server_share;
 mod server_view;
@@ -20,7 +21,7 @@ use cli::{Cli, Command};
 use hysteria_cli::{
     Result,
     config::{ClientConfig, ServerConfig},
-    runtime::{ping, serve_client, serve_server, speed_tests},
+    runtime::{ping, serve_client_observed, serve_server, speed_tests},
 };
 use std::process::ExitCode;
 
@@ -43,18 +44,30 @@ async fn main() -> ExitCode {
 }
 
 /// Dispatches one command while keeping runtime failures distinct from validation failures.
-async fn run(cli: Cli) -> Result<ExitCode> {
+async fn run(mut cli: Cli) -> Result<ExitCode> {
+    select_profile(&mut cli)?;
     let update_checks = !cli.disable_update_check;
+    if cli.events.is_some() && !matches!(cli.command, None | Some(Command::Client)) {
+        return Err(hysteria_cli::CliError::new(
+            "--events is supported only by client",
+        ));
+    }
     let result = match cli.command.unwrap_or(Command::Client) {
         Command::Check(options) => return options.run(&cli.config, cli.diagnostic),
         Command::Doctor(options) => return options.run(&cli.config).await,
         Command::Init(options) => options.run(&cli.config, false),
         Command::Guide(options) => options.run(&cli.config, true),
         Command::Client => {
-            serve_client(
+            serve_client_observed(
                 ClientConfig::load(&cli.config)?,
                 shutdown::signal()?,
                 update_checks,
+                match cli.events {
+                    Some(check::OutputFormat::Json) => {
+                        hysteria_cli::client_events::ClientEvents::json()
+                    }
+                    _ => hysteria_cli::client_events::ClientEvents::text(),
+                },
             )
             .await
         }
@@ -69,6 +82,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             )
             .await
         }
+        Command::Profile(options) => return options.run(),
         Command::Capabilities(options) => options.run(),
         Command::Route(options) => return options.run(&cli.config),
         Command::Version => {
@@ -126,6 +140,32 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
     };
     result.map(|()| ExitCode::SUCCESS)
+}
+
+/// Resolves an explicit profile only for supported client commands.
+fn select_profile(cli: &mut Cli) -> Result<()> {
+    if let Some(name) = &cli.profile {
+        let supported = match &cli.command {
+            None
+            | Some(
+                Command::Client
+                | Command::Ping { .. }
+                | Command::Speedtest { .. }
+                | Command::Share { .. },
+            ) => true,
+            Some(Command::Route(options)) => options.uses_config(),
+            Some(Command::Check(options)) => options.is_client(),
+            Some(Command::Doctor(options)) => options.is_client(),
+            _ => false,
+        };
+        if !supported {
+            return Err(hysteria_cli::CliError::new(
+                "--profile is supported only by client, check client, doctor client, route explain/lint, ping, speedtest and share",
+            ));
+        }
+        cli.config = profile::resolve(name)?;
+    }
+    Ok(())
 }
 
 /// Runs the existing speed-test workflow and formats its measurements.
