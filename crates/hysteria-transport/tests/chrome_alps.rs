@@ -141,7 +141,7 @@ async fn h3_applies_early_header_limit_and_rejects_later_reduction() {
 fn configs(retry: bool, mutual: bool) -> (ClientConfig, ServerConfig) {
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
     let cert = certified.cert.der().clone();
-    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
+    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
     let mut roots = RootCertStore::empty();
     roots.add(cert.clone()).unwrap();
     let client = ClientConfig::builder_with_provider(aws_lc_rs::default_provider().into())

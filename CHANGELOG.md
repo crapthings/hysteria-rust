@@ -6,6 +6,67 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Acknowledge server TCP sniffing requests before reading application data,
+  matching Go behavior and avoiding the sniff-timeout wait with ordinary clients.
+  Later hook/dial failures close the stream without a second protocol response.
+
+- Reassemble fragmented QUIC ClientHello across bounded UDP datagrams for server
+  domain sniffing and ACL selection, including reordered/retransmitted CRYPTO.
+- Preserve sniffed UDP destinations on subsequent messages to the same target.
+
+### Added
+
+- Typed CLI error categories, configuration troubleshooting hints and opt-in
+  diagnostic causes, with additive structured check-report fields.
+
+- Offline `doctor server` deployment reports with TLS key matching, certificate
+  validity, selected local-file checks, actionable hints and versioned JSON.
+
+- `init server` templates and `guide server` interactive setup with generated passwords, private
+  output files and existing-certificate or ACME configuration.
+
+- Offline `check client` and `check server` commands with text or versioned JSON
+  output and exit status 3 for configuration validation failures.
+- Portable `--config -` YAML/JSON input for configuration-consuming commands.
+- Explicit CLI behavior documentation and bounded command-contract regressions.
+
+### Changed
+
+- Upgrade tun-rs from 2.7.6 to 2.8.18 with its compatible dependency updates,
+  including Tokio 1.54.1. Retain the existing async feature and TUN adapter.
+
+- Upgrade netstack-smoltcp to 0.2.5 (smoltcp 0.14.0), raise the source-build
+  requirement to Rust 1.91, and pin project/CI toolchains to Rust 1.91.1.
+  Add device-free IPv4/IPv6 TCP and UDP stack regressions.
+
+- Upgrade Quinn to 0.11.12, the patched quinn-proto baseline to 0.11.19, and
+  Quinn's compatible quinn-udp dependency to 0.5.16; retain local compatibility
+  extensions and refresh independent QUIC/HTTP3 verification lockfiles.
+
+- Remove redundant UDP fragmentation/reassembly payload clones; retain the wire
+  format and public API. Add reproducible loopback and isolated codec benchmarks
+  with measured limitations; no general throughput improvement is claimed.
+
+- Advance the Go runtime interoperability reference to app/v2.13.0
+  (`ca8fbd87`) after bidirectional and Chrome-client loopback verification;
+  document remaining sniffing, ECH tooling and Chrome-profile differences.
+
+- Classify common listener binds, local TLS material and initial client connection
+  failures with actionable hints while keeping unreviewed peer text out of diagnostics.
+
+- Update clap to 4.6.7 and improve generated-server summaries, deployment next
+  steps and configuration output-path diagnostics.
+
+- Bare invocation now shows top-level help; role help includes detailed startup
+  and setup examples. Option-only implicit client invocations remain supported.
+
+- Limit configuration file and stdin input to 16 MiB; reject larger inputs.
+- Report YAML/schema parse locations without echoing original configuration values.
+- Handle Unix SIGTERM through the existing server/client shutdown path, in
+  addition to Ctrl+C.
+
 ## [0.1.0-rc.6] - 2026-11-10
 
 ### Fixed

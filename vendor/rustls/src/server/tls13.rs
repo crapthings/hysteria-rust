@@ -52,6 +52,7 @@ mod client_hello {
         ServerTicketRequestHint, SessionId,
     };
     use crate::server::common::ActiveCertifiedKey;
+    use crate::server::hs::PreviousClientHello;
     use crate::sign;
     use crate::tls13::key_schedule::{
         KeyScheduleEarly, KeyScheduleHandshake, KeySchedulePreHandshake,
@@ -70,7 +71,7 @@ mod client_hello {
         pub(in crate::server) transcript: HandshakeHash,
         pub(in crate::server) suite: &'static Tls13CipherSuite,
         pub(in crate::server) randoms: ConnectionRandoms,
-        pub(in crate::server) done_retry: bool,
+        pub(in crate::server) previous_hello: Option<PreviousClientHello>,
         pub(in crate::server) send_tickets: usize,
         pub(in crate::server) extra_exts: ServerExtensionsInput<'static>,
         pub(in crate::server) ech: super::super::ech::EchServerState,
@@ -100,9 +101,10 @@ mod client_hello {
             binder: &[u8],
         ) -> bool {
             let binder_plaintext = match &client_hello.payload {
-                MessagePayload::Handshake { parsed, encoded } => {
-                    &encoded.bytes()[..encoded.bytes().len() - parsed.total_binder_length()]
-                }
+                MessagePayload::Handshake { parsed, encoded } => &encoded.bytes()[..encoded
+                    .bytes()
+                    .len()
+                    .saturating_sub(parsed.total_binder_length())],
                 _ => unreachable!(),
             };
 
@@ -192,14 +194,29 @@ mod client_hello {
                 .early_data_request
                 .is_some();
 
-            // EarlyData extension is illegal in second ClientHello
-            if self.done_retry && early_data_requested {
-                return Err({
-                    cx.common.send_fatal_alert(
-                        AlertDescription::IllegalParameter,
-                        PeerMisbehaved::EarlyDataAttemptedInSecondClientHello,
-                    )
-                });
+            if let Some(prior) = &self.previous_hello {
+                // EarlyData extension is illegal in second ClientHello
+                if early_data_requested {
+                    return Err({
+                        cx.common.send_fatal_alert(
+                            AlertDescription::IllegalParameter,
+                            PeerMisbehaved::EarlyDataAttemptedInSecondClientHello,
+                        )
+                    });
+                }
+
+                // RFC 9846 section 4.2.2 allows the second ClientHello to update a PreSharedKey
+                // offer (binders, incompatible PSKs), but not to withdraw it altogether
+                if prior.offered_psk
+                    && client_hello
+                        .preshared_key_offer
+                        .is_none()
+                {
+                    return Err(cx.common.send_fatal_alert(
+                        AlertDescription::MissingExtension,
+                        PeerMisbehaved::MissingPskExtensionInSecondClientHello,
+                    ));
+                }
             }
 
             // See if there is a KeyShare for the selected kx group.
@@ -212,7 +229,7 @@ mod client_hello {
                 // for the mutually_preferred_group.
                 self.transcript.add_message(chm);
 
-                if self.done_retry {
+                if self.previous_hello.is_some() {
                     return Err(cx.common.send_fatal_alert(
                         AlertDescription::IllegalParameter,
                         PeerMisbehaved::RefusedToFollowHelloRetryRequest,
@@ -239,7 +256,12 @@ mod client_hello {
                     session_id: SessionId::empty(),
                     #[cfg(feature = "tls12")]
                     using_ems: false,
-                    done_retry: true,
+                    previous_hello: Some(PreviousClientHello {
+                        offered_psk: client_hello
+                            .preshared_key_offer
+                            .is_some(),
+                        suite: self.suite.common.suite,
+                    }),
                     send_tickets: self.send_tickets,
                     extra_exts: self.extra_exts,
                     ech: self.ech,
@@ -373,7 +395,7 @@ mod client_hello {
                 &self.config,
                 self.ech.backend(),
             )?;
-            if !self.done_retry {
+            if self.previous_hello.is_none() {
                 emit_fake_ccs(cx.common);
             }
 
@@ -393,7 +415,7 @@ mod client_hello {
                 cx,
                 &mut ocsp_response,
                 client_hello,
-                resumedata.as_ref(),
+                chosen_psk_index.zip(resumedata.as_ref()),
                 self.extra_exts,
                 &self.config,
                 self.send_tickets,
@@ -674,7 +696,7 @@ mod client_hello {
     fn decide_if_early_data_allowed(
         cx: &mut ServerContext<'_>,
         client_hello: &ClientHelloPayload,
-        resumedata: Option<&persist::ServerSessionValue>,
+        resuming: Option<(usize, &persist::ServerSessionValue)>,
         suite: &'static Tls13CipherSuite,
         config: &ServerConfig,
     ) -> EarlyDataDecision {
@@ -686,7 +708,7 @@ mod client_hello {
             false => EarlyDataDecision::Disabled,
         };
 
-        let Some(resume) = resumedata else {
+        let Some((psk_index, resume)) = resuming else {
             // never any early data if not resuming.
             return rejected_or_disabled;
         };
@@ -710,8 +732,13 @@ mod client_hello {
          *  - The selected cipher suite
          *  - The selected ALPN [RFC7301] protocol, if any"
          *
+         * "In order to accept early data, the server MUST have accepted a PSK
+         *  cipher suite and selected the first key offered in the client's
+         *  "pre_shared_key" extension."
+         *
          * (RFC8446, 4.2.10) */
         let early_data_possible = early_data_requested
+            && psk_index == 0
             && resume.is_fresh()
             && Some(resume.version) == cx.common.negotiated_version
             && resume.cipher_suite == suite.common.suite
@@ -735,16 +762,22 @@ mod client_hello {
         cx: &mut ServerContext<'_>,
         ocsp_response: &mut Option<&[u8]>,
         hello: &ClientHelloPayload,
-        resumedata: Option<&persist::ServerSessionValue>,
+        resuming: Option<(usize, &persist::ServerSessionValue)>,
         extra_exts: ServerExtensionsInput<'static>,
         config: &ServerConfig,
         send_tickets: usize,
         ech: &crate::server::ech::EchServerState,
     ) -> Result<EarlyDataDecision, Error> {
         let mut ep = hs::ExtensionProcessing::new(extra_exts);
-        ep.process_common(config, cx, ocsp_response, hello, resumedata)?;
+        ep.process_common(
+            config,
+            cx,
+            ocsp_response,
+            hello,
+            resuming.map(|(_, session)| session),
+        )?;
 
-        if cx.common.is_quic() && resumedata.is_none() {
+        if cx.common.is_quic() && resuming.is_none() {
             if let Some(offered) = &hello.application_settings {
                 if offered.is_empty() {
                     return Err(cx.common.send_fatal_alert(AlertDescription::IllegalParameter,
@@ -788,7 +821,7 @@ mod client_hello {
                 EarlyDataDecision::Disabled
             }
         } else {
-            decide_if_early_data_allowed(cx, hello, resumedata, suite, config)
+            decide_if_early_data_allowed(cx, hello, resuming, suite, config)
         };
         if early_data == EarlyDataDecision::Accepted {
             ep.extensions.early_data_ack = Some(());
@@ -1156,6 +1189,17 @@ impl State<ServerConnectionData> for ExpectCertificate {
             HandshakeType::Certificate,
             HandshakePayload::CertificateTls13
         )?;
+
+        // RFC 8446: the certificate_request_context in the client's Certificate
+        // must match the one in our CertificateRequest, which we always send
+        // empty.  The client applies the mirror-image check to the server's
+        // Certificate.
+        if !certp.context.0.is_empty() {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::DecodeError,
+                InvalidMessage::InvalidCertRequest,
+            ));
+        }
 
         // We don't send any CertificateRequest extensions, so any extensions
         // here are illegal.

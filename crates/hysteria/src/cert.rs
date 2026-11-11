@@ -1,6 +1,7 @@
 use crate::{CliError, Result};
+use rcgen::string::Ia5String;
 use rcgen::{
-    CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, Ia5String, KeyPair,
+    CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, KeyPair,
     KeyUsagePurpose, SanType,
 };
 use sha2::{Digest, Sha256};

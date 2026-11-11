@@ -205,18 +205,20 @@ fn split_server(server: &str) -> Result<(String, u16), StunError> {
     if let Ok(address) = server.parse::<IpAddr>() {
         return Ok((address.to_string(), DEFAULT_PORT));
     }
-    if let Some((host, port)) = server.rsplit_once(':') {
-        if !host.is_empty() && !port.is_empty() && !host.contains(':') {
-            let port = port
-                .parse::<u16>()
-                .map_err(|_| StunError::InvalidConfig("invalid STUN server port".to_owned()))?;
-            if port == 0 {
-                return Err(StunError::InvalidConfig(
-                    "invalid STUN server port".to_owned(),
-                ));
-            }
-            return Ok((host.to_owned(), port));
+    if let Some((host, port)) = server.rsplit_once(':')
+        && !host.is_empty()
+        && !port.is_empty()
+        && !host.contains(':')
+    {
+        let port = port
+            .parse::<u16>()
+            .map_err(|_| StunError::InvalidConfig("invalid STUN server port".to_owned()))?;
+        if port == 0 {
+            return Err(StunError::InvalidConfig(
+                "invalid STUN server port".to_owned(),
+            ));
         }
+        return Ok((host.to_owned(), port));
     }
     if server.contains(':') {
         return Err(StunError::InvalidConfig(

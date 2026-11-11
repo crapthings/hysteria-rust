@@ -477,7 +477,7 @@ fn proxy_router(config: &MasqueradeConfig) -> Result<Router> {
     crate::tls::ensure_crypto_provider();
     let (target, socket) = proxy_target(&config.proxy.url)?;
     let builder = reqwest::Client::builder()
-        .danger_accept_invalid_certs(config.proxy.insecure)
+        .tls_danger_accept_invalid_certs(config.proxy.insecure)
         .redirect(reqwest::redirect::Policy::none());
     #[cfg(unix)]
     let builder = if let Some(socket) = socket {
@@ -974,8 +974,9 @@ mod tests {
         crate::tls::ensure_crypto_provider();
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let certificate = certified.cert.der().clone();
-        let key =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            certified.signing_key.serialize_der(),
+        ));
         let tls = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![certificate.clone()], key)
@@ -989,8 +990,22 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        // The platform verifier must still reject an untrusted loopback certificate.
+        let untrusted = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .get(format!(
+                "https://localhost:{}/hello",
+                servers.https_address.unwrap().port()
+            ))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(untrusted.is_connect());
         let client = reqwest::Client::builder()
-            .add_root_certificate(reqwest::Certificate::from_der(&certificate).unwrap())
+            .tls_certs_only([reqwest::Certificate::from_der(&certificate).unwrap()])
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .build()

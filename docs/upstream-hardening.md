@@ -1,6 +1,9 @@
 # Upstream hardening review (September 2026)
 
-Runtime interoperability now targets Hysteria Go
+This is the historical September review. Current interoperability and known gaps
+are documented in [the v2.13.0 review](upstream-v2.13.0.md).
+
+At the time of this review, runtime interoperability targeted Hysteria Go
 `62d1016707af21b91e5fb6070311d9f016ff2754`, built with Go 1.26.5.
 The previous `f2ad1de5da52a1da9622285a1d61553ddaa41f21` binary also passed
 the local bidirectional TCP/UDP regression before advancing the pin.

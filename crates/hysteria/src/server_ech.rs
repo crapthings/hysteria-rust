@@ -212,8 +212,9 @@ mod tests {
         let encoded_config_list = material.encoded_config_list();
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let certificate = certified.cert.der().clone();
-        let key =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            certified.signing_key.serialize_der(),
+        ));
         let mut server_tls = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![certificate], key)

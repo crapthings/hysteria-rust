@@ -1643,6 +1643,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fragmented_quic_domain_changes_acl_selection() {
+        let alpha: Arc<dyn ServerOutbound> = Arc::new(NamedErrorOutbound("domain-rule"));
+        let beta: Arc<dyn ServerOutbound> = Arc::new(NamedErrorOutbound("fallback"));
+        let outbounds = HashMap::from([("alpha".to_owned(), alpha)]);
+        let rules = parse_acl("alpha(chrome.sniff.test,udp/443)", &outbounds, None).unwrap();
+        // Use a bounded loopback resolver so the synthetic domain never queries public DNS.
+        let dns = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let acl = AclOutbound {
+            rules,
+            default: beta,
+            resolver: Resolver::Udp {
+                address: dns.local_addr().unwrap().to_string(),
+                timeout: Duration::from_millis(1),
+            },
+        };
+        let sniffer = crate::sniff::Sniffer::build(&crate::config::SniffConfig::default()).unwrap();
+        let first = include_bytes!("../tests/fixtures/quic-sniff/quic-chrome153-0.bin");
+        let second = include_bytes!("../tests/fixtures/quic-sniff/quic-chrome153-1.bin");
+        let mut address = "192.0.2.1:443".to_owned();
+        assert!(!sniffer.udp_packets(&[first], &mut address).unwrap());
+        assert!(
+            acl.udp(&address)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("fallback:")
+        );
+        assert!(sniffer.udp_packets(&[first, second], &mut address).unwrap());
+        assert!(
+            acl.udp(&address)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("domain-rule:chrome.sniff.test:443")
+        );
+    }
+
+    #[tokio::test]
     async fn acl_dispatches_protocol_ports_cidr_hijack_and_default() {
         let alpha: Arc<dyn ServerOutbound> = Arc::new(NamedErrorOutbound("alpha"));
         let beta: Arc<dyn ServerOutbound> = Arc::new(NamedErrorOutbound("beta"));

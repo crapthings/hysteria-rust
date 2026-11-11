@@ -368,7 +368,7 @@ fn default_http_client(insecure: bool) -> Result<reqwest::Client, RealmClientErr
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     }
     reqwest::Client::builder()
-        .danger_accept_invalid_certs(insecure)
+        .tls_danger_accept_invalid_certs(insecure)
         .build()
         .map_err(Into::into)
 }

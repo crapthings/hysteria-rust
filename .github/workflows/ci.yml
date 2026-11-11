@@ -23,7 +23,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Manual platform runs must not cancel automatic validation on the same ref.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -33,6 +34,7 @@ env:
 
 jobs:
   quality:
+    if: github.event_name != 'workflow_dispatch'
     name: Format and lint
     runs-on: ubuntu-latest
     steps:
@@ -40,7 +42,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.91.1
         with:
           components: clippy, rustfmt
 
@@ -69,7 +71,7 @@ jobs:
         run: cargo test --manifest-path vendor/quinn-proto/Cargo.toml --locked --lib
 
   test-and-package:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Test and package (${{ matrix.label }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -105,7 +107,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.91.1
         with:
           components: clippy
           targets: ${{ matrix.target }}
@@ -115,7 +117,9 @@ jobs:
         with:
           key: ${{ matrix.label }}
 
+      # Automatic Linux x64 tests already run in the quality job.
       - name: Test
+        if: github.event_name == 'workflow_dispatch' || matrix.label != 'linux-x64'
         run: cargo test --locked --workspace
 
       - name: Lint Windows WFP wrapper
@@ -133,7 +137,7 @@ jobs:
           retention-days: 1
 
   cross-package:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Cross-package (${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
@@ -142,19 +146,19 @@ jobs:
         include:
           - label: linux-arm
             target: armv7-unknown-linux-gnueabihf
-            toolchain: 1.88.0
+            toolchain: 1.91.1
     steps:
       - name: Check out
         uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.91.1
 
       - name: Install pinned Cross
         run: cargo install cross --git https://github.com/cross-rs/cross --rev 154b4ead7e639c7597d9e4e626b9c1c1e37608c0 --locked
 
       - name: Package cross-compiled binary
-        run: python scripts/package_rust.py --builder cross --toolchain ${{ matrix.toolchain }} --target ${{ matrix.target }} --variant ${{ matrix.variant || 'baseline' }}
+        run: python scripts/package_rust.py --builder cross --toolchain ${{ matrix.toolchain }} --target ${{ matrix.target }} --variant baseline
 
       - name: Upload cross-compiled binary
         uses: actions/upload-artifact@v7
@@ -164,6 +168,7 @@ jobs:
           retention-days: 1
 
   interoperability:
+    if: github.event_name != 'workflow_dispatch'
     name: Go/Rust interoperability
     runs-on: ubuntu-latest
     steps:
@@ -173,12 +178,12 @@ jobs:
       - name: Check out pinned Go implementation
         uses: actions/checkout@v7
         with:
-          repository: apernet/hysteria
-          ref: 62d1016707af21b91e5fb6070311d9f016ff2754
+          repository: HyNetworks/hysteria
+          ref: ca8fbd874fd6ca82413948de6dc5924405e103e1
           path: upstream-go
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.91.1
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -206,6 +211,7 @@ jobs:
         run: cargo test --locked --package hysteria-cli --lib chrome_runtime_go_tcp_udp_interop -- --ignored --nocapture
 
   security:
+    if: github.event_name != 'workflow_dispatch'
     name: Dependency security audit
     runs-on: ubuntu-latest
     steps:
@@ -213,7 +219,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.91.1
 
       - name: Cache audit tool
         uses: Swatinem/rust-cache@v2

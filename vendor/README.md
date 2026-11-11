@@ -7,9 +7,9 @@ Do not replace them wholesale with registry releases or delete license files.
 | --- | --- | --- | --- |
 | h3 | crates.io 0.0.8 | [HTTP/3, ALPS hooks, header validation](h3/HYSTERIA_PATCH.md) | Standalone h3 suite |
 | h3-quinn | crates.io 0.0.10 | [Source-included h3 test adapter](h3/HYSTERIA_PATCH.md) | Covered by h3 suite |
-| quinn-proto | crates.io 0.11.16 | [QUIC, Chrome profile, congestion and handshake patches](quinn-proto/HYSTERIA_PATCH.md) | Standalone QUIC suite and runtime interop |
-| rustls | 0.23.42 + recorded backport | [ECH, Chrome TLS, ALPS](rustls/HYSTERIA_PATCH.md) | Workspace TLS/ALPS and interop tests |
-| rustls-acme | crates.io 0.15.3 | [ACME extensions](rustls-acme/HYSTERIA_PATCH.md) | Workspace unit/doc tests |
+| quinn-proto | crates.io 0.11.19 | [QUIC, Chrome profile, congestion and handshake patches](quinn-proto/HYSTERIA_PATCH.md) | Standalone QUIC suite and runtime interop |
+| rustls | 0.23.46 + recorded backport | [ECH, Chrome TLS, ALPS](rustls/HYSTERIA_PATCH.md) | Workspace TLS/ALPS and interop tests |
+| rustls-acme | crates.io 0.15.4 | [ACME extensions](rustls-acme/HYSTERIA_PATCH.md) | Workspace unit/doc tests |
 | netdev | crates.io 0.31.0 | [BSD interface compatibility](netdev/HYSTERIA_PATCH.md) | Formatting; target-specific compilation |
 | wfp | crates.io 0.0.7 | [Windows filtering extensions](wfp/HYSTERIA_PATCH.md) | Formatting; Windows checks |
 

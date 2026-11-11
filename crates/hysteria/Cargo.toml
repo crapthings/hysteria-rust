@@ -34,7 +34,7 @@ hysteria-transport = { path = "../hysteria-transport" }
 percent-encoding.workspace = true
 quinn.workspace = true
 quinn-proto.workspace = true
-rcgen = "0.13.2"
+rcgen = "0.14.10"
 prost.workspace = true
 qrcode.workspace = true
 regex.workspace = true

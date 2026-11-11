@@ -257,7 +257,8 @@ fn chrome_tls_baseline_mutual_authentication_and_hello_retry() {
     for (retry, compressed) in [(false, false), (true, false), (false, true), (true, true)] {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let cert = certified.cert.der().clone();
-        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
+        let key =
+            rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
         let mut roots = RootCertStore::empty();
         roots.add(cert.clone()).unwrap();
         let client_config =
@@ -353,7 +354,7 @@ fn chrome_tls_baseline_still_rejects_untrusted_certificate() {
             .with_no_client_auth()
             .with_single_cert(
                 vec![certified.cert.der().clone()],
-                rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der())
+                rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der())
                     .into(),
             )
             .unwrap();

@@ -3,7 +3,7 @@
 [![CI](https://github.com/crapthings/hysteria-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/crapthings/hysteria-rust/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/crapthings/hysteria-rust?include_prereleases)](https://github.com/crapthings/hysteria-rust/releases)
 [![License](https://img.shields.io/badge/license-MIT-024ad8.svg)](LICENSE)
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-024ad8.svg)](rust-toolchain.toml)
+[![Rust 1.91+](https://img.shields.io/badge/rust-1.91%2B-024ad8.svg)](rust-toolchain.toml)
 
 An independent Rust implementation of [Hysteria 2](https://v2.hysteria.network/),
 with compatible clients and servers for TCP and UDP proxying over QUIC.
@@ -136,6 +136,43 @@ This is disabled by default, does not enable ALPS, and does not change Surge or
 other third-party clients. See [Chrome QUIC status](docs/chrome-quic-port.md)
 for validation scope and remaining work.
 
+## Generate server configuration
+
+```shell
+hysteria init server -c server.yaml               # Editable template
+hysteria guide server -c server.yaml            # Step-by-step setup
+```
+
+A random password is generated automatically. Existing files are preserved.
+Prepare certificate files or choose ACME in guided setup, then check and start
+using the commands below. See [CLI behavior](docs/cli.md) for details.
+
+## Check configuration
+
+Validate a server or client configuration without starting networking:
+
+```shell
+hysteria check server --config server.yaml
+hysteria check client --config client.yaml --output json
+cat client.yaml | hysteria check client --config - --output json
+```
+
+`--config -` reads YAML or JSON from stdin on all platforms. Input is limited to
+16 MiB. Checks validate the schema and existing semantic rules, not server
+reachability, certificate availability or permission to start TUN. See
+[CLI behavior](docs/cli.md) for output formats, exit codes and service signals.
+
+## Diagnose server deployment
+
+```shell
+hysteria doctor server -c server.yaml
+hysteria doctor server -c server.yaml --output json
+```
+
+Checks local TLS material, certificate dates and selected referenced files in
+addition to configuration validation. Reports actionable failures and explicitly
+marks network/runtime conditions as unverified. See [CLI behavior](docs/cli.md).
+
 ## Upgrade and rollback
 
 1. Read the [release notes](https://github.com/crapthings/hysteria-rust/releases) and back up the executable and configuration.
@@ -147,6 +184,8 @@ for validation scope and remaining work.
 
 | Resource | Contents |
 | --- | --- |
+| [CLI behavior](docs/cli.md) | Commands, stdin, offline checks, JSON output and exit status |
+| [CLI development](docs/cli-roadmap.md) | Independent server/client scope and subsequent increments |
 | [Configuration examples](examples) | Server/client starter files and optional ACL settings |
 | [Compatibility status](PORT_STATUS.md) | Supported features, platforms, and pinned Go reference |
 | [ACME DNS providers](docs/acme-dns-providers.md) | Porkbun, Njalla, and Namecheap setup |
@@ -163,11 +202,13 @@ cargo build --locked --release --package hysteria-cli
 ```
 
 The executable is `target/release/hysteria` (`hysteria.exe` on Windows).
-See [CONTRIBUTING.md](CONTRIBUTING.md) for tests, lint, and Go interoperability.
+Develop and validate changes on `dev`, then merge into `main` when ready.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch workflow, tests, lint, and Go interoperability.
 
 Code pushes and pull requests to `main`/`dev` run Linux tests, lint, interoperability,
-and dependency auditing. README-only changes skip CI. Manual CI builds all seven
-platforms with one-day artifacts; version tags build and publish releases.
+and dependency auditing. Pushes to `main` also test and package all seven platforms
+with one-day artifacts. README-only changes skip CI. Manual CI runs only the platform
+jobs without cancelling automatic validation; version tags build and publish releases.
 
 ## License and security
 

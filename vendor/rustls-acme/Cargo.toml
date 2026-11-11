@@ -12,7 +12,7 @@
 [package]
 edition = "2018"
 name = "rustls-acme"
-version = "0.15.3"
+version = "0.15.4"
 authors = ["Florian Uekermann <florian@uekermann.me>"]
 build = false
 autolib = false
@@ -200,7 +200,7 @@ version = "1"
 optional = true
 
 [dependencies.x509-parser]
-version = "0.16"
+version = ">=0.16, <0.19"
 
 [dev-dependencies.axum]
 version = "0.8.8"

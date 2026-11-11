@@ -111,7 +111,7 @@ impl Resolver {
         let timeout = tls_timeout(config)?;
         let mut builder = reqwest::Client::builder()
             .timeout(timeout)
-            .danger_accept_invalid_certs(config.insecure);
+            .tls_danger_accept_invalid_certs(config.insecure);
         if !config.sni.is_empty() {
             let host = url
                 .host_str()
@@ -669,8 +669,10 @@ mod tests {
 
     #[tokio::test]
     async fn tls_resolver_encrypts_length_prefixed_queries() {
-        let CertifiedKey { cert, key_pair } =
-            rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        let CertifiedKey {
+            cert,
+            signing_key: key_pair,
+        } = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let server_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(

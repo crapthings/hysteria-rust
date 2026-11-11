@@ -1,6 +1,6 @@
 # Hysteria compatibility patch
 
-This is `quinn-proto` 0.11.16 with Hysteria compatibility extensions:
+This is `quinn-proto` 0.11.19 with Hysteria compatibility extensions:
 
 - `TransportConfig::assume_peer_max_datagram_frame_size`.
 - An opt-in Chrome client transport-parameter serializer, plus explicit ACK-frequency support and
@@ -54,7 +54,50 @@ fix affecting both profiles, not a replacement of its TLS implementation.
 levels. `lost_stream_data_competes_with_fresh_stream_data` documents the existing
 fair cross-stream scheduling policy; no scheduler change is included.
 
-Validation: `cargo test --manifest-path vendor/quinn-proto/Cargo.toml --locked --lib`
+Historical 0.11.16 validation: `cargo test --manifest-path vendor/quinn-proto/Cargo.toml --locked --lib`
 passed 294 tests with one ignored, including handshake retransmission cases.
 Ordinary and Chrome runtime interoperability were also exercised; see
 [the upstream review](../../docs/upstream-hardening.md).
+
+## Upgrade to 0.11.19 (2026-11-11)
+
+Registry source revision: `8192ed399a26a6e8f0aba43d10ec8badaa5b905e`.
+Previous 0.11.16 source revision: `a96949f6cd257c665f544626af4e8ce668a40b30`.
+The upgrade was merged against the pristine registry 0.11.16/0.11.19 packages,
+retaining the local DATAGRAM, BBR, Chrome, stateless-reset and CRYPTO-hardening
+extensions above, and the standalone dependency on `../rustls`.
+
+Two overlapping padding hunks in `connection/mod.rs` were reconciled:
+ordinary padding follows upstream `min(config.min_mtu, current_mtu)`;
+Chrome client Initial splitting retains its configured initial size, clamped to
+the current path MTU. Upstream minimum-MTU/peer-limit regressions and the local
+Chrome Initial-size/packet-number regressions pass together. Upstream's new CUBIC
+long-lossless-period overflow test was adapted to supply the two local congestion
+sampling arguments (unused by CUBIC); its original assertion is retained.
+
+Root dependencies now resolve Quinn 0.11.12 and quinn-udp 0.5.16. The standalone
+HTTP/3 test lockfile was updated to the same upstream Quinn component versions.
+Quinn 0.11.12 requires the 0.5 UDP API, so the separate quinn-udp 0.6 release line
+is not substituted into its dependency graph.
+
+Validation on macOS ARM64, Rust 1.88.0:
+
+- `python3 scripts/test_vendor.py quinn-proto`: 342 passed, one ignored.
+- Explicit `chrome_go_initial_wire_parity -- --ignored`: the remaining test passed
+  against the existing historical Go wire fixture, not Chrome 154.
+- `python3 scripts/test_vendor.py h3`: 234 passed.
+- `cargo test --locked --workspace`: passed.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`: passed.
+- Go app/v2.13.0 (`ca8fbd87`) binary interoperability: 4 passed, including both
+  directions and sniff-enabled TCP paths.
+- Chrome runtime Go TCP/UDP/ECH/security/reconnect regression: 1 passed.
+
+These are protocol and local interoperability checks, not a performance result or
+proof of Windows/Linux kernel behavior. No application default, Chrome wire fixture,
+TLS snapshot or system network configuration was changed by this upgrade.
+
+Formatting note: workspace rustfmt and diff whitespace checks pass. A full
+standalone quinn-proto rustfmt check also reports pre-existing snapshot style
+differences (confirmed against the saved 0.11.16 tree, including bloom_token_log
+and cid_generator). The upgrade retains upstream formatting rather than mixing
+a crate-wide style rewrite into protocol changes.

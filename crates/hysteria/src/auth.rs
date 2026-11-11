@@ -61,7 +61,7 @@ impl HttpAuthenticator {
         crate::tls::ensure_crypto_provider();
         let client = reqwest::Client::builder()
             .timeout(HTTP_AUTH_TIMEOUT)
-            .danger_accept_invalid_certs(insecure)
+            .tls_danger_accept_invalid_certs(insecure)
             .build()
             .map_err(|error| CliError::new(format!("invalid HTTP authenticator: {error}")))?;
         Ok(Self { client, url })

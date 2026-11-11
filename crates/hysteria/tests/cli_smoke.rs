@@ -176,7 +176,7 @@ fn lazy_client_connects_on_demand_and_reconnects() {
     let cert_path = directory.path().join("cert.pem");
     let key_path = directory.path().join("key.pem");
     fs::write(&cert_path, certified.cert.pem()).unwrap();
-    fs::write(&key_path, certified.key_pair.serialize_pem()).unwrap();
+    fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
 
     let server_address = free_udp_address();
     let relay = UdpRelay::start(server_address);
@@ -240,7 +240,7 @@ fn server_and_client_commands_run_all_proxy_modes() {
     let cert_path = directory.path().join("cert.pem");
     let key_path = directory.path().join("key.pem");
     fs::write(&cert_path, certified.cert.pem()).unwrap();
-    fs::write(&key_path, certified.key_pair.serialize_pem()).unwrap();
+    fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
 
     let server_address = free_udp_address();
     let (auth_callback_address, auth_callback_thread) = start_auth_callback();

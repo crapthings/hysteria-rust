@@ -28,12 +28,12 @@ jobs:
       - name: Check out pinned Go implementation
         uses: actions/checkout@v7
         with:
-          repository: apernet/hysteria
-          ref: 62d1016707af21b91e5fb6070311d9f016ff2754
+          repository: HyNetworks/hysteria
+          ref: ca8fbd874fd6ca82413948de6dc5924405e103e1
           path: upstream-go
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.91.1
         with:
           components: clippy, rustfmt
 
@@ -111,7 +111,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.91.1
         with:
           targets: ${{ matrix.target }}
 
@@ -136,19 +136,19 @@ jobs:
         include:
           - label: linux-arm
             target: armv7-unknown-linux-gnueabihf
-            toolchain: 1.88.0
+            toolchain: 1.91.1
     steps:
       - name: Check out
         uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.91.1
 
       - name: Install pinned Cross
         run: cargo install cross --git https://github.com/cross-rs/cross --rev 154b4ead7e639c7597d9e4e626b9c1c1e37608c0 --locked
 
       - name: Package cross-compiled binary
-        run: python scripts/package_rust.py --builder cross --toolchain ${{ matrix.toolchain }} --target ${{ matrix.target }} --variant ${{ matrix.variant || 'baseline' }}
+        run: python scripts/package_rust.py --builder cross --toolchain ${{ matrix.toolchain }} --target ${{ matrix.target }} --variant baseline
 
       - name: Upload release asset
         uses: actions/upload-artifact@v7

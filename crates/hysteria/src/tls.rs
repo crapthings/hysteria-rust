@@ -1,4 +1,4 @@
-use crate::{CliError, Result};
+use crate::{CliError, ErrorCode, Result};
 use base64::Engine as _;
 use rustls::{
     ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme,
@@ -34,14 +34,16 @@ pub(crate) fn server_config(
     )?;
     let provider = rustls::crypto::aws_lc_rs::default_provider();
     let certified_key = CertifiedKey::from_der(certificates, key, &provider)
-        .map_err(|error| CliError::new(format!("invalid TLS certificate/key: {error}")))?;
+        .map_err(|error| invalid_material("invalid TLS certificate/key").with_source(error))?;
     let guard = SniGuard::parse(sni_guard)?;
     let builder = ServerConfig::builder();
     let builder = if let Some(client_ca_path) = client_ca_path {
         let roots = read_root_store(client_ca_path)?;
         let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
             .build()
-            .map_err(|error| CliError::new(format!("invalid client CA configuration: {error}")))?;
+            .map_err(|error| {
+                invalid_material("invalid client CA configuration").with_source(error)
+            })?;
         builder.with_client_cert_verifier(verifier)
     } else {
         builder.with_no_client_auth()
@@ -99,10 +101,10 @@ impl ResolvesServerCert for GuardedCertificateResolver {
 fn certificate_has_dns_sans(certificate: &CertificateDer<'_>) -> Result<bool> {
     let (_, certificate) =
         x509_parser::certificate::X509Certificate::from_der(certificate.as_ref())
-            .map_err(|error| CliError::new(format!("invalid TLS certificate: {error}")))?;
+            .map_err(|_| invalid_material("invalid TLS certificate"))?;
     let alternative_name = certificate
         .subject_alternative_name()
-        .map_err(|error| CliError::new(format!("invalid TLS subject alternative name: {error}")))?;
+        .map_err(|_| invalid_material("invalid TLS subject alternative name"))?;
     Ok(alternative_name.is_some_and(|extension| {
         extension
             .value
@@ -151,7 +153,7 @@ pub(crate) fn client_config(
                 rustls::client::WebPkiServerVerifier::builder(Arc::new(roots.clone()))
                     .build()
                     .map_err(|error| {
-                        CliError::new(format!("invalid server CA configuration: {error}"))
+                        invalid_material("invalid server CA configuration").with_source(error)
                     })?,
             )
         };
@@ -167,7 +169,7 @@ pub(crate) fn client_config(
     if let Some((cert_path, key_path)) = client_identity {
         builder
             .with_client_auth_cert(read_certificates(cert_path)?, read_private_key(key_path)?)
-            .map_err(|error| CliError::new(format!("invalid client certificate/key: {error}")))
+            .map_err(|error| invalid_material("invalid client certificate/key").with_source(error))
     } else {
         Ok(builder.with_no_client_auth())
     }
@@ -383,16 +385,28 @@ fn native_root_store() -> Result<RootCertStore> {
     Ok(roots)
 }
 
+fn invalid_material(message: impl Into<String>) -> CliError {
+    CliError::classified(
+        ErrorCode::TlsInvalid,
+        message,
+        Some(
+            "Provide valid PEM certificate/key files with a matching key pair and appropriate CA certificates; run doctor server for local checks.",
+        ),
+    )
+}
+
 pub(crate) fn read_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let mut reader =
         BufReader::new(File::open(path).map_err(|error| {
-            CliError::new(format!("failed to open {}: {error}", path.display()))
+            CliError::classified(ErrorCode::TlsRead, format!("failed to open TLS file {}", path.display()), Some("Check certificate/key/CA paths and read permissions; relative paths use the working directory.")).with_source(error)
         })?);
     let certificates = rustls_pemfile::certs(&mut reader)
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| CliError::new(format!("failed to parse {}: {error}", path.display())))?;
+        .map_err(|_| {
+            invalid_material(format!("failed to parse TLS PEM file {}", path.display()))
+        })?;
     if certificates.is_empty() {
-        return Err(CliError::new(format!(
+        return Err(invalid_material(format!(
             "no certificates in {}",
             path.display()
         )));
@@ -403,11 +417,11 @@ pub(crate) fn read_certificates(path: &Path) -> Result<Vec<CertificateDer<'stati
 fn read_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let mut reader =
         BufReader::new(File::open(path).map_err(|error| {
-            CliError::new(format!("failed to open {}: {error}", path.display()))
+            CliError::classified(ErrorCode::TlsRead, format!("failed to open TLS file {}", path.display()), Some("Check certificate/key/CA paths and read permissions; relative paths use the working directory.")).with_source(error)
         })?);
     rustls_pemfile::private_key(&mut reader)
-        .map_err(|error| CliError::new(format!("failed to parse {}: {error}", path.display())))?
-        .ok_or_else(|| CliError::new(format!("no private key in {}", path.display())))
+        .map_err(|_| invalid_material(format!("failed to parse TLS PEM file {}", path.display())))?
+        .ok_or_else(|| invalid_material(format!("no private key in {}", path.display())))
 }
 
 #[cfg(test)]
@@ -723,21 +737,22 @@ mod tests {
                 KeyUsagePurpose::CrlSign,
             ];
             let ca = ca_params.self_signed(&ca_key).unwrap();
+            let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
 
             let server_key = KeyPair::generate().unwrap();
             let mut server_params = CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
             server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-            let server = server_params.signed_by(&server_key, &ca, &ca_key).unwrap();
+            let server = server_params.signed_by(&server_key, &issuer).unwrap();
 
             let no_san_key = KeyPair::generate().unwrap();
             let mut no_san_params = CertificateParams::new(Vec::<String>::new()).unwrap();
             no_san_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-            let no_san = no_san_params.signed_by(&no_san_key, &ca, &ca_key).unwrap();
+            let no_san = no_san_params.signed_by(&no_san_key, &issuer).unwrap();
 
             let client_key = KeyPair::generate().unwrap();
             let mut client_params = CertificateParams::new(Vec::<String>::new()).unwrap();
             client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-            let client = client_params.signed_by(&client_key, &ca, &ca_key).unwrap();
+            let client = client_params.signed_by(&client_key, &issuer).unwrap();
 
             let ca_cert = directory.path().join("ca.pem");
             let server_cert = directory.path().join("server.pem");

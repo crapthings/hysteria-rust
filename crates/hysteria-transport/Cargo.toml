@@ -25,7 +25,7 @@ rustls.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
-rcgen = "0.13.2"
+rcgen = "0.14.10"
 
 [lints]
 workspace = true

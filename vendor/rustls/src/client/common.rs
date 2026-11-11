@@ -6,7 +6,7 @@ use crate::log::{debug, trace};
 use crate::msgs::enums::ExtensionType;
 use crate::msgs::handshake::{CertificateChain, DistinguishedName, ProtocolName, ServerExtensions};
 use crate::sync::Arc;
-use crate::{SignatureScheme, compress, sign};
+use crate::{CipherSuite, SignatureScheme, compress, sign};
 
 #[derive(Debug)]
 pub(super) struct ServerCertDetails<'a> {
@@ -40,6 +40,7 @@ pub(super) struct ClientHelloDetails {
     pub(super) extension_order_seed: u16,
     pub(super) chrome_extension_order: Vec<ExtensionType>,
     pub(super) offered_cert_compression: bool,
+    pub(super) offered_cipher_suites: Vec<CipherSuite>,
 }
 
 impl ClientHelloDetails {
@@ -50,6 +51,7 @@ impl ClientHelloDetails {
             extension_order_seed,
             chrome_extension_order: Vec::new(),
             offered_cert_compression: false,
+            offered_cipher_suites: Vec::new(),
         }
     }
 

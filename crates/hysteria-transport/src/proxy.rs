@@ -33,6 +33,8 @@ pub type RequestHookFuture<'a> =
 pub trait RequestHook: Send + Sync + 'static {
     fn check(&self, udp: bool, address: &str) -> bool;
 
+    /// The server acknowledges selected TCP requests before invoking this hook.
+    /// Later hook/dial failures close the stream; no second response is sent.
     fn tcp<'a>(
         &'a self,
         receive: &'a mut RecvStream,
@@ -45,6 +47,18 @@ pub trait RequestHook: Send + Sync + 'static {
     ///
     /// Returns an error to reject the UDP session.
     fn udp(&self, data: &[u8], address: &mut String) -> Result<(), TransportError>;
+
+    /// Inspects buffered UDP datagrams. `false` requests another datagram.
+    /// The caller bounds collection and uses the original destination if incomplete.
+    ///
+    /// # Errors
+    /// Returns an error to reject the UDP session.
+    fn udp_packets(&self, packets: &[&[u8]], address: &mut String) -> Result<bool, TransportError> {
+        if let Some(data) = packets.first() {
+            self.udp(data, address)?;
+        }
+        Ok(true)
+    }
 }
 
 /// Receives per-user proxy traffic and connection-presence events.
@@ -521,12 +535,11 @@ async fn handle_tcp_stream(
     mut receive: RecvStream,
     context: Arc<TcpServerContext>,
 ) {
-    let stream_id = send.id().index();
     let stream_stats = context.traffic_logger.as_ref().map(|logger| {
         let stats = Arc::new(StreamStats::new(
             context.auth_id.clone(),
             context.connection_id,
-            stream_id,
+            send.id().index(),
         ));
         let trace = StreamTrace::new(Arc::clone(logger), Arc::clone(&stats));
         (stats, trace)
@@ -545,33 +558,36 @@ async fn handle_tcp_stream(
         .is_some_and(|hook| hook.check(false, &request.address));
     let putback = if should_hook {
         let hook = context.request_hook.as_ref().expect("checked above");
-        if let Some(stats) = stats {
-            stats.set_state(StreamState::Hooking);
-        }
-        match hook.tcp(&mut receive, &mut request.address).await {
+        match accept_and_hook_tcp(
+            hook.as_ref(),
+            &mut send,
+            &mut receive,
+            &mut request.address,
+            stats,
+        )
+        .await
+        {
             Ok(putback) => putback,
             Err(_) => return,
         }
     } else {
         Vec::new()
     };
-    if let Some(stats) = stats {
-        if should_hook {
-            stats.set_hooked_request_address(request.address.clone());
-        }
-        stats.set_state(StreamState::Connecting);
-    }
+    record_tcp_target(stats, should_hook, &request.address);
     let mut target = match context.outbound.tcp(&request.address).await {
         Ok(target) => target,
         Err(error) => {
-            let message = truncate_message(&error.to_string(), MAX_MESSAGE_LENGTH);
-            let _ = write_tcp_response(&mut send, false, &message).await;
+            if !should_hook {
+                let message = truncate_message(&error.to_string(), MAX_MESSAGE_LENGTH);
+                let _ = write_tcp_response(&mut send, false, &message).await;
+            }
             return;
         }
     };
-    if write_tcp_response(&mut send, true, "Connected")
-        .await
-        .is_err()
+    if !should_hook
+        && write_tcp_response(&mut send, true, "Connected")
+            .await
+            .is_err()
     {
         return;
     }
@@ -614,6 +630,31 @@ async fn handle_tcp_stream(
             .connection
             .close(quinn::VarInt::from_u32(CLOSE_TRAFFIC_LIMIT_REACHED), b"");
     }
+}
+
+fn record_tcp_target(stats: Option<&StreamStats>, hooked: bool, address: &str) {
+    if let Some(stats) = stats {
+        if hooked {
+            stats.set_hooked_request_address(address.to_owned());
+        }
+        stats.set_state(StreamState::Connecting);
+    }
+}
+
+// Match Go's server-side fast-open: acknowledge before waiting for application
+// data. The caller must never write another TCP response after this succeeds.
+async fn accept_and_hook_tcp(
+    hook: &dyn RequestHook,
+    send: &mut SendStream,
+    receive: &mut RecvStream,
+    address: &mut String,
+    stats: Option<&StreamStats>,
+) -> Result<Vec<u8>, TransportError> {
+    if let Some(stats) = stats {
+        stats.set_state(StreamState::Hooking);
+    }
+    write_tcp_response(send, true, "RequestHook enabled").await?;
+    hook.tcp(receive, address).await
 }
 
 async fn write_hooked_prefix(
@@ -807,8 +848,9 @@ mod tests {
     fn tls_configs() -> (quinn::ServerConfig, ClientConfig) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let certificate = certified.cert.der().clone();
-        let key =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            certified.signing_key.serialize_der(),
+        ));
         let server_tls = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![certificate.clone()], key)
@@ -988,6 +1030,89 @@ mod tests {
         }
     }
 
+    struct BufferedHook {
+        target: String,
+        needed: usize,
+    }
+
+    impl RequestHook for BufferedHook {
+        fn check(&self, udp: bool, _: &str) -> bool {
+            udp
+        }
+        fn tcp<'a>(&'a self, _: &'a mut RecvStream, _: &'a mut String) -> RequestHookFuture<'a> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+        fn udp(&self, _: &[u8], _: &mut String) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn udp_packets(
+            &self,
+            packets: &[&[u8]],
+            address: &mut String,
+        ) -> Result<bool, TransportError> {
+            // Deliberately modify while incomplete: the collector must discard this.
+            address.clone_from(&self.target);
+            Ok(packets.len() >= self.needed)
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_udp_hook_preserves_packets_and_falls_back_with_bounds() {
+        for (needed, count) in [(2, 2), (9, 8), (9, 1)] {
+            let echo = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let target = echo.local_addr().unwrap().to_string();
+            let original = if needed == 2 {
+                "127.0.0.2:1".to_owned()
+            } else {
+                target.clone()
+            };
+            let hook: Arc<dyn RequestHook> = Arc::new(BufferedHook {
+                target: if needed == 2 {
+                    target
+                } else {
+                    "127.0.0.2:1".to_owned()
+                },
+                needed,
+            });
+            let (_server, endpoint, client, relay) =
+                proxy_pair_with_hook(Duration::from_secs(5), None, Some(hook)).await;
+            let udp = client.udp().unwrap();
+            for index in 0..count {
+                udp.send(&[index], &original).await.unwrap();
+            }
+            let mut buffer = [0; 10];
+            for index in 0..count {
+                let (size, _) =
+                    tokio::time::timeout(Duration::from_secs(2), echo.recv_from(&mut buffer))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(&buffer[..size], &[index]);
+            }
+            // The rewritten destination must persist beyond the buffered first flight.
+            udp.send(b"later", &original).await.unwrap();
+            let (size, _) =
+                tokio::time::timeout(Duration::from_secs(2), echo.recv_from(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(&buffer[..size], b"later");
+            let other = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            udp.send(b"other", &other.local_addr().unwrap().to_string())
+                .await
+                .unwrap();
+            let (size, _) =
+                tokio::time::timeout(Duration::from_secs(2), other.recv_from(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(&buffer[..size], b"other");
+            client.close(b"done");
+            endpoint.close(0_u32.into(), b"done");
+            relay.abort();
+        }
+    }
+
     #[tokio::test]
     async fn request_hook_rewrites_first_udp_destination() {
         let echo = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -1065,6 +1190,101 @@ mod tests {
         client.close(b"done");
         server.close();
         relay.abort();
+    }
+
+    struct TcpPrefixHook {
+        reject: bool,
+    }
+
+    impl RequestHook for TcpPrefixHook {
+        fn check(&self, udp: bool, _: &str) -> bool {
+            !udp
+        }
+        fn tcp<'a>(
+            &'a self,
+            receive: &'a mut RecvStream,
+            _: &'a mut String,
+        ) -> RequestHookFuture<'a> {
+            Box::pin(async move {
+                let mut prefix = vec![0; 4];
+                receive.read_exact(&mut prefix).await.map_err(io_error)?;
+                if self.reject {
+                    return Err(TransportError::Protocol("hook rejected".into()));
+                }
+                Ok(prefix)
+            })
+        }
+        fn udp(&self, _: &[u8], _: &mut String) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_hook_accepts_before_reading_and_sends_only_one_response() {
+        for fast_open in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let echo = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut data = [0; 9];
+                stream.read_exact(&mut data).await.unwrap();
+                assert_eq!(&data, b"head-tail");
+                stream.write_all(&data).await.unwrap();
+            });
+            let (server, endpoint, client, relay) = proxy_pair_with_hook(
+                Duration::from_secs(5),
+                None,
+                Some(Arc::new(TcpPrefixHook { reject: false })),
+            )
+            .await;
+            let client = client.with_fast_open(fast_open);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let mut tunnel = client.tcp(&address).await.unwrap();
+                tunnel.write_all(b"head-tail").await.unwrap();
+                tunnel.shutdown().await.unwrap();
+                let mut response = Vec::new();
+                tunnel.read_to_end(&mut response).await.unwrap();
+                assert_eq!(response, b"head-tail");
+                echo.await.unwrap();
+            })
+            .await
+            .expect("hook must not wait for sniff timeout");
+            client.close(b"done");
+            server.close();
+            endpoint.close(0_u32.into(), b"done");
+            relay.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_hook_failures_close_without_a_second_response() {
+        for reject in [false, true] {
+            let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = reserved.local_addr().unwrap().to_string();
+            drop(reserved);
+            let (server, endpoint, client, relay) = proxy_pair_with_hook(
+                Duration::from_secs(5),
+                None,
+                Some(Arc::new(TcpPrefixHook { reject })),
+            )
+            .await;
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let mut tunnel = client.tcp(&address).await.unwrap();
+                let _ = tunnel.write_all(b"head").await;
+                let mut response = Vec::new();
+                let _ = tunnel.read_to_end(&mut response).await;
+                assert!(
+                    response.is_empty(),
+                    "no second protocol response may become application data"
+                );
+            })
+            .await
+            .unwrap();
+            client.close(b"done");
+            server.close();
+            endpoint.close(0_u32.into(), b"done");
+            relay.abort();
+        }
     }
 
     #[tokio::test]

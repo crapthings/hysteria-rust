@@ -1,6 +1,6 @@
 # Port status
 
-Compatibility target: the upstream Go Hysteria 2 implementation at commit `62d1016707af21b91e5fb6070311d9f016ff2754`, built with Go 1.26.5. This describes the current source tree, not an update to existing release artifacts. See [the upstream hardening review](docs/upstream-hardening.md) for validation scope.
+Runtime interoperability reference: upstream Go Hysteria 2 `app/v2.13.0` at commit `ca8fbd874fd6ca82413948de6dc5924405e103e1`, built with Go 1.26.5. This describes the current source tree, not an update to existing release artifacts. See [the v2.13.0 review](docs/upstream-v2.13.0.md) for current validation and gaps, and [the earlier hardening review](docs/upstream-hardening.md) for historical context.
 
 This repository is a standalone Rust workspace. The upstream Go binary is used only as an executable interoperability reference: GitHub CI builds the pinned commit and supplies it through `HYSTERIA_GO_BIN`; normal Rust builds and runtime deployments do not require Go or the upstream repository.
 
@@ -37,7 +37,7 @@ The native executable is `target/release/hysteria`. Cross-release artifacts and 
 - Shared reconnectable client lifecycle across every local proxy mode, including eager startup by default, `lazy: true` first-use connection, serialized concurrent dialing, closed-session replacement, and permanent shutdown
 - Client UDP port hopping with Go-compatible comma/range server-port unions, fixed or randomized 5-second-minimum hop intervals, fresh socket-option-preserving local sockets, one-hop receive overlap, stable Quinn peer identity, and plain/Salamander/Gecko composition
 - Realm client/server rendezvous with Go-compatible URI and HTTP/SSE APIs, RFC 5389 IPv4/IPv6 STUN, authenticated randomized simultaneous UDP hole punching, symmetric-NAT port prediction, shared-socket QUIC/punch/STUN demultiplexing with plain/Salamander/Gecko composition, heartbeat and re-registration supervision, runtime address refresh, and optional maintained UPnP/NAT-PMP mappings
-- Server request sniffing with timeout-safe TCP byte putback, port filters, optional domain replacement, HTTP Host and TLS SNI restoration, QUIC v1/v2 Initial decryption through Quinn's native keys, first-datagram UDP rewrite, ACL/outbound routing integration, and traffic accounting
+- Server request sniffing with timeout-safe TCP byte putback, port filters, optional domain replacement, HTTP Host and TLS SNI restoration, QUIC v1/v2 Initial decryption through Quinn's native keys, bounded multi-datagram QUIC ClientHello reassembly and persistent same-target UDP rewrite, ACL/outbound routing integration, and traffic accounting
 - Linux TCP redirect and TCP/UDP TProxy modes with original-destination recovery and transparent UDP replies
 - Linux/macOS/Windows TUN mode with a smoltcp userspace TCP/IP stack, TCP/UDP Hysteria relays, include/exclude route management, collision-safe Linux strict-route policy rules, and transactional Windows WFP strict-route filters with dynamic-session cleanup
 - Per-user TCP/UDP traffic accounting, online counts, kick controls, and JSON/text active-stream diagnostics through the authenticated traffic stats API
@@ -61,11 +61,20 @@ Post-baseline additions on the upstream-sync branch:
 - Unix socket masquerade proxy backends, accepting absolute paths or `unix:///...` URLs.
 - Porkbun, Njalla, and Namecheap ACME DNS-01 providers; live-account issuance remains unverified.
 - Server `quic.disableStatelessReset`, with default reset behavior preserved.
-- Daily CI on `main`/`dev` checks Linux, lint, interoperability, and security.
-  Manual CI and tag-triggered release packaging cover seven targets.
+- Push/PR CI on `main`/`dev` checks Linux, lint, interoperability, and security.
+  Pushes to `main`, manual CI and tagged releases also run platform packaging.
 
-Chrome QUIC fingerprint parroting and Linux Mimic integration are not yet ported.
-The pinned Go interoperability reference above remains unchanged.
+Experimental Chrome TLS/QUIC client opt-in exists, but ALPS remains disabled by
+that switch and Chrome 154 wire equivalence is unverified. Linux Mimic integration
+is not ported.
 
-- No additional gaps currently identified relative to the pinned compatibility
-  target; this is not a claim of feature parity with current upstream HEAD.
+Known differences from v2.13.0:
+
+- QUIC domain sniffing now reassembles up to eight Initial-bearing datagrams
+  within a fixed 200 ms collection window. This is bounded fallback behavior,
+  not unlimited capture; see [sniffing behavior](docs/quic-sniffing.md).
+- The upstream `ech` key-generation CLI is not implemented; ECH runtime support exists.
+- TUN uses a different stack; Rust's `route.strict` still performs Linux/Windows
+  actions and is retained even though upstream removed its option.
+- Interoperability tests do not establish feature parity, Chrome fingerprint
+  equivalence, real-network performance or privileged platform behavior.

@@ -1,6 +1,6 @@
-use crate::{CliError, Result};
+use crate::{CliError, ErrorCode, Result};
 use serde::Deserialize;
-use std::{collections::HashMap, fs, net::IpAddr, path::Path, time::Duration};
+use std::{collections::HashMap, fs, io::Read, net::IpAddr, path::Path, time::Duration};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1469,11 +1469,57 @@ fn validate_obfuscation(config: &hysteria_transport::ObfuscationConfig) -> Resul
     }
 }
 
+/// Bounds file and stdin configuration input before parsing YAML or JSON.
+const MAX_CONFIG_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Reads a configuration file or the conventional dash stdin source without creating files.
 fn load_yaml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
-    let text = fs::read_to_string(path)
-        .map_err(|error| CliError::new(format!("failed to read {}: {error}", path.display())))?;
-    serde_yaml_ng::from_str(&text)
-        .map_err(|error| CliError::new(format!("failed to parse {}: {error}", path.display())))
+    if path == Path::new("-") {
+        return read_yaml(std::io::stdin().lock(), "standard input");
+    }
+    let file = fs::File::open(path)
+        .map_err(|error| config_read_error(&path.display().to_string(), error))?;
+    read_yaml(file, &path.display().to_string())
+}
+
+/// Reports parse locations without echoing configuration values that may contain credentials.
+fn read_yaml<T: for<'de> Deserialize<'de>>(reader: impl Read, source: &str) -> Result<T> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| config_read_error(source, error))?;
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(CliError::classified(
+            ErrorCode::ConfigurationTooLarge,
+            format!("configuration exceeds the {MAX_CONFIG_BYTES}-byte limit"),
+            Some("Reduce the configuration input to at most 16 MiB."),
+        ));
+    }
+    serde_yaml_ng::from_slice(&bytes).map_err(|error| {
+        let location = error.location().map_or_else(String::new, |location| {
+            format!(" at line {}, column {}", location.line(), location.column())
+        });
+        CliError::classified(ErrorCode::ConfigurationParse, format!("failed to parse {source}{location}: invalid YAML/JSON or configuration schema"), Some("Check syntax and field types at this location; original values are hidden to protect credentials."))
+    })
+}
+
+fn config_read_error(source: &str, error: std::io::Error) -> CliError {
+    let hint = match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            "Check --config and the working directory; use init server to create a server template."
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            "Check read permissions for the configuration and its parent directories."
+        }
+        _ => "Check the configuration source; for stdin, provide input and close it with EOF.",
+    };
+    CliError::classified(
+        ErrorCode::ConfigurationRead,
+        format!("failed to read {source}"),
+        Some(hint),
+    )
+    .with_source(error)
 }
 
 fn parse_duration(value: &str, field: &str) -> Result<Duration> {
@@ -1578,6 +1624,24 @@ fn parse_ip_prefix(value: &str, field: &str, ipv4: bool) -> Result<(IpAddr, u8)>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rejects oversized configuration before YAML parsing without reading an unbounded source.
+    #[test]
+    fn configuration_input_has_a_size_limit() {
+        let reader = std::io::repeat(b' ').take(MAX_CONFIG_BYTES + 1);
+        let error = read_yaml::<ClientConfig>(reader, "test input").unwrap_err();
+        assert!(error.to_string().contains("byte limit"));
+    }
+
+    /// Omits secret values from deserializer diagnostics while retaining line and column context.
+    #[test]
+    fn configuration_parse_errors_report_locations_without_values() {
+        let input = b"server: offline.invalid:443\nauth: [private-secret]\n";
+        let error = read_yaml::<ClientConfig>(input.as_slice(), "test input").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("line") && message.contains("column"));
+        assert!(!message.contains("private-secret"));
+    }
 
     #[test]
     fn parses_go_style_client_config_and_bandwidth() {

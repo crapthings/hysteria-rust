@@ -3,7 +3,7 @@ use bytes::BytesMut;
 use hysteria_transport::{RequestHook, RequestHookFuture, TransportError};
 use quinn::RecvStream;
 use quinn_proto::{ConnectionId, crypto::ServerConfig as _};
-use std::{collections::BTreeMap, net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 type TransportResult<T> = std::result::Result<T, TransportError>;
 
@@ -78,10 +78,22 @@ impl RequestHook for Sniffer {
     }
 
     fn udp(&self, data: &[u8], address: &mut String) -> std::result::Result<(), TransportError> {
-        if let Some(host) = quic_sni(data) {
-            rewrite_host(address, &host)?;
+        self.udp_packets(&[data], address).map(|_| ())
+    }
+
+    fn udp_packets(
+        &self,
+        packets: &[&[u8]],
+        address: &mut String,
+    ) -> std::result::Result<bool, TransportError> {
+        match inspect_quic(packets) {
+            QuicSniff::Host(host) => {
+                rewrite_host(address, &host)?;
+                Ok(true)
+            }
+            QuicSniff::More => Ok(false),
+            QuicSniff::Done => Ok(true),
         }
-        Ok(())
     }
 }
 
@@ -211,61 +223,199 @@ fn parse_client_hello_sni(data: &[u8]) -> Option<String> {
     None
 }
 
-fn quic_sni(packet: &[u8]) -> Option<String> {
-    let mut packet = packet.to_vec();
-    if packet.len() < 7 || packet[0] & 0xc0 != 0xc0 {
-        return None;
+const MAX_CRYPTO_BYTES: usize = 64 * 1024;
+
+enum QuicSniff {
+    Host(String),
+    More,
+    Done,
+}
+
+struct CryptoFragments {
+    bytes: Vec<u8>,
+    present: Vec<bool>,
+    connection: Option<(u32, Vec<u8>)>,
+    largest: u64,
+}
+
+fn inspect_quic(packets: &[&[u8]]) -> QuicSniff {
+    let mut fragments = CryptoFragments {
+        bytes: vec![0; MAX_CRYPTO_BYTES],
+        present: vec![false; MAX_CRYPTO_BYTES],
+        connection: None,
+        largest: 0,
+    };
+    for (index, packet) in packets.iter().take(8).enumerate() {
+        match fragments.feed(packet) {
+            None => return QuicSniff::Done,
+            Some(false) if index == 0 => return QuicSniff::Done,
+            _ => {}
+        }
     }
-    let version = u32::from_be_bytes(packet[1..5].try_into().ok()?);
-    if !matches!(version, 1 | 0x6b33_43cf) {
-        return None;
+    let contiguous = fragments
+        .present
+        .iter()
+        .position(|present| !present)
+        .unwrap_or(MAX_CRYPTO_BYTES);
+    if contiguous >= 4 {
+        let bytes = &fragments.bytes;
+        if bytes[0] != 1 {
+            return QuicSniff::Done;
+        }
+        let length =
+            4 + (usize::from(bytes[1]) << 16 | usize::from(bytes[2]) << 8 | usize::from(bytes[3]));
+        if length > MAX_CRYPTO_BYTES {
+            return QuicSniff::Done;
+        }
+        if contiguous >= length {
+            return parse_client_hello_sni(&bytes[..length])
+                .map_or(QuicSniff::Done, QuicSniff::Host);
+        }
     }
-    let initial_type = u8::from(version != 1);
-    if (packet[0] >> 4) & 3 != initial_type {
-        return None;
+    if packets.len() >= 8 {
+        QuicSniff::Done
+    } else {
+        QuicSniff::More
     }
-    let mut position = 5;
-    let destination_length = usize::from(*packet.get(position)?);
-    position += 1;
-    let destination_end = position.checked_add(destination_length)?;
-    let destination = packet.get(position..destination_end)?.to_vec();
-    position = destination_end;
-    let source_length = usize::from(*packet.get(position)?);
-    position = position.checked_add(1 + source_length)?;
-    let (token_length, token_bytes) = read_quic_varint(packet.get(position..)?)?;
-    position = position.checked_add(token_bytes + usize::try_from(token_length).ok()?)?;
-    let (protected_length, length_bytes) = read_quic_varint(packet.get(position..)?)?;
-    position += length_bytes;
-    let packet_end = position.checked_add(usize::try_from(protected_length).ok()?)?;
-    if packet_end > packet.len() {
-        return None;
+}
+
+impl CryptoFragments {
+    // Decrypt each coalesced Initial independently, keeping a single connection's CRYPTO stream.
+    fn feed(&mut self, mut datagram: &[u8]) -> Option<bool> {
+        let mut accepted = false;
+        while !datagram.is_empty() {
+            if datagram.len() < 7 || datagram[0] & 0xc0 != 0xc0 {
+                break;
+            }
+            let version = u32::from_be_bytes(datagram[1..5].try_into().ok()?);
+            if !matches!(version, 1 | 0x6b33_43cf) {
+                break;
+            }
+            if (datagram[0] >> 4) & 3 != u8::from(version != 1) {
+                break;
+            }
+            let mut position = 5;
+            let destination_length = usize::from(*datagram.get(position)?);
+            if destination_length > 20 {
+                return None;
+            }
+            position += 1;
+            let destination_end = position.checked_add(destination_length)?;
+            let destination = datagram.get(position..destination_end)?.to_vec();
+            position = destination_end;
+            let source_length = usize::from(*datagram.get(position)?);
+            if source_length > 20 {
+                return None;
+            }
+            position = position.checked_add(1 + source_length)?;
+            let token_length = take_varint(datagram, &mut position)?;
+            position = position.checked_add(usize::try_from(token_length).ok()?)?;
+            let protected_length = usize::try_from(take_varint(datagram, &mut position)?).ok()?;
+            let packet_end = position.checked_add(protected_length)?;
+            let mut packet = datagram.get(..packet_end)?.to_vec();
+            datagram = &datagram[packet_end..];
+            if self
+                .connection
+                .as_ref()
+                .is_some_and(|(v, cid)| *v != version || *cid != destination)
+            {
+                continue;
+            }
+            // Header protection samples start four bytes after the PN offset.
+            if protected_length < 20 {
+                return None;
+            }
+            let crypto = initial_crypto_config()?;
+            let keys = crypto
+                .initial_keys(version, &ConnectionId::new(&destination))
+                .ok()?;
+            keys.header.remote.decrypt(position, &mut packet);
+            let number_length = usize::from(packet[0] & 3) + 1;
+            let header_end = position.checked_add(number_length)?;
+            let truncated = packet
+                .get(position..header_end)?
+                .iter()
+                .fold(0_u64, |number, byte| (number << 8) | u64::from(*byte));
+            let number = decode_packet_number(self.largest, truncated, number_length);
+            let header = &packet[..header_end];
+            let mut payload = BytesMut::from(packet.get(header_end..)?);
+            if keys
+                .packet
+                .remote
+                .decrypt(number, header, &mut payload)
+                .is_err()
+            {
+                continue;
+            }
+            self.connection.get_or_insert((version, destination));
+            self.largest = self.largest.max(number);
+            self.frames(&payload)?;
+            accepted = true;
+        }
+        Some(accepted)
     }
 
-    let crypto = initial_crypto_config()?;
-    let keys = crypto
-        .initial_keys(version, &ConnectionId::new(&destination))
-        .ok()?;
-    keys.header
-        .remote
-        .decrypt(position, &mut packet[..packet_end]);
-    let packet_number_length = usize::from(packet[0] & 3) + 1;
-    let header_end = position.checked_add(packet_number_length)?;
-    let truncated = packet
-        .get(position..header_end)?
-        .iter()
-        .fold(0_u64, |number, byte| (number << 8) | u64::from(*byte));
-    let packet_number = decode_packet_number(2, truncated, packet_number_length);
-    let header = packet[..header_end].to_vec();
-    let mut payload = BytesMut::from(packet.get(header_end..packet_end)?);
-    keys.packet
-        .remote
-        .decrypt(packet_number, &header, &mut payload)
-        .ok()?;
-    let crypto_payload = extract_crypto_frames(&payload)?;
-    parse_client_hello_sni(&crypto_payload)
+    fn frames(&mut self, payload: &[u8]) -> Option<()> {
+        let mut position = 0;
+        while position < payload.len() {
+            match take_varint(payload, &mut position)? {
+                0 | 1 => {}
+                kind @ (2 | 3) => {
+                    take_varint(payload, &mut position)?; // largest ACK
+                    take_varint(payload, &mut position)?; // delay
+                    let ranges = take_varint(payload, &mut position)?;
+                    take_varint(payload, &mut position)?; // first range
+                    for _ in 0..ranges {
+                        take_varint(payload, &mut position)?;
+                        take_varint(payload, &mut position)?;
+                    }
+                    if kind == 3 {
+                        for _ in 0..3 {
+                            take_varint(payload, &mut position)?;
+                        }
+                    }
+                }
+                6 => {
+                    let offset = usize::try_from(take_varint(payload, &mut position)?).ok()?;
+                    let length = usize::try_from(take_varint(payload, &mut position)?).ok()?;
+                    let end = offset.checked_add(length)?;
+                    if end > MAX_CRYPTO_BYTES {
+                        return None;
+                    }
+                    let frame_end = position.checked_add(length)?;
+                    let data = payload.get(position..frame_end)?;
+                    for (index, byte) in (offset..end).zip(data) {
+                        if self.present[index] && self.bytes[index] != *byte {
+                            return None;
+                        }
+                        self.bytes[index] = *byte;
+                        self.present[index] = true;
+                    }
+                    position = frame_end;
+                }
+                _ => return None,
+            }
+        }
+        Some(())
+    }
+}
+
+fn take_varint(data: &[u8], position: &mut usize) -> Option<u64> {
+    let (value, length) = read_quic_varint(data.get(*position..)?)?;
+    *position += length;
+    Some(value)
+}
+
+#[cfg(test)]
+fn quic_sni(packet: &[u8]) -> Option<String> {
+    match inspect_quic(&[packet]) {
+        QuicSniff::Host(host) => Some(host),
+        _ => None,
+    }
 }
 
 fn initial_crypto_config() -> Option<quinn_proto::crypto::rustls::QuicServerConfig> {
+    crate::tls::ensure_crypto_provider();
     let mut tls = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(EmptyCertificateResolver));
@@ -298,39 +448,6 @@ fn decode_packet_number(largest: u64, truncated: u64, length: usize) -> u64 {
     } else {
         candidate
     }
-}
-
-fn extract_crypto_frames(mut payload: &[u8]) -> Option<Vec<u8>> {
-    let mut frames = BTreeMap::<u64, Vec<u8>>::new();
-    while !payload.is_empty() {
-        let (kind, kind_length) = read_quic_varint(payload)?;
-        payload = &payload[kind_length..];
-        if matches!(kind, 0 | 1) {
-            continue;
-        }
-        if kind != 6 {
-            return None;
-        }
-        let (offset, offset_length) = read_quic_varint(payload)?;
-        payload = &payload[offset_length..];
-        let (length, length_bytes) = read_quic_varint(payload)?;
-        payload = &payload[length_bytes..];
-        let length = usize::try_from(length).ok()?;
-        if length > 256 * 1024 || length > payload.len() {
-            return None;
-        }
-        frames.insert(offset, payload[..length].to_vec());
-        payload = &payload[length..];
-    }
-    let mut result = Vec::new();
-    for (offset, frame) in frames {
-        if usize::try_from(offset).ok()? != result.len() || result.len() + frame.len() > 256 * 1024
-        {
-            return None;
-        }
-        result.extend_from_slice(&frame);
-    }
-    (!result.is_empty()).then_some(result)
 }
 
 fn read_quic_varint(bytes: &[u8]) -> Option<(u64, usize)> {
@@ -463,5 +580,101 @@ mod tests {
     fn extracts_quic_sni_from_go_vector() {
         let packet = STANDARD.decode("ygAAAAEIwugWgPS7ulYAAES8hY891uwgGE9GG4CPOLd+nsDe28raso24lCSFmlFwYQG1uF39ikbL13/R9ZTghYmTl+jEbr6F9TxxRiOgpTmKRmh6aKZiIiVfy5pVRckovaI8lq0WRoW9xoFNTyYtQP8TVJ3bLCK+zUqpquEQSyWf7CE43ywayyMpE9UlIoPXFWCoopXLM1SvzdQ+17P51N9KR7m4emti4DWWTBLMQOvrwd2HEEkbiZdRO1wf6ZXJlIat5dN0R/6uod60OFPO+u+awvq67MoMReC7+5I/xWI+xx6o4JpnZNn6YPG8Gqi8hS6doNcAAdtD8h5eMLuHCCgkpX3QVjjfWtcOhtw9xKjU43HhUPwzUTv+JDLgwuTQCTmlfYlb3B+pk4b2I9si0tJ0SBuYaZ2VQPtZbj2hpGXw3gn11pbN8xsbKkQL50+Scd4dGJxWQlGaJHeaU5WOCkxLXc635z8m5XO/CBHVYPGp4pfwfwNUgbe5WF+3MaUIlDB8dMfsnrO0BmZPo379jVx0SFLTAiS8wAdHib1WNEY8qKYnTWuiyxYg1GZEhJt0nXmI+8f0eJq42DgHBWC+Rf5rRBr/Sf25o3mFAmTUaul0Woo9/CIrpT73B63N91xd9A77i4ru995YG8l9Hen+eLtpDU9Q9376nwMDYBzeYG9U/Rn0Urbm6q4hmAgV/xlNJ2rAyDS+yLnwqD6I0PRy8bZJEttcidb/SkOyrpgMiAzWeT+SO+c/k+Y8H0UTRa05faZUrhuUaym9wAcaIVRA6nFI+fejfjVp+7afFv+kWn3vCqQEij+CRHuxkltrixZMD2rfYj6NUW7TTYBtPRtuV/V0ZIDjRR26vr4K+0D84+l3c0mA/l6nmpP5kkco3nmpdjtQN6sGXL7+5o0nnsftX5d6/n5mLyEpP+AEDl1zk3iqkS62RsITwql6DMMoGbSDdUpMclCIeM0vlo3CkxGMO7QA9ruVeNddkL3EWMivl+uxO43sXEEqYQHVl4N75y63t05GOf7/gm9Kb/BJ8MpG9ViEkVYaskQCzi3D8bVpzo8FfTj8te8B6c3ikc/cm7r8k0ZcZpr+YiLGDYq+0ilHxpqJfmq8dPkSvxdzLcUSvy7+LMQ/TTobRSF7L4JhtDKck0+00vl9H35Tkh9N+MsVtpKdWyoqZ4XaK2Nx1M6AieczXpdFc0y7lYPoUfF4IeW8WzeVUclol5ElYjkyFz/lDOGAe1bF2g5AYaGWCPiGleVZknNdD5ihB8W8Mfkt1pEwq2S97AHrppqkf/VoIfZzeqH8wUFw8fDDrZIpnoa0rW7HfwIQaqJhPCyB9Z6TVbV4x9UWmaHfVAcinCK/7o10dtaj3rvEqcUC/iPceGq3Tqv/p9GGNJ+Ci2JBjXqNxYr893Llk75VdPD9pM6y1SM0P80oXNy32VMtafkFFST8GpvvqWcxUJ93kzaY8RmU1g3XFOImSU2utU6+FUQ2Pn5uLwcfT2cTYfTpPGh+WXjSbZ6trqdEMEsLHybuPo2UN4WpVLXVQma3kSaHQggcLlEip8GhEUAy/xCb2eKqhI4HkDpDjwDnDVKufWlnRaOHf58cc8Woi+WT8JTOkHC+nBEG6fKRPHDG08U5yayIQIjI").unwrap();
         assert_eq!(quic_sni(&packet), Some("www.notion.so".to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod multi_packet_tests {
+    use super::*;
+
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/quic-sniff")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn browser_fragments_reorder_retransmit_and_coalesce() {
+        for (prefix, count, host) in [
+            ("quic-chrome153", 3, "chrome.sniff.test"),
+            ("quic-firefox153esr", 2, "firefox.sniff.test"),
+            ("quic-curl8.14-openssl3.5", 2, "curl.sniff.test"),
+            ("quic-quiche", 3, "quiche.sniff.test"),
+            ("quic-ngtcp2-1.11", 1, "ngtcp2.sniff.test"),
+            ("quic-aioquic1.2", 1, "aioquic.sniff.test"),
+        ] {
+            let packets: Vec<_> = (0..count)
+                .map(|index| fixture(&format!("{prefix}-{index}.bin")))
+                .collect();
+            let original = packets.clone();
+            let mut refs: Vec<_> = packets.iter().map(Vec::as_slice).collect();
+            assert!(
+                matches!(inspect_quic(&refs), QuicSniff::Host(name) if name == host),
+                "{prefix}"
+            );
+            refs.reverse();
+            assert!(
+                matches!(inspect_quic(&refs), QuicSniff::Host(name) if name == host),
+                "reordered {prefix}"
+            );
+            if prefix == "quic-chrome153" {
+                assert!(
+                    matches!(inspect_quic(&[&packets.concat()]), QuicSniff::Host(name) if name == host)
+                );
+            }
+            assert_eq!(packets, original);
+        }
+        let first = fixture("quic-chrome153-0.bin");
+        let second = fixture("quic-chrome153-1.bin");
+        let retransmit = fixture("quic-chrome153-2.bin");
+        assert!(matches!(inspect_quic(&[&first]), QuicSniff::More));
+        assert!(
+            matches!(inspect_quic(&[&second, &retransmit]), QuicSniff::Host(name) if name == "chrome.sniff.test")
+        );
+        let other = fixture("quic-firefox153esr-1.bin");
+        assert!(
+            matches!(inspect_quic(&[&first, &other, &second]), QuicSniff::Host(name) if name == "chrome.sniff.test")
+        );
+        assert!(matches!(
+            inspect_quic(&[first.as_slice(); 8]),
+            QuicSniff::Done
+        ));
+        let sniffer = Sniffer {
+            timeout: DEFAULT_TIMEOUT,
+            rewrite_domain: false,
+            tcp_ports: None,
+            udp_ports: None,
+        };
+        let mut address = "192.0.2.1:443".to_owned();
+        assert!(!sniffer.udp_packets(&[&first], &mut address).unwrap());
+        assert_eq!(address, "192.0.2.1:443");
+        assert!(
+            sniffer
+                .udp_packets(&[&first, &second], &mut address)
+                .unwrap()
+        );
+        assert_eq!(address, "chrome.sniff.test:443");
+    }
+
+    #[test]
+    fn truncation_conflicts_and_large_offsets_are_bounded() {
+        let packet = fixture("quic-chrome153-0.bin");
+        for length in 0..packet.len() {
+            let _ = inspect_quic(&[&packet[..length]]);
+        }
+        assert!(matches!(inspect_quic(&[b"ordinary UDP"]), QuicSniff::Done));
+        let mut fragments = CryptoFragments {
+            bytes: vec![0; MAX_CRYPTO_BYTES],
+            present: vec![false; MAX_CRYPTO_BYTES],
+            connection: None,
+            largest: 0,
+        };
+        assert!(fragments.frames(&[6, 0, 2, 1, 2]).is_some());
+        assert!(fragments.frames(&[6, 0, 2, 1, 2]).is_some());
+        assert!(fragments.frames(&[6, 1, 1, 3]).is_none());
+        assert!(fragments.frames(&[6, 0x80, 1, 0, 0, 1, 0]).is_none());
     }
 }

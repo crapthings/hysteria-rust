@@ -1,6 +1,6 @@
 # Hysteria rustls-acme patch
 
-This directory vendors rustls-acme 0.15.3 from crates.io.
+This directory vendors rustls-acme 0.15.4 from crates.io.
 
 The local patch adds the ACME behavior required by the Hysteria Go-compatible
 server configuration:

@@ -1,0 +1,1730 @@
+{
+  "date": "2026-11-11",
+  "cpu": "Apple M1 Max",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "rustc": "1.88.0",
+  "build": {
+    "profile": "release",
+    "lto": false,
+    "codegen_units": 16
+  },
+  "baseline_commit": "1be1f88a15a953e26ff454ad727e865887a46fcf",
+  "candidate": "uncommitted dev working tree",
+  "binaries": {
+    "rc6-bin": "2029632e4d825123fda58b67291287db5a60008160c80f4b81b15d93977b8945",
+    "dev-before-bin": "dcc3ee71c683247f60504839f011eb9b1f29ef0dbcddb97bcf4b24ce348b0b59",
+    "dev-after-bin": "3351898efd6e59ce3a6c0e880da09ce05c116133cbd7cafdffb57fcbaad7a371"
+  },
+  "before": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "seconds_per_workload": 1.0,
+    "method": "single outstanding echo request; not maximum throughput; resource usage includes process startup and all workloads",
+    "runs": [
+      {
+        "label": "rc6",
+        "repeat": 1,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 431.9183802305043,
+          "first_64k_echo_ms": 28.39037499506958
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8350,
+          "received": 8350,
+          "echo_mbps": 80.14786096586572,
+          "rtt_p50_ms": 0.11341700155753642,
+          "rtt_p95_ms": 0.16075000166893005
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 6042,
+          "received": 6042,
+          "echo_mbps": 145.0021031993857,
+          "rtt_p50_ms": 0.1588750019436702,
+          "rtt_p95_ms": 0.20887500431854278
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.2793750027194619,
+            0.20249999943189323,
+            0.174832995980978,
+            0.2148750063497573,
+            0.17987500177696347
+          ],
+          "p50_ms": 0.20249999943189323
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.2055829972960055,
+            0.16525000683031976,
+            0.35533300251699984,
+            0.18429200281389058,
+            0.21675000607501715
+          ],
+          "p50_ms": 0.2055829972960055
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.6477879999999998,
+            "max_rss_bytes": 15335424
+          },
+          "server": {
+            "cpu_seconds": 1.777473,
+            "max_rss_bytes": 16007168
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 1,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 462.7498666807485,
+          "first_64k_echo_ms": 1.309416998992674
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8337,
+          "received": 8337,
+          "echo_mbps": 80.02705052439819,
+          "rtt_p50_ms": 0.11787500989157706,
+          "rtt_p95_ms": 0.15870798961259425
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5993,
+          "received": 5993,
+          "echo_mbps": 143.8209197485473,
+          "rtt_p50_ms": 0.16008300008252263,
+          "rtt_p95_ms": 0.21633401047438383
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.29358299798332155,
+            0.2194580010836944,
+            0.20500000391621143,
+            0.1886670070234686,
+            0.18479200662113726
+          ],
+          "p50_ms": 0.20500000391621143
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.19912500283680856,
+            0.1850830012699589,
+            0.20204200700391084,
+            0.1906669931486249,
+            0.19574999168980867
+          ],
+          "p50_ms": 0.19574999168980867
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.721791,
+            "max_rss_bytes": 15695872
+          },
+          "server": {
+            "cpu_seconds": 1.813663,
+            "max_rss_bytes": 16465920
+          }
+        }
+      },
+      {
+        "label": "rc6",
+        "repeat": 1,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 456.06349951288377,
+          "first_64k_echo_ms": 4003.106709002168
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8201,
+          "received": 8201,
+          "echo_mbps": 78.72164911361175,
+          "rtt_p50_ms": 0.11766700481530279,
+          "rtt_p95_ms": 0.1662909926380962
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5732,
+          "received": 5732,
+          "echo_mbps": 137.5513677012086,
+          "rtt_p50_ms": 0.16549999418202788,
+          "rtt_p95_ms": 0.23099999816622585
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.2680000034160912,
+            0.32129199826158583,
+            0.27416698867455125,
+            0.37687500298488885,
+            0.29195800016168505
+          ],
+          "p50_ms": 0.29195800016168505
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.32833300065249205,
+            0.2855420025298372,
+            0.24966600176412612,
+            0.3261669917264953,
+            0.291000003926456
+          ],
+          "p50_ms": 0.291000003926456
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.6953559999999999,
+            "max_rss_bytes": 15384576
+          },
+          "server": {
+            "cpu_seconds": 1.821961,
+            "max_rss_bytes": 15859712
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 1,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 445.3686901199327,
+          "first_64k_echo_ms": 4004.3980829941574
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8041,
+          "received": 8041,
+          "echo_mbps": 77.1794215224179,
+          "rtt_p50_ms": 0.12045800394844264,
+          "rtt_p95_ms": 0.17329199181403965
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5725,
+          "received": 5725,
+          "echo_mbps": 137.38022288079705,
+          "rtt_p50_ms": 0.16554200556129217,
+          "rtt_p95_ms": 0.23099999816622585
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.3366250020917505,
+            0.21854099759366363,
+            0.21379200916271657,
+            0.186416000360623,
+            0.2184999902965501
+          ],
+          "p50_ms": 0.2184999902965501
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.75933400262147,
+            202.39608400152065,
+            202.9945419926662,
+            203.09125000494532,
+            202.706208001473
+          ],
+          "p50_ms": 202.75933400262147
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.6893209999999999,
+            "max_rss_bytes": 15876096
+          },
+          "server": {
+            "cpu_seconds": 1.846695,
+            "max_rss_bytes": 16416768
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 2,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 427.5028696281978,
+          "first_64k_echo_ms": 1.1531250056577846
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7710,
+          "received": 7710,
+          "echo_mbps": 74.00628667522022,
+          "rtt_p50_ms": 0.1186875015264377,
+          "rtt_p95_ms": 0.1907499972730875
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5689,
+          "received": 5689,
+          "echo_mbps": 136.527910721283,
+          "rtt_p50_ms": 0.16524999227840453,
+          "rtt_p95_ms": 0.2368340065004304
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.310208008158952,
+            0.2969579945784062,
+            0.25816600827965885,
+            0.20112500351388007,
+            0.21637500321958214
+          ],
+          "p50_ms": 0.25816600827965885
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.2348749985685572,
+            0.2075420052278787,
+            0.19133399473503232,
+            0.18204200023319572,
+            0.19762500596698374
+          ],
+          "p50_ms": 0.19762500596698374
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.689024,
+            "max_rss_bytes": 15663104
+          },
+          "server": {
+            "cpu_seconds": 1.808357,
+            "max_rss_bytes": 16318464
+          }
+        }
+      },
+      {
+        "label": "rc6",
+        "repeat": 2,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 442.2053737816153,
+          "first_64k_echo_ms": 28.57504101120867
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7095,
+          "received": 7095,
+          "echo_mbps": 68.10641241402033,
+          "rtt_p50_ms": 0.12337499356362969,
+          "rtt_p95_ms": 0.21737499628216028
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 4762,
+          "received": 4762,
+          "echo_mbps": 114.25434261401278,
+          "rtt_p50_ms": 0.1901459982036613,
+          "rtt_p95_ms": 0.30216701270546764
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.3310830070404336,
+            0.21341700630728155,
+            0.22262500715442002,
+            0.20525000581983477,
+            0.19941700156778097
+          ],
+          "p50_ms": 0.21341700630728155
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.21150000975467265,
+            0.21820799156557769,
+            0.2175410045310855,
+            0.19970900029875338,
+            0.2514999941922724
+          ],
+          "p50_ms": 0.2175410045310855
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.684298,
+            "max_rss_bytes": 15548416
+          },
+          "server": {
+            "cpu_seconds": 1.820053,
+            "max_rss_bytes": 15843328
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 2,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 406.12484172713164,
+          "first_64k_echo_ms": 4005.7485419965815
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 5831,
+          "received": 5831,
+          "echo_mbps": 55.96733228957846,
+          "rtt_p50_ms": 0.1340830058325082,
+          "rtt_p95_ms": 0.3247920103603974
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5229,
+          "received": 5229,
+          "echo_mbps": 125.48769171111853,
+          "rtt_p50_ms": 0.17645899788476527,
+          "rtt_p95_ms": 0.26920899108517915
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.31291700724978,
+            0.24933399981819093,
+            0.19941601203754544,
+            0.21466599719133228,
+            0.1821670011850074
+          ],
+          "p50_ms": 0.21466599719133228
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            203.19937501335517,
+            202.50512499478646,
+            205.6845409970265,
+            202.90925000153948,
+            202.78587499342393
+          ],
+          "p50_ms": 202.90925000153948
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.670398,
+            "max_rss_bytes": 15826944
+          },
+          "server": {
+            "cpu_seconds": 1.823238,
+            "max_rss_bytes": 16465920
+          }
+        }
+      },
+      {
+        "label": "rc6",
+        "repeat": 2,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 371.03626564598045,
+          "first_64k_echo_ms": 4005.725250011892
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8406,
+          "received": 8406,
+          "echo_mbps": 80.6950143697314,
+          "rtt_p50_ms": 0.115916998765897,
+          "rtt_p95_ms": 0.1604169956408441
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5748,
+          "received": 5748,
+          "echo_mbps": 137.9490398885622,
+          "rtt_p50_ms": 0.1629170001251623,
+          "rtt_p95_ms": 0.23345799127127975
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.2577499981271103,
+            0.20108399621676654,
+            0.18829198961611837,
+            0.2041669940808788,
+            0.1713330129859969
+          ],
+          "p50_ms": 0.20108399621676654
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.27216700254939497,
+            0.25674999051261693,
+            0.32795799779705703,
+            0.2331669966224581,
+            0.24733399914111942
+          ],
+          "p50_ms": 0.25674999051261693
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.535647,
+            "max_rss_bytes": 15499264
+          },
+          "server": {
+            "cpu_seconds": 1.6669139999999998,
+            "max_rss_bytes": 16072704
+          }
+        }
+      },
+      {
+        "label": "rc6",
+        "repeat": 3,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 447.9443731558719,
+          "first_64k_echo_ms": 1.4374159945873544
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7902,
+          "received": 7902,
+          "echo_mbps": 75.85242387543477,
+          "rtt_p50_ms": 0.11847950372612104,
+          "rtt_p95_ms": 0.17608300549909472
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5623,
+          "received": 5623,
+          "echo_mbps": 134.93822496636648,
+          "rtt_p50_ms": 0.1676250103628263,
+          "rtt_p95_ms": 0.23941599647514522
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.40949998947326094,
+            0.23454100301023573,
+            0.19562500528991222,
+            0.22783299209550023,
+            0.20970799960196018
+          ],
+          "p50_ms": 0.22783299209550023
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.24095799017231911,
+            0.32295800338033587,
+            0.3427920019021258,
+            0.2883749984903261,
+            0.3689580044010654
+          ],
+          "p50_ms": 0.32295800338033587
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.6733479999999998,
+            "max_rss_bytes": 15400960
+          },
+          "server": {
+            "cpu_seconds": 1.788809,
+            "max_rss_bytes": 15810560
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 3,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 452.5749687946693,
+          "first_64k_echo_ms": 28.54954099166207
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7943,
+          "received": 7943,
+          "echo_mbps": 76.24898434838606,
+          "rtt_p50_ms": 0.11658298899419606,
+          "rtt_p95_ms": 0.17679099983070046
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5931,
+          "received": 5931,
+          "echo_mbps": 142.32328014903965,
+          "rtt_p50_ms": 0.16095899627543986,
+          "rtt_p95_ms": 0.21675000607501715
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.26591599453240633,
+            0.21587499941233546,
+            0.19249999604653567,
+            0.18808399909175932,
+            0.18974998965859413
+          ],
+          "p50_ms": 0.19249999604653567
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.25270799233112484,
+            0.17712500994093716,
+            0.1982910034712404,
+            0.2516249951440841,
+            0.26974998763762414
+          ],
+          "p50_ms": 0.2516249951440841
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.7484389999999999,
+            "max_rss_bytes": 15728640
+          },
+          "server": {
+            "cpu_seconds": 1.8426879999999999,
+            "max_rss_bytes": 16236544
+          }
+        }
+      },
+      {
+        "label": "rc6",
+        "repeat": 3,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 424.4261578716145,
+          "first_64k_echo_ms": 4032.349749992136
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7293,
+          "received": 7293,
+          "echo_mbps": 70.00818239953772,
+          "rtt_p50_ms": 0.1277919946005568,
+          "rtt_p95_ms": 0.20450000010896474
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5190,
+          "received": 5190,
+          "echo_mbps": 124.55340377586977,
+          "rtt_p50_ms": 0.18087499483954161,
+          "rtt_p95_ms": 0.2682920021470636
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.563416993827559,
+            0.24879199918359518,
+            0.20058399240951985,
+            0.23979198886081576,
+            0.20308300736360252
+          ],
+          "p50_ms": 0.23979198886081576
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.2740420022746548,
+            0.2077919925795868,
+            0.2707499952521175,
+            0.2010409953072667,
+            0.25741699209902436
+          ],
+          "p50_ms": 0.25741699209902436
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.716498,
+            "max_rss_bytes": 15335424
+          },
+          "server": {
+            "cpu_seconds": 1.8033609999999998,
+            "max_rss_bytes": 15892480
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 3,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 403.57248241681964,
+          "first_64k_echo_ms": 4004.5660000032512
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7213,
+          "received": 7213,
+          "echo_mbps": 69.24082446930217,
+          "rtt_p50_ms": 0.12854099622927606,
+          "rtt_p95_ms": 0.20170799689367414
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5313,
+          "received": 5313,
+          "echo_mbps": 127.4756640819216,
+          "rtt_p50_ms": 0.174832995980978,
+          "rtt_p95_ms": 0.28641699464060366
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.4055419994983822,
+            0.2415830094832927,
+            0.24266699620056897,
+            0.24045800091698766,
+            0.19700000120792538
+          ],
+          "p50_ms": 0.2415830094832927
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.89524999679998,
+            208.737499997369,
+            201.96479100559372,
+            201.51312499365304,
+            202.0295830006944
+          ],
+          "p50_ms": 202.0295830006944
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.6509809999999998,
+            "max_rss_bytes": 15843328
+          },
+          "server": {
+            "cpu_seconds": 1.8053569999999999,
+            "max_rss_bytes": 16449536
+          }
+        }
+      }
+    ]
+  },
+  "after": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "seconds_per_workload": 1.0,
+    "method": "single outstanding echo request; not maximum throughput; resource usage includes process startup and all workloads",
+    "runs": [
+      {
+        "label": "dev_before",
+        "repeat": 1,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 424.9292782807852,
+          "first_64k_echo_ms": 1.971000005141832
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7824,
+          "received": 7824,
+          "echo_mbps": 75.10554945826222,
+          "rtt_p50_ms": 0.12191700807306916,
+          "rtt_p95_ms": 0.18450000789016485
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5757,
+          "received": 5757,
+          "echo_mbps": 138.15471987896143,
+          "rtt_p50_ms": 0.16479101032018661,
+          "rtt_p95_ms": 0.22979200002737343
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.3122500056633726,
+            0.20095800573471934,
+            0.2197499998146668,
+            0.20670800586231053,
+            0.19758300913963467
+          ],
+          "p50_ms": 0.20670800586231053
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.19612499454524368,
+            0.19158300710842013,
+            0.20012501045130193,
+            0.19904199871234596,
+            0.20233400573488325
+          ],
+          "p50_ms": 0.19904199871234596
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.681701,
+            "max_rss_bytes": 15663104
+          },
+          "server": {
+            "cpu_seconds": 1.8586420000000001,
+            "max_rss_bytes": 16416768
+          }
+        }
+      },
+      {
+        "label": "dev_after",
+        "repeat": 1,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 428.33351585966255,
+          "first_64k_echo_ms": 1.4017920038895682
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8169,
+          "received": 8169,
+          "echo_mbps": 78.41211821144111,
+          "rtt_p50_ms": 0.11583301238715649,
+          "rtt_p95_ms": 0.17070799367502332
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5920,
+          "received": 5920,
+          "echo_mbps": 142.06603022168258,
+          "rtt_p50_ms": 0.16087500262074172,
+          "rtt_p95_ms": 0.21904199093114585
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.309833005303517,
+            0.18774998898152262,
+            0.2053339994745329,
+            0.20850000146310776,
+            0.1850830012699589
+          ],
+          "p50_ms": 0.2053339994745329
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.19816699204966426,
+            0.17933300114236772,
+            0.21345799905247986,
+            0.18854100198950619,
+            0.2388339926255867
+          ],
+          "p50_ms": 0.19816699204966426
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.644469,
+            "max_rss_bytes": 15761408
+          },
+          "server": {
+            "cpu_seconds": 1.801548,
+            "max_rss_bytes": 16433152
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 1,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 451.81213913732523,
+          "first_64k_echo_ms": 4032.8226669953438
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7849,
+          "received": 7849,
+          "echo_mbps": 75.3467959375111,
+          "rtt_p50_ms": 0.12062500172760338,
+          "rtt_p95_ms": 0.1797500008251518
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5649,
+          "received": 5649,
+          "echo_mbps": 135.56996713589973,
+          "rtt_p50_ms": 0.16825000056996942,
+          "rtt_p95_ms": 0.23433299793396145
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.3472499956842512,
+            0.26537499797996134,
+            0.24104199837893248,
+            0.22058300964999944,
+            0.24608300009276718
+          ],
+          "p50_ms": 0.24608300009276718
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.83187499444466,
+            202.73716599331237,
+            201.85500000661705,
+            203.7182079948252,
+            203.7134170095669
+          ],
+          "p50_ms": 202.83187499444466
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.713629,
+            "max_rss_bytes": 15695872
+          },
+          "server": {
+            "cpu_seconds": 1.836737,
+            "max_rss_bytes": 16531456
+          }
+        }
+      },
+      {
+        "label": "dev_after",
+        "repeat": 1,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 430.5616940912894,
+          "first_64k_echo_ms": 4007.0658330078004
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8106,
+          "received": 8106,
+          "echo_mbps": 77.80855802303552,
+          "rtt_p50_ms": 0.11524998990353197,
+          "rtt_p95_ms": 0.1700830034678802
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5890,
+          "received": 5890,
+          "echo_mbps": 141.34143720510605,
+          "rtt_p50_ms": 0.16158299695234746,
+          "rtt_p95_ms": 0.22120799985714257
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.3730420139618218,
+            0.2602909953566268,
+            0.2691670088097453,
+            0.3785829903790727,
+            0.2931670023826882
+          ],
+          "p50_ms": 0.2931670023826882
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.58087498950772,
+            203.48316698800772,
+            203.59512499999255,
+            202.8540419996716,
+            202.38595799310133
+          ],
+          "p50_ms": 202.8540419996716
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.696908,
+            "max_rss_bytes": 15777792
+          },
+          "server": {
+            "cpu_seconds": 1.823067,
+            "max_rss_bytes": 16531456
+          }
+        }
+      },
+      {
+        "label": "dev_after",
+        "repeat": 2,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 461.06949929630144,
+          "first_64k_echo_ms": 1.3902920036343858
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7819,
+          "received": 7819,
+          "echo_mbps": 75.05607337360848,
+          "rtt_p50_ms": 0.11929200263693929,
+          "rtt_p95_ms": 0.17766599194146693
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5860,
+          "received": 5860,
+          "echo_mbps": 140.63217157033955,
+          "rtt_p50_ms": 0.16231249901466072,
+          "rtt_p95_ms": 0.22404099581763148
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.28720899717882276,
+            0.21500000730156898,
+            0.2038750099018216,
+            0.1936250046128407,
+            0.1935420004883781
+          ],
+          "p50_ms": 0.2038750099018216
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.203957999474369,
+            0.17624998872634023,
+            0.1862499921116978,
+            0.19766698824241757,
+            0.22533300216309726
+          ],
+          "p50_ms": 0.19766698824241757
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.7005460000000001,
+            "max_rss_bytes": 15613952
+          },
+          "server": {
+            "cpu_seconds": 1.844,
+            "max_rss_bytes": 16384000
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 2,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 448.4348630991147,
+          "first_64k_echo_ms": 1.4212919923011214
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8169,
+          "received": 8169,
+          "echo_mbps": 78.41953117899546,
+          "rtt_p50_ms": 0.11879100929945707,
+          "rtt_p95_ms": 0.16887500532902777
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5693,
+          "received": 5693,
+          "echo_mbps": 136.62803204877946,
+          "rtt_p50_ms": 0.16700000560376793,
+          "rtt_p95_ms": 0.23137500102166086
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.3624170058174059,
+            0.3300419921288267,
+            0.2282499917782843,
+            0.27645799855235964,
+            0.2087500033667311
+          ],
+          "p50_ms": 0.27645799855235964
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.22816700220573694,
+            0.2148750063497573,
+            0.25995798932854086,
+            0.20024999685119838,
+            0.2152090019080788
+          ],
+          "p50_ms": 0.2152090019080788
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.6862039999999998,
+            "max_rss_bytes": 15646720
+          },
+          "server": {
+            "cpu_seconds": 1.846054,
+            "max_rss_bytes": 16449536
+          }
+        }
+      },
+      {
+        "label": "dev_after",
+        "repeat": 2,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 459.6365620454246,
+          "first_64k_echo_ms": 4031.054042003234
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7957,
+          "received": 7957,
+          "echo_mbps": 76.38029713032454,
+          "rtt_p50_ms": 0.12008300109300762,
+          "rtt_p95_ms": 0.1784999913070351
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5618,
+          "received": 5618,
+          "echo_mbps": 134.81082351251686,
+          "rtt_p50_ms": 0.16854149725986645,
+          "rtt_p95_ms": 0.23862499801907688
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.3264170081820339,
+            0.24762499378994107,
+            0.24241599021479487,
+            0.2472909982316196,
+            0.2072909992421046
+          ],
+          "p50_ms": 0.2472909982316196
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.07850000588223,
+            202.31208400218748,
+            203.0057499941904,
+            202.93566699547227,
+            203.60550000623334
+          ],
+          "p50_ms": 202.93566699547227
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.711841,
+            "max_rss_bytes": 15761408
+          },
+          "server": {
+            "cpu_seconds": 1.826199,
+            "max_rss_bytes": 16252928
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 2,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 447.6870360242104,
+          "first_64k_echo_ms": 4004.603584005963
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8421,
+          "received": 8421,
+          "echo_mbps": 80.83873362042574,
+          "rtt_p50_ms": 0.11554099910426885,
+          "rtt_p95_ms": 0.1584999990882352
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 6108,
+          "received": 6108,
+          "echo_mbps": 146.5848539894151,
+          "rtt_p50_ms": 0.15729200094938278,
+          "rtt_p95_ms": 0.20616700930986553
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.2962500002468005,
+            0.27904199669137597,
+            0.24162499175872654,
+            0.22433399863075465,
+            0.1951669983100146
+          ],
+          "p50_ms": 0.24162499175872654
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.3227909958223,
+            202.56895800412167,
+            202.71320799656678,
+            203.20320800237823,
+            201.72429199737962
+          ],
+          "p50_ms": 202.56895800412167
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.6838959999999998,
+            "max_rss_bytes": 15843328
+          },
+          "server": {
+            "cpu_seconds": 1.819986,
+            "max_rss_bytes": 16531456
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 3,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 388.36586800332026,
+          "first_64k_echo_ms": 28.107791993534192
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8423,
+          "received": 8423,
+          "echo_mbps": 80.8512931814867,
+          "rtt_p50_ms": 0.11333300790283829,
+          "rtt_p95_ms": 0.15233400336001068
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 6135,
+          "received": 6135,
+          "echo_mbps": 147.2228607547695,
+          "rtt_p50_ms": 0.15700000221841037,
+          "rtt_p95_ms": 0.20279199816286564
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.32300000020768493,
+            0.3847920015687123,
+            0.2094999945256859,
+            0.23091700859367847,
+            0.21791599283460528
+          ],
+          "p50_ms": 0.23091700859367847
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.24220799969043583,
+            0.19379200239200145,
+            0.2095420059049502,
+            0.1838750031311065,
+            0.2593749959487468
+          ],
+          "p50_ms": 0.2095420059049502
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.544933,
+            "max_rss_bytes": 15597568
+          },
+          "server": {
+            "cpu_seconds": 1.665245,
+            "max_rss_bytes": 16351232
+          }
+        }
+      },
+      {
+        "label": "dev_after",
+        "repeat": 3,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 305.9546495260683,
+          "first_64k_echo_ms": 1.187083005788736
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8321,
+          "received": 8321,
+          "echo_mbps": 79.87594877659974,
+          "rtt_p50_ms": 0.11333401198498905,
+          "rtt_p95_ms": 0.16395800048485398
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5990,
+          "received": 5990,
+          "echo_mbps": 143.7400679953231,
+          "rtt_p50_ms": 0.1598329981788993,
+          "rtt_p95_ms": 0.21579199528787285
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.25808300415519625,
+            0.19554200116544962,
+            0.20383398805279285,
+            0.22899999748915434,
+            0.18708400602918118
+          ],
+          "p50_ms": 0.20383398805279285
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.20608300110325217,
+            0.18904200987890363,
+            0.21174999710638076,
+            0.17850000585895032,
+            0.22579201322514564
+          ],
+          "p50_ms": 0.20608300110325217
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.40205,
+            "max_rss_bytes": 15712256
+          },
+          "server": {
+            "cpu_seconds": 1.515628,
+            "max_rss_bytes": 16367616
+          }
+        }
+      },
+      {
+        "label": "dev_before",
+        "repeat": 3,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 453.6883970279147,
+          "first_64k_echo_ms": 4004.27837499592
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 8218,
+          "received": 8218,
+          "echo_mbps": 78.88883583680966,
+          "rtt_p50_ms": 0.11516700033098459,
+          "rtt_p95_ms": 0.16454099386464804
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5882,
+          "received": 5882,
+          "echo_mbps": 141.14517569622433,
+          "rtt_p50_ms": 0.16279150440823287,
+          "rtt_p95_ms": 0.21866700262762606
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.3354579966980964,
+            0.23799999326001853,
+            0.23958299425430596,
+            0.24429098994005471,
+            0.2094999945256859
+          ],
+          "p50_ms": 0.23958299425430596
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.43379200110212,
+            203.25816600234248,
+            202.91629100393038,
+            202.2744169953512,
+            202.60929099458735
+          ],
+          "p50_ms": 202.60929099458735
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.679279,
+            "max_rss_bytes": 15974400
+          },
+          "server": {
+            "cpu_seconds": 1.81697,
+            "max_rss_bytes": 16596992
+          }
+        }
+      },
+      {
+        "label": "dev_after",
+        "repeat": 3,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 547.8116618232416,
+          "first_64k_echo_ms": 4004.2514170054346
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7539,
+          "received": 7539,
+          "echo_mbps": 72.371547402977,
+          "rtt_p50_ms": 0.11987501056864858,
+          "rtt_p95_ms": 0.19333399541210383
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5651,
+          "received": 5651,
+          "echo_mbps": 135.59203987032674,
+          "rtt_p50_ms": 0.16720799612812698,
+          "rtt_p95_ms": 0.23629200586583465
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.4031249991385266,
+            0.29054199694655836,
+            0.21491700317710638,
+            0.2892909978982061,
+            0.3284999984316528
+          ],
+          "p50_ms": 0.29054199694655836
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.37404201179743,
+            202.9270000057295,
+            203.6667079955805,
+            202.9278330010129,
+            202.58712500799447
+          ],
+          "p50_ms": 202.9270000057295
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.886988,
+            "max_rss_bytes": 15826944
+          },
+          "server": {
+            "cpu_seconds": 2.013256,
+            "max_rss_bytes": 16433152
+          }
+        }
+      }
+    ]
+  },
+  "fast-open": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "seconds_per_workload": 1.0,
+    "fast_open": true,
+    "method": "single outstanding echo request; not maximum throughput; resource usage includes process startup and all workloads",
+    "runs": [
+      {
+        "label": "dev_after",
+        "repeat": 1,
+        "sniff": false,
+        "tcp": {
+          "echo_mbps": 433.0471102682671,
+          "first_64k_echo_ms": 1.0733749950304627
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7983,
+          "received": 7983,
+          "echo_mbps": 76.62824001179226,
+          "rtt_p50_ms": 0.11904200073331594,
+          "rtt_p95_ms": 0.17724998178891838
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5965,
+          "received": 5965,
+          "echo_mbps": 143.1356728032416,
+          "rtt_p50_ms": 0.16062500071711838,
+          "rtt_p95_ms": 0.24358299560844898
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.30133299878798425,
+            0.20133299403823912,
+            0.2391669841017574,
+            0.26237498968839645,
+            0.213916995562613
+          ],
+          "p50_ms": 0.2391669841017574
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            0.22191699827089906,
+            0.21133298287168145,
+            0.20995800150558352,
+            0.19150000298395753,
+            0.21650001872330904
+          ],
+          "p50_ms": 0.21133298287168145
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.691256,
+            "max_rss_bytes": 15663104
+          },
+          "server": {
+            "cpu_seconds": 1.845496,
+            "max_rss_bytes": 16318464
+          }
+        }
+      },
+      {
+        "label": "dev_after",
+        "repeat": 1,
+        "sniff": true,
+        "tcp": {
+          "echo_mbps": 401.3028447083966,
+          "first_64k_echo_ms": 1.1037080257665366
+        },
+        "udp_1200": {
+          "payload_bytes": 1200,
+          "sent": 7951,
+          "received": 7951,
+          "echo_mbps": 76.31857196456126,
+          "rtt_p50_ms": 0.11804100358858705,
+          "rtt_p95_ms": 0.1772920077200979
+        },
+        "udp_3000": {
+          "payload_bytes": 3000,
+          "sent": 5752,
+          "received": 5752,
+          "echo_mbps": 138.03895265085333,
+          "rtt_p50_ms": 0.16529149434063584,
+          "rtt_p95_ms": 0.22799998987466097
+        },
+        "plain_first": {
+          "samples_ms": [
+            0.4808329977095127,
+            0.21358300000429153,
+            0.24324998958036304,
+            0.20729200332425535,
+            0.19916598103009164
+          ],
+          "p50_ms": 0.21358300000429153
+        },
+        "incomplete_quic_first": {
+          "samples_ms": [
+            202.60708400746807,
+            202.46062500518747,
+            201.6077089938335,
+            202.1551669749897,
+            202.29341700905934
+          ],
+          "p50_ms": 202.29341700905934
+        },
+        "process_lifetime_resources": {
+          "client": {
+            "cpu_seconds": 1.583508,
+            "max_rss_bytes": 15728640
+          },
+          "server": {
+            "cpu_seconds": 1.6963849999999998,
+            "max_rss_bytes": 16564224
+          }
+        }
+      }
+    ]
+  },
+  "micro-before": [
+    {
+      "payload_bytes": 1200,
+      "ns_per_fragmentation_samples": [
+        135,
+        135,
+        142,
+        135,
+        124,
+        125,
+        125
+      ],
+      "ns_per_reassembly_samples": [
+        208,
+        208,
+        215,
+        212,
+        209,
+        211,
+        211
+      ]
+    },
+    {
+      "payload_bytes": 3000,
+      "ns_per_fragmentation_samples": [
+        225,
+        223,
+        222,
+        222,
+        220,
+        219,
+        227
+      ],
+      "ns_per_reassembly_samples": [
+        339,
+        334,
+        336,
+        332,
+        340,
+        335,
+        334
+      ]
+    },
+    {
+      "payload_bytes": 4000,
+      "ns_per_fragmentation_samples": [
+        280,
+        282,
+        277,
+        282,
+        279,
+        278,
+        276
+      ],
+      "ns_per_reassembly_samples": [
+        438,
+        436,
+        433,
+        429,
+        434,
+        434,
+        438
+      ]
+    }
+  ],
+  "micro-after": [
+    {
+      "payload_bytes": 1200,
+      "ns_per_fragmentation_samples": [
+        162,
+        131,
+        122,
+        122,
+        123,
+        122,
+        124
+      ],
+      "ns_per_reassembly_samples": [
+        215,
+        211,
+        210,
+        211,
+        209,
+        209,
+        213
+      ]
+    },
+    {
+      "payload_bytes": 3000,
+      "ns_per_fragmentation_samples": [
+        220,
+        219,
+        220,
+        216,
+        218,
+        220,
+        217
+      ],
+      "ns_per_reassembly_samples": [
+        347,
+        351,
+        323,
+        323,
+        323,
+        321,
+        326
+      ]
+    },
+    {
+      "payload_bytes": 4000,
+      "ns_per_fragmentation_samples": [
+        285,
+        277,
+        282,
+        277,
+        288,
+        314,
+        282
+      ],
+      "ns_per_reassembly_samples": [
+        428,
+        438,
+        433,
+        430,
+        428,
+        428,
+        424
+      ]
+    }
+  ],
+  "micro-before-repeat": [
+    {
+      "payload_bytes": 1200,
+      "ns_per_fragmentation_samples": [
+        129,
+        122,
+        123,
+        124,
+        123,
+        124,
+        124
+      ],
+      "ns_per_reassembly_samples": [
+        208,
+        209,
+        208,
+        207,
+        209,
+        211,
+        208
+      ]
+    },
+    {
+      "payload_bytes": 3000,
+      "ns_per_fragmentation_samples": [
+        224,
+        221,
+        221,
+        222,
+        223,
+        219,
+        218
+      ],
+      "ns_per_reassembly_samples": [
+        338,
+        337,
+        337,
+        336,
+        336,
+        337,
+        339
+      ]
+    },
+    {
+      "payload_bytes": 4000,
+      "ns_per_fragmentation_samples": [
+        279,
+        278,
+        278,
+        281,
+        278,
+        278,
+        278
+      ],
+      "ns_per_reassembly_samples": [
+        428,
+        430,
+        435,
+        432,
+        427,
+        428,
+        429
+      ]
+    }
+  ],
+  "micro-after-repeat": [
+    {
+      "payload_bytes": 1200,
+      "ns_per_fragmentation_samples": [
+        128,
+        125,
+        124,
+        124,
+        128,
+        123,
+        122
+      ],
+      "ns_per_reassembly_samples": [
+        217,
+        211,
+        211,
+        214,
+        215,
+        213,
+        215
+      ]
+    },
+    {
+      "payload_bytes": 3000,
+      "ns_per_fragmentation_samples": [
+        222,
+        227,
+        228,
+        227,
+        229,
+        220,
+        218
+      ],
+      "ns_per_reassembly_samples": [
+        377,
+        323,
+        331,
+        327,
+        326,
+        329,
+        325
+      ]
+    },
+    {
+      "payload_bytes": 4000,
+      "ns_per_fragmentation_samples": [
+        280,
+        280,
+        279,
+        281,
+        279,
+        281,
+        282
+      ],
+      "ns_per_reassembly_samples": [
+        428,
+        427,
+        430,
+        430,
+        429,
+        426,
+        423
+      ]
+    }
+  ]
+}

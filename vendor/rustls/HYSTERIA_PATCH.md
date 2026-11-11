@@ -1,6 +1,6 @@
 # Hysteria rustls patch
 
-This directory vendors rustls 0.23.42 and backports server-side Encrypted
+This directory vendors rustls 0.23.46 and backports server-side Encrypted
 ClientHello (ECH) support from upstream rustls pull request #2993 at commit
 `3e80839fbeacaec19efb278fb6b29b1302a2cb37`.
 
@@ -41,3 +41,12 @@ Also run the Go Chrome runtime interop command in
 exercise this snapshot as a dependency, not its complete standalone upstream
 suite. Record the actual tests run when changing the snapshot; do not infer
 complete upstream coverage from a workspace pass.
+
+## 0.23.46 synchronization
+
+Merged from crates.io 0.23.46 (upstream commit
+`f04804fa13341a9b1dc02b5d1dd8a746f2c4b7fb`) against the 0.23.42 base.
+ECH retry handling now uses upstream `PreviousClientHello`; ALPS preserves its
+0-RTT restrictions while upstream checks the selected PSK index. The Chrome
+version check uses `Protocol::Quic`. See
+[dependency update validation](../../docs/tls-http-dependency-upgrade.md).

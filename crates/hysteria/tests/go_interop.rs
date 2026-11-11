@@ -110,7 +110,7 @@ fn go_and_rust_binaries_relay_obfuscated_tcp_and_udp_in_both_directions() {
     let cert = directory.path().join("cert.pem");
     let key = directory.path().join("key.pem");
     fs::write(&cert, certified.cert.pem()).unwrap();
-    fs::write(&key, certified.key_pair.serialize_pem()).unwrap();
+    fs::write(&key, certified.signing_key.serialize_pem()).unwrap();
     let ech_key = directory.path().join("ech.pem");
     let ech_config = generate_ech_key(&ech_key);
 
@@ -139,6 +139,23 @@ fn go_and_rust_binaries_relay_obfuscated_tcp_and_udp_in_both_directions() {
         server_host: "127.0.0.1",
     };
     run_direction(rust_server);
+    let sniff_payload = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    run_direction_with_sniff(
+        Direction {
+            payload: sniff_payload,
+            ..rust_server
+        },
+        true,
+    );
+    run_direction_with_sniff(
+        Direction {
+            server_binary: &go_binary,
+            client_binary: rust_binary,
+            payload: sniff_payload,
+            ..rust_server
+        },
+        true,
+    );
     for prefix in [":", "[::]:"] {
         for host in ["127.0.0.1", "::1"] {
             run_direction(Direction {
@@ -151,6 +168,10 @@ fn go_and_rust_binaries_relay_obfuscated_tcp_and_udp_in_both_directions() {
 }
 
 fn run_direction(direction: Direction<'_>) {
+    run_direction_with_sniff(direction, false);
+}
+
+fn run_direction_with_sniff(direction: Direction<'_>, sniff: bool) {
     let Direction {
         directory,
         server_binary,
@@ -205,7 +226,7 @@ fn run_direction(direction: Direction<'_>) {
     fs::write(
         &server_config,
         format!(
-            "listen: '{server_listen}'\ntls:\n  cert: {}\n  key: {}\nech:\n  keyPath: {}\nauth:\n  type: password\n  password: interop-secret\nobfs:\n  type: salamander\n  salamander:\n    password: interop-obfs\n",
+            "listen: '{server_listen}'\nsniff:\n  enable: {sniff}\n  timeout: 5s\ntls:\n  cert: {}\n  key: {}\nech:\n  keyPath: {}\nauth:\n  type: password\n  password: interop-secret\nobfs:\n  type: salamander\n  salamander:\n    password: interop-obfs\n",
             yaml_path(cert),
             yaml_path(key),
             yaml_path(ech_key)
@@ -230,6 +251,11 @@ fn run_direction(direction: Direction<'_>) {
 
     let mut tunnel = connect_until(tcp_forwarding_address, Duration::from_secs(12));
     configure_stream(&tunnel).unwrap();
+    if sniff {
+        tunnel
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+    }
     tunnel.write_all(payload).unwrap();
     let mut reply = vec![0; payload.len()];
     tunnel.read_exact(&mut reply).unwrap();

@@ -21,12 +21,15 @@ pub fn fragment_udp_message(
         .map_err(|_| ProtocolError::TooManyFragments(fragment_count))?;
     let mut fragments = Vec::with_capacity(fragment_count);
     for (index, data) in message.data.chunks(max_payload_size).enumerate() {
-        let mut fragment = message.clone();
-        fragment.fragment_id =
-            u8::try_from(index).map_err(|_| ProtocolError::TooManyFragments(fragment_count))?;
-        fragment.fragment_count = count;
-        fragment.data = data.to_vec();
-        fragments.push(fragment);
+        fragments.push(UdpMessage {
+            session_id: message.session_id,
+            packet_id: message.packet_id,
+            fragment_id: u8::try_from(index)
+                .map_err(|_| ProtocolError::TooManyFragments(fragment_count))?,
+            fragment_count: count,
+            address: message.address.clone(),
+            data: data.to_vec(),
+        });
     }
     Ok(fragments)
 }
@@ -57,7 +60,7 @@ impl Defragger {
             self.fragments[index] = Some(message);
             self.received = 1;
         } else if self.fragments[index].is_none() {
-            self.fragments[index] = Some(message.clone());
+            self.fragments[index] = Some(message);
             self.received += 1;
             if self.received == self.fragments.len() {
                 let total_size = self
@@ -70,11 +73,15 @@ impl Defragger {
                 for fragment in self.fragments.iter().flatten() {
                     data.extend_from_slice(&fragment.data);
                 }
-                let mut complete = message;
-                complete.fragment_id = 0;
-                complete.fragment_count = 1;
-                complete.data = data;
-                return Some(complete);
+                let last = self.fragments[index].as_ref()?;
+                return Some(UdpMessage {
+                    session_id: last.session_id,
+                    packet_id: last.packet_id,
+                    fragment_id: 0,
+                    fragment_count: 1,
+                    address: last.address.clone(),
+                    data,
+                });
             }
         }
         None
@@ -138,5 +145,35 @@ mod tests {
             fragment_udp_message(&large, large.header_size() + 1),
             Err(ProtocolError::TooManyFragments(256))
         ));
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+
+    #[test]
+    fn defragger_takes_ownership_of_fragment_buffers() {
+        let message = UdpMessage {
+            session_id: 7,
+            packet_id: 9,
+            fragment_id: 0,
+            fragment_count: 1,
+            address: "127.0.0.1:443".into(),
+            data: vec![42; 3000],
+        };
+        let fragments = fragment_udp_message(&message, 1100).unwrap();
+        let mut defragger = Defragger::default();
+        for (index, fragment) in fragments.into_iter().enumerate() {
+            let pointer = fragment.data.as_ptr();
+            let complete = defragger.feed(fragment);
+            assert_eq!(
+                defragger.fragments[index].as_ref().unwrap().data.as_ptr(),
+                pointer
+            );
+            if let Some(complete) = complete {
+                assert_eq!(complete, message);
+            }
+        }
     }
 }

@@ -317,7 +317,7 @@ async fn run_server_session(
     context: Arc<ServerUdpContext>,
 ) {
     let mut defragger = Defragger::default();
-    let mut first = loop {
+    let first = loop {
         let Some(message) = timeout_receive(&mut receiver, context.idle_timeout).await else {
             remove_server_session(&context.sessions, session_id, token);
             return;
@@ -326,20 +326,30 @@ async fn run_server_session(
             break message;
         }
     };
-    if let Some(hook) = &context.request_hook
-        && hook.check(true, &first.address)
-        && hook.udp(&first.data, &mut first.address).is_err()
-    {
-        remove_server_session(&context.sessions, session_id, token);
-        return;
-    }
-    let Ok(socket) = context.outbound.udp(&first.address).await else {
+    let original_address = first.address.clone();
+    let Some((held, destination)) =
+        collect_hook_packets(first, &mut receiver, &mut defragger, &context).await
+    else {
         remove_server_session(&context.sessions, session_id, token);
         return;
     };
-    if socket.send_to(&first.data, &first.address).await.is_err() {
+    let Ok(socket) = context.outbound.udp(&destination).await else {
         remove_server_session(&context.sessions, session_id, token);
         return;
+    };
+    for message in held {
+        let address = if message.address == original_address {
+            &destination
+        } else {
+            &message.address
+        };
+        if context.outbound.check_udp(address).await.is_err() {
+            continue;
+        }
+        if socket.send_to(&message.data, address).await.is_err() {
+            remove_server_session(&context.sessions, session_id, token);
+            return;
+        }
     }
 
     let mut buffer = vec![0; MAX_UDP_SIZE];
@@ -357,10 +367,15 @@ async fn run_server_session(
                 let Some(message) = defragger.feed(message) else {
                     continue;
                 };
-                if context.outbound.check_udp(&message.address).await.is_err() {
+                let address = if message.address == original_address {
+                    &destination
+                } else {
+                    &message.address
+                };
+                if context.outbound.check_udp(address).await.is_err() {
                     continue;
                 }
-                let _ = socket.send_to(&message.data, &message.address).await;
+                let _ = socket.send_to(&message.data, address).await;
             }
             Ok(ServerUdpEvent::Remote(Ok((size, source)))) => {
                 if !log_traffic(
@@ -391,6 +406,54 @@ async fn run_server_session(
         }
     }
     remove_server_session(&context.sessions, session_id, token);
+}
+
+// At most eight complete datagrams of at most 65535 bytes each, with a
+// fixed short deadline independent of the TCP sniff.timeout setting.
+async fn collect_hook_packets(
+    first: UdpMessage,
+    receiver: &mut mpsc::Receiver<UdpMessage>,
+    defragger: &mut Defragger,
+    context: &ServerUdpContext,
+) -> Option<(Vec<UdpMessage>, String)> {
+    let original = first.address.clone();
+    let mut held = vec![first];
+    let Some(hook) = context
+        .request_hook
+        .as_ref()
+        .filter(|hook| hook.check(true, &original))
+    else {
+        return Some((held, original));
+    };
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_millis(200).min(context.idle_timeout);
+    loop {
+        let packets: Vec<_> = held.iter().map(|message| message.data.as_slice()).collect();
+        let mut destination = original.clone();
+        if hook.udp_packets(&packets, &mut destination).ok()? {
+            return Some((held, destination));
+        }
+        if held.len() >= 8 {
+            break;
+        }
+        let next = loop {
+            let Ok(Some(message)) = tokio::time::timeout_at(deadline, receiver.recv()).await else {
+                return Some((held, original));
+            };
+            if let Some(message) = defragger.feed(message) {
+                break message;
+            }
+        };
+        if next.data.len() > 65_535 {
+            return None;
+        }
+        let same_target = next.address == original;
+        held.push(next);
+        if !same_target {
+            break;
+        }
+    }
+    Some((held, original))
 }
 
 fn log_traffic(

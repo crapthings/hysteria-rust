@@ -1,88 +1,53 @@
-use clap::{Parser, Subcommand};
+/// Implements offline configuration validation and its versioned output contract.
+mod check;
+/// Defines command syntax independently of execution.
+mod cli;
+/// Formats offline deployment diagnostics.
+mod doctor_cli;
+/// Generates starter configurations without starting a server.
+mod init;
+/// Installs platform-specific graceful service termination handlers.
+mod shutdown;
+
+use clap::Parser;
+use cli::{Cli, Command};
 use hysteria_cli::{
     Result,
     config::{ClientConfig, ServerConfig},
     runtime::{ping, serve_client, serve_server, speed_tests},
 };
-use std::path::PathBuf;
+use std::process::ExitCode;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "hysteria",
-    version,
-    about = "Hysteria 2 client and server in Rust"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Command>,
-    #[arg(short, long, default_value = "config.yaml", global = true)]
-    config: PathBuf,
-    #[arg(
-        long,
-        global = true,
-        env = "HYSTERIA_DISABLE_UPDATE_CHECK",
-        default_value_t = false
-    )]
-    disable_update_check: bool,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    Client,
-    Server,
-    Version,
-    Ping {
-        address: String,
-    },
-    Speedtest {
-        #[arg(long)]
-        skip_download: bool,
-        #[arg(long)]
-        skip_upload: bool,
-        #[arg(long)]
-        data_size: Option<u32>,
-        #[arg(long, default_value = "10s")]
-        duration: String,
-        #[arg(long)]
-        use_bytes: bool,
-    },
-    Share {
-        #[arg(long)]
-        notext: bool,
-        #[arg(long)]
-        qr: bool,
-    },
-    CheckUpdate,
-    Cert {
-        #[arg(long, default_value_t = hysteria_cli::cert::default_host())]
-        host: String,
-        #[arg(long, default_value = "server.crt")]
-        cert: PathBuf,
-        #[arg(long, default_value = "server.key")]
-        key: PathBuf,
-        #[arg(long, default_value = "365d")]
-        valid_for: String,
-        #[arg(long)]
-        overwrite: bool,
-    },
-}
-
+/// Runs the independent CLI and reports command-specific exit status.
 #[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("error: {error}");
-        std::process::exit(1);
+async fn main() -> ExitCode {
+    let mut args: Vec<_> = std::env::args_os().collect();
+    if args.len() == 1 {
+        args.push("help".into());
+    }
+    let cli = Cli::parse_from(args);
+    let diagnostic = cli.diagnostic;
+    match run(cli).await {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("{}", error.report(diagnostic));
+            ExitCode::FAILURE
+        }
     }
 }
 
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
+/// Dispatches one command while keeping runtime failures distinct from validation failures.
+async fn run(cli: Cli) -> Result<ExitCode> {
     let update_checks = !cli.disable_update_check;
-    match cli.command.unwrap_or(Command::Client) {
+    let result = match cli.command.unwrap_or(Command::Client) {
+        Command::Check(options) => return options.run(&cli.config, cli.diagnostic),
+        Command::Doctor(options) => return options.run(&cli.config),
+        Command::Init(options) => options.run(&cli.config, false),
+        Command::Guide(options) => options.run(&cli.config, true),
         Command::Client => {
             serve_client(
                 ClientConfig::load(&cli.config)?,
-                shutdown_signal(),
+                shutdown::signal()?,
                 update_checks,
             )
             .await
@@ -90,7 +55,7 @@ async fn run() -> Result<()> {
         Command::Server => {
             serve_server(
                 ServerConfig::load(&cli.config)?,
-                shutdown_signal(),
+                shutdown::signal()?,
                 update_checks,
             )
             .await
@@ -163,13 +128,11 @@ async fn run() -> Result<()> {
             print!("{}", hysteria_cli::cert::format_result(&result));
             Ok(())
         }
-    }
+    };
+    result.map(|()| ExitCode::SUCCESS)
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-}
-
+/// Runs the existing speed-test workflow and formats its measurements.
 async fn run_speedtest(
     config: ClientConfig,
     data_size: Option<u32>,
@@ -190,6 +153,7 @@ async fn run_speedtest(
     Ok(())
 }
 
+/// Prints the update service response without changing installed binaries.
 async fn print_update() -> Result<()> {
     let response = hysteria_cli::update::check_update().await?;
     if response.has_update {
@@ -205,6 +169,7 @@ async fn print_update() -> Result<()> {
     Ok(())
 }
 
+/// Formats a throughput measurement in decimal bits or bytes per second.
 #[allow(clippy::cast_precision_loss)]
 fn format_speed(result: hysteria_cli::runtime::SpeedTestResult, use_bytes: bool) -> String {
     let mut speed = result.bytes as f64 / result.elapsed.as_secs_f64().max(f64::EPSILON);

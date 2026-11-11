@@ -29,7 +29,9 @@ const ADDRESS_DOMAIN: u8 = 3;
 const ADDRESS_IPV6: u8 = 4;
 
 pub(crate) async fn serve(config: Socks5Config, client: Arc<ClientHandle>) -> Result<()> {
-    let listener = TcpListener::bind(normalize_listen(&config.listen)).await?;
+    let listener = TcpListener::bind(normalize_listen(&config.listen))
+        .await
+        .map_err(|error| CliError::bind("SOCKS5 listener", error))?;
     eprintln!("SOCKS5 proxy listening on {}", listener.local_addr()?);
     loop {
         let (stream, _) = listener.accept().await?;

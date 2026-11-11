@@ -74,12 +74,12 @@ async fn chrome_runtime_go_tcp_udp_interop() {
     let cert = directory.path().join("cert.pem");
     let key = directory.path().join("key.pem");
     std::fs::write(&cert, certified.cert.pem()).unwrap();
-    std::fs::write(&key, certified.key_pair.serialize_pem()).unwrap();
+    std::fs::write(&key, certified.signing_key.serialize_pem()).unwrap();
     let identity = rcgen::generate_simple_self_signed(vec!["client.local".to_owned()]).unwrap();
     let client_cert = directory.path().join("client.pem");
     let client_key = directory.path().join("client.key");
     std::fs::write(&client_cert, identity.cert.pem()).unwrap();
-    std::fs::write(&client_key, identity.key_pair.serialize_pem()).unwrap();
+    std::fs::write(&client_key, identity.signing_key.serialize_pem()).unwrap();
     let ech_key = directory.path().join("ech.pem");
     let ech_config = ech::generate_ech_key(&ech_key);
     for (obfuscated, secure) in [(false, false), (true, false), (false, true), (true, true)] {

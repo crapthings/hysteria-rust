@@ -194,7 +194,7 @@ async fn server_udp_socket(listen: &str) -> Result<std::net::UdpSocket> {
             Err(error) if implicit_host && error.kind() == std::io::ErrorKind::AddrNotAvailable => {
                 return server_ipv4_socket(address.port(), &error);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(CliError::bind("server UDP listener", error)),
         },
         Err(error) if implicit_host => return server_ipv4_socket(address.port(), &error),
         Err(error) => return Err(error.into()),
@@ -205,7 +205,8 @@ async fn server_udp_socket(listen: &str) -> Result<std::net::UdpSocket> {
 
 fn server_ipv4_socket(port: u16, reason: &std::io::Error) -> Result<std::net::UdpSocket> {
     eprintln!("Dual-stack UDP unavailable ({reason}); falling back to IPv4");
-    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?;
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+        .map_err(|error| CliError::bind("server IPv4 UDP listener", error))?;
     socket.set_nonblocking(true)?;
     Ok(socket)
 }
@@ -440,10 +441,9 @@ impl ClientHandle {
             .connected
             .as_ref()
             .is_some_and(|connected| Arc::ptr_eq(&connected.client, client))
+            && let Some(connected) = state.connected.take()
         {
-            if let Some(connected) = state.connected.take() {
-                close_connected(&connected, b"connection closed");
-            }
+            close_connected(&connected, b"connection closed");
         }
     }
 
@@ -506,14 +506,12 @@ async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
         )
     };
     apply_client_quic_config(&mut quic, &config.quic, congestion)?;
-    let bind_address = if server_address.is_ipv4() {
-        "0.0.0.0:0"
+    let bind_ip = if server_address.is_ipv4() {
+        IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
     } else {
-        "[::]:0"
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED)
     };
-    let bind_address = bind_address
-        .parse()
-        .map_err(|error| CliError::new(format!("invalid client bind address: {error}")))?;
+    let bind_address = SocketAddr::new(bind_ip, 0);
     let socket = match socket {
         Some(socket) => socket,
         None => client_udp_socket(bind_address, &config.quic.sockopts)?,
@@ -553,7 +551,8 @@ async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
             max_tx: up,
         },
     )
-    .await?;
+    .await
+    .map_err(CliError::connection)?;
     let client = Arc::new(ProxyClient::new(connection).with_fast_open(config.fast_open));
     Ok(ConnectedClient {
         disconnect_monitor: monitor_disconnect(&client),
@@ -1120,7 +1119,9 @@ fn spawn_client_tasks(
 }
 
 async fn run_tcp_forwarding(config: TcpForwarding, client: Arc<ClientHandle>) -> Result<()> {
-    let listener = TcpListener::bind(&normalize_listen(&config.listen)).await?;
+    let listener = TcpListener::bind(&normalize_listen(&config.listen))
+        .await
+        .map_err(|error| CliError::bind("TCP forwarding listener", error))?;
     eprintln!(
         "TCP forwarding {} -> {}",
         listener.local_addr()?,
@@ -1140,7 +1141,11 @@ async fn run_tcp_forwarding(config: TcpForwarding, client: Arc<ClientHandle>) ->
 }
 
 async fn run_udp_forwarding(config: UdpForwarding, client: Arc<ClientHandle>) -> Result<()> {
-    let socket = Arc::new(UdpSocket::bind(&normalize_listen(&config.listen)).await?);
+    let socket = Arc::new(
+        UdpSocket::bind(&normalize_listen(&config.listen))
+            .await
+            .map_err(|error| CliError::bind("UDP forwarding listener", error))?,
+    );
     eprintln!(
         "UDP forwarding {} -> {}",
         socket.local_addr()?,
@@ -1240,10 +1245,11 @@ fn split_server_address(address: &str) -> Result<(String, String)> {
     {
         return Ok((host.to_owned(), port.to_owned()));
     }
-    if let Some((host, port)) = address.rsplit_once(':') {
-        if !port.is_empty() && !host.is_empty() {
-            return Ok((host.trim_matches(['[', ']']).to_owned(), port.to_owned()));
-        }
+    if let Some((host, port)) = address.rsplit_once(':')
+        && !port.is_empty()
+        && !host.is_empty()
+    {
+        return Ok((host.trim_matches(['[', ']']).to_owned(), port.to_owned()));
     }
     let host = unbracketed;
     if host.is_empty() {
@@ -1323,7 +1329,7 @@ mod tests {
         let cert = directory.path().join("cert.pem");
         let key = directory.path().join("key.pem");
         std::fs::write(&cert, certified.cert.pem()).unwrap();
-        std::fs::write(&key, certified.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&key, certified.signing_key.serialize_pem()).unwrap();
 
         // Exercise the production server path, including both obfuscation wrappers.
         for listen in [":0", "[::]:0"] {
@@ -1428,7 +1434,7 @@ mod tests {
         let cert = directory.path().join("cert.pem");
         let key = directory.path().join("key.pem");
         std::fs::write(&cert, certified.cert.pem()).unwrap();
-        std::fs::write(&key, certified.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&key, certified.signing_key.serialize_pem()).unwrap();
 
         for chrome in [false, true] {
             for kind in ["", "salamander", "gecko"] {

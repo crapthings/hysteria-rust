@@ -251,10 +251,10 @@ fn prepare_file(
             .is_none_or(|age| age > update);
     if stale {
         let existed = path.exists();
-        if let Err(error) = download(url, &path, validate) {
-            if !existed {
-                return Err(error);
-            }
+        if let Err(error) = download(url, &path, validate)
+            && !existed
+        {
+            return Err(error);
         }
     }
     Ok(path)

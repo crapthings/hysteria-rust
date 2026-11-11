@@ -13,7 +13,9 @@ use tokio::{
 const MAX_HEADER_SIZE: usize = 64 * 1024;
 
 pub(crate) async fn serve(config: HttpProxyConfig, client: Arc<ClientHandle>) -> Result<()> {
-    let listener = TcpListener::bind(normalize_listen(&config.listen)).await?;
+    let listener = TcpListener::bind(normalize_listen(&config.listen))
+        .await
+        .map_err(|error| CliError::bind("HTTP proxy listener", error))?;
     eprintln!("HTTP proxy listening on {}", listener.local_addr()?);
     loop {
         let (stream, _) = listener.accept().await?;
