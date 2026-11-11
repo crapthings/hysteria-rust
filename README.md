@@ -14,7 +14,7 @@ with compatible clients and servers for TCP and UDP proxying over QUIC.
 [Contributing](CONTRIBUTING.md)
 
 > [!NOTE]
-> Releases are currently release candidates. See the [rc4 release notes](docs/releases/v0.1.0-rc.4.md)
+> Releases are currently release candidates. See the [rc.6 release notes](docs/releases/v0.1.0-rc.6.md)
 > and [compatibility status](PORT_STATUS.md) for validated behavior and limitations.
 
 ## Features
@@ -135,6 +135,9 @@ quic:
 This is disabled by default, does not enable ALPS, and does not change Surge or
 other third-party clients. See [Chrome QUIC status](docs/chrome-quic-port.md)
 for validation scope and remaining work.
+
+The following setup and diagnostic commands are available in the development
+source tree; they are not included in the published rc.6 binary.
 
 ## Generate server configuration
 

@@ -158,10 +158,8 @@ async fn print_update() -> Result<()> {
     let response = hysteria_cli::update::check_update().await?;
     if response.has_update {
         println!(
-            "update available: {} ({}){}",
-            response.latest_version,
-            response.url,
-            if response.urgent { " [urgent]" } else { "" }
+            "update available: {} ({})",
+            response.latest_version, response.url
         );
     } else {
         println!("no update available");

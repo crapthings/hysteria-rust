@@ -13,13 +13,13 @@ an ECH reporting correction, and a quic-go update.
 
 ## Follow-up implementation
 
-The dev working tree now implements bounded multi-datagram QUIC sniffing; the
+The development source implements bounded multi-datagram QUIC sniffing; the
 comparison below records the state found during the original review. See
 [QUIC sniffing behavior](quic-sniffing.md) for implementation bounds and regressions.
 
 ## User-visible differences at review time
 
-| Area | Current Rust behavior | Impact / next action |
+| Area | Rust behavior at review time | Impact / next action |
 | --- | --- | --- |
 | QUIC sniffing | `sniff.rs::quic_sni` processes one Initial; `udp.rs::run_server_session` calls the hook only for the first reassembled Hysteria UDP message | Modern browser ClientHello spread over UDP datagrams may not yield a domain. Domain ACL/outbound selection may therefore fall back to IP-based behavior. Prioritize bounded multi-datagram sniffing. |
 | Sniff timeout | Rust uses its timeout in TCP sniffing, not UDP | Already consistent with the new timeout scope; this does not mean its UDP buffering matches upstream. |

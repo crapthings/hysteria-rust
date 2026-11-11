@@ -19,6 +19,7 @@ mod tls;
 mod traffic;
 mod transparent;
 mod tun;
+mod udp_queue;
 pub mod update;
 
 mod error;

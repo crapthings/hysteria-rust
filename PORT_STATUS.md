@@ -12,7 +12,7 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-The native executable is `target/release/hysteria`. Cross-release artifacts and their SHA-256 files can be produced with `scripts/package_rust.py`; targets that require a source-built standard library use the pinned nightly toolchain and the checked-in `Cross.toml` configuration.
+The native executable is `target/release/hysteria`. Cross-release artifacts and their SHA-256 files can be produced with `scripts/package_rust.py`; the seven official targets use the pinned stable toolchain. `Cross.toml` contains experimental community targets outside CI; those requiring `build-std` need an explicitly supplied compatible nightly toolchain, which this repository does not pin.
 
 ## Implemented
 
@@ -48,15 +48,15 @@ The native executable is `target/release/hysteria`. Cross-release artifacts and 
 - `ping address` command using the same TLS, QUIC, congestion, socket-option, and obfuscation connection bootstrap as the main client, without requiring a local proxy mode
 - `speedtest` command with size- and time-based download/upload modes, skip-direction and byte-unit flags, and the Go-compatible internal speed-test protocol
 - `share` command with Go-compatible `hysteria2://` auth/obfuscation/TLS query serialization plus text suppression and terminal QR output
-- Explicit `check-update` command using the official endpoint, Go-compatible platform/architecture/channel/side query fields, timeout, status validation, and response schema
-- Automatic immediate-and-24-hour update checks with global `--disable-update-check`/`HYSTERIA_DISABLE_UPDATE_CHECK` control, direct server checks, and censorship-safe client checks whose DNS/TLS/HTTP traffic is carried through the authenticated Hysteria TCP connection
+- Explicit `check-update` command querying this Rust repository's GitHub releases, with semantic-version comparison, prerelease filtering, timeout and response-size limits
+- Automatic immediate-and-24-hour update checks with global `--disable-update-check`/`HYSTERIA_DISABLE_UPDATE_CHECK` control, direct server checks, and tunneled client checks whose DNS/TLS/HTTP traffic is carried through the authenticated Hysteria TCP connection
 - Go-compatible fixed-vector and malformed-input tests for the above, plus a mandatory CI real-binary ECH/Salamander/TCP/UDP interoperability test covering Rust-client/Go-server and Go-client/Rust-server (`HYSTERIA_GO_BIN=/path/to/go/hysteria cargo test -p hysteria-cli --test go_interop` for local runs)
 - A narrowly patched vendored `quinn-proto` transport option matching Hysteria's Go-server behavior when Go clients intentionally omit the QUIC max-datagram-frame-size parameter
 - Optimized native and containerized cross-release packaging with target-qualified artifacts and SHA-256 checksums. CI publishes Linux x64/ARMv7/ARM64, macOS x64/ARM64, and Windows x64/ARM64 binaries.
 
 ## Completion status
 
-Post-baseline additions on the upstream-sync branch:
+Additional implemented capabilities and current CI policy:
 
 - Unix socket masquerade proxy backends, accepting absolute paths or `unix:///...` URLs.
 - Porkbun, Njalla, and Namecheap ACME DNS-01 providers; live-account issuance remains unverified.

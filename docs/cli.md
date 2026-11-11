@@ -2,6 +2,10 @@
 
 The Rust CLI is an independent Hysteria 2 server and client. Its public interface is designed for terminal users, service managers, scripts and third-party integrations. No GUI-specific configuration or process protocol is required.
 
+This document describes the development source tree. Setup/check/doctor commands,
+stdin configuration and the revised help/error contract are unreleased changes
+after rc.6; consult release notes for an installed binary.
+
 ## Commands and compatibility
 
 ```shell
@@ -188,3 +192,19 @@ cargo test --locked --package hysteria-cli --test cli_contract
 cargo test --locked --package hysteria-cli --lib configuration_
 cargo clippy --locked --package hysteria-cli --all-targets -- -D warnings
 ```
+
+## Update checks
+
+`check-update` queries this Rust repository's public GitHub releases. It no longer
+queries the original Go project's update service. The checker considers the most
+recent 100 published releases and compares semantic versions, including numeric
+prerelease ordering. RC builds accept newer RC or stable versions; stable builds
+exclude prereleases. Drafts and non-version tags are ignored. Empty or invalid
+responses, API failures and responses exceeding 4 MiB are errors, not proof that
+the installed version is current. Build metadata alone does not imply an update.
+
+Automatic checks run immediately and every 24 hours, and silently retry transient
+failures at the next interval. Server checks and `check-update` connect directly;
+client background checks use the authenticated Hy2 tunnel. Requests have a
+10-second deadline. `--disable-update-check` / `HYSTERIA_DISABLE_UPDATE_CHECK`
+disable automatic checks. No command installs or replaces binaries.

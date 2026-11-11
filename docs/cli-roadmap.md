@@ -15,7 +15,7 @@ This adds an offline command without changing server runtime or protocol behavio
 
 ## Next: diagnosis and observability
 
-Design structured runtime events, an error taxonomy and bounded diagnostics before promising stable machine output for long-running commands. Separate configuration errors, local resource failures, DNS, TLS, authentication, transport and remote outbound failures. Diagnostics must distinguish observations from guesses; a UDP timeout alone does not identify a firewall or an authentication failure.
+Initial typed error categories and bounded opt-in diagnostic causes are implemented; see [error reporting](errors.md) for coverage and remaining unclassified paths. Structured runtime events remain planned. Define their schema before promising stable machine output for long-running commands. Separate configuration errors, local resource failures, DNS, TLS, authentication, transport and remote outbound failures. Diagnostics must distinguish observations from guesses; a UDP timeout alone does not identify a firewall or an authentication failure.
 
 `doctor server` now provides offline configuration, TLS material/date and selected local-file checks. Network and runtime conditions are explicitly unverified; future opt-in network checks must remain separate. Document each operation's side effects and avoid automatically changing host networking. Status/control APIs need authentication, versioning and a local-first exposure policy, independent of any specific GUI.
 

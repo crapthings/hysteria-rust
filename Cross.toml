@@ -4,8 +4,7 @@
 
 [target.mipsel-unknown-linux-gnu]
 # Rust no longer ships a precompiled standard library for this Tier 3 target.
-# Cross builds it from rust-src so the Go release matrix's MIPS little-endian
-# target remains buildable on the current toolchain.
+# This configuration requests a rust-src build; it is not verified by CI.
 build-std = true
 
 [target.mipsel-unknown-linux-musl]

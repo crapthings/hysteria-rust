@@ -71,12 +71,14 @@ mod linux {
             flows.retain(|_, sender| !sender.is_closed());
             let packet = buffer[..size].to_vec();
             let key = (peer, target);
-            if flows
-                .get(&key)
-                .is_some_and(|sender| sender.try_send(packet.clone()).is_ok())
-            {
-                continue;
-            }
+            let packet = if let Some(sender) = flows.get(&key) {
+                let Some(packet) = crate::udp_queue::enqueue_packet(sender, packet) else {
+                    continue;
+                };
+                packet
+            } else {
+                packet
+            };
             let (sender, receiver) = mpsc::channel(256);
             sender
                 .try_send(packet)

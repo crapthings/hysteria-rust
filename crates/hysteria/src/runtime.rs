@@ -1157,10 +1157,14 @@ async fn run_udp_forwarding(config: UdpForwarding, client: Arc<ClientHandle>) ->
     loop {
         let (size, peer) = socket.recv_from(&mut buffer).await?;
         let packet = buffer[..size].to_vec();
-        let existing = peers.get(&peer).cloned();
-        if existing.is_some_and(|sender| sender.try_send(packet.clone()).is_ok()) {
-            continue;
-        }
+        let packet = if let Some(sender) = peers.get(&peer) {
+            let Some(packet) = crate::udp_queue::enqueue_packet(sender, packet) else {
+                continue;
+            };
+            packet
+        } else {
+            packet
+        };
         let (sender, receiver) = mpsc::channel(256);
         sender
             .try_send(packet)

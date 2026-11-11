@@ -8,6 +8,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Preserve ordinary UDP-forwarding and Linux TProxy sessions when packet queues
+  are full. Share the tested TUN queue policy and remove redundant packet clones.
+
+- Query hysteria-rust releases instead of comparing the Rust version against the
+  original Go update service. Compare semantic versions and bound HTTP responses.
+- Correct stale release/toolchain references and distinguish development commands
+  from published rc.6 functionality.
+
 - Acknowledge server TCP sniffing requests before reading application data,
   matching Go behavior and avoiding the sniff-timeout wait with ordinary clients.
   Later hook/dial failures close the stream without a second protocol response.
@@ -33,6 +41,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Explicit CLI behavior documentation and bounded command-contract regressions.
 
 ### Changed
+
+- Remove the unused Realm `base64` dependency declaration.
+
+- Update rustls to 0.23.46, rustls-acme to 0.15.4, certificate libraries,
+  reqwest to 0.13.5, hyper to 1.12.0, Hickory to 0.26.3 and route_manager to
+  0.2.17. HTTP clients now use platform certificate verification; see
+  [dependency migration](docs/tls-http-dependency-upgrade.md).
 
 - Upgrade tun-rs from 2.7.6 to 2.8.18 with its compatible dependency updates,
   including Tokio 1.54.1. Retain the existing async feature and TUN adapter.

@@ -1459,6 +1459,7 @@ dependencies = [
  "rustls-acme",
  "rustls-native-certs",
  "rustls-pemfile",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -1496,7 +1497,6 @@ name = "hysteria-realm"
 version = "0.1.0-rc.6"
 dependencies = [
  "axum",
- "base64 0.22.1",
  "bytes",
  "futures",
  "getrandom 0.3.4",
