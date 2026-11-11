@@ -318,6 +318,21 @@ endpoints, so it is not a read-only credential. Their behavior (including option
 authentication when the legacy secret is empty) is unchanged. Neither the CLI's
 loopback restriction nor the new endpoint secures a publicly exposed legacy API.
 
+## Website masquerading
+
+
+Masquerade supports strings, static files and reverse proxies, with optional
+HTTP/HTTPS listeners. A reverse proxy accepts HTTP/2 on the HTTPS frontend even
+when its upstream serves HTTP/1.1. Upstream request versions are independent of
+the frontend connection; HTTP/1.1 Upgrade remains supported.
+
+In the development version, file mode serves `index.html` when present; otherwise
+it lists directory entries. Publish only a directory intended for public access,
+or provide an index page if a directory listing is unwanted. Listings are capped
+at 10,000 entries; larger directories return HTTP 503. This is not a filesystem
+sandbox: existing static-file symlink behavior is unchanged. Static TLS file
+replacement still requires a restart; this differs from managed ACME renewal.
+
 ## Generate and rotate ECH keys
 
 The development CLI supports offline key generation:
