@@ -46,4 +46,3 @@ To run without installing, use `./FILE` on Unix or `.\FILE.exe` on Windows.
 2. Verify the new binary's checksum, stop the service, and replace the executable.
 3. Restart the service and check its version and a real client connection.
 4. If validation fails, stop the service, restore the backup, and start it again.
-
