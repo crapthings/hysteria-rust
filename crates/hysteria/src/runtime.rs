@@ -365,6 +365,9 @@ struct ClientState {
 
 /// A shared client connection that can connect on first use and reconnect after closure.
 pub(crate) struct ClientHandle {
+    fake_dns: Option<Arc<crate::fake_dns::FakeDns>>,
+    stop_signal: tokio::sync::watch::Sender<bool>,
+    routing: Option<crate::routing::Router>,
     config: ClientConfig,
     state: Mutex<ClientState>,
     update_checks: bool,
@@ -372,8 +375,24 @@ pub(crate) struct ClientHandle {
 
 impl ClientHandle {
     async fn new(config: ClientConfig, update_checks: bool) -> Result<Arc<Self>> {
-        let lazy = config.lazy;
+        let lazy = config.lazy || config.routing.is_some();
+        let routing = config
+            .routing
+            .as_ref()
+            .map(crate::routing::Router::compile)
+            .transpose()?;
+        let fake_dns = config
+            .tun
+            .as_ref()
+            .and_then(|tun| tun.dns.as_ref())
+            .map(crate::fake_dns::FakeDns::open)
+            .transpose()?
+            .map(Arc::new);
+        let (stop_signal, _) = tokio::sync::watch::channel(false);
         let handle = Arc::new(Self {
+            fake_dns,
+            stop_signal,
+            routing,
             config,
             state: Mutex::new(ClientState {
                 connected: None,
@@ -390,7 +409,7 @@ impl ClientHandle {
 
     async fn client(&self) -> Result<Arc<ProxyClient>> {
         let mut state = self.state.lock().await;
-        if state.closed {
+        if state.closed || *self.stop_signal.borrow() {
             return Err(CliError::new("client is closed"));
         }
         if let Some(connected) = &state.connected
@@ -401,7 +420,13 @@ impl ClientHandle {
         if let Some(connected) = state.connected.take() {
             close_connected(&connected, b"reconnecting");
         }
-        let connected = connect_client(&self.config).await?;
+        // A pending handshake holds the state lock. Cancel it before close waits
+        // for that lock, including when the remote server silently drops packets.
+        let connected = tokio::select! {
+            biased;
+            () = self.stopped() => return Err(CliError::new("client is closed")),
+            result = connect_client(&self.config) => result?,
+        };
         eprintln!(
             "connected to {} (UDP relay: {}, ECH: {})",
             connected.server_address,
@@ -424,20 +449,52 @@ impl ClientHandle {
     pub(crate) async fn tcp(
         &self,
         address: &str,
-    ) -> std::result::Result<hysteria_transport::TcpTunnel, hysteria_transport::TransportError>
-    {
+    ) -> std::result::Result<
+        Box<dyn hysteria_transport::ProxyStream>,
+        hysteria_transport::TransportError,
+    > {
+        use hysteria_transport::ServerOutbound as _;
+        let address = self.destination(address)?;
+        let decision = self.route(&address, crate::routing::Protocol::Tcp)?;
+        match decision.outbound {
+            crate::routing::Action::Reject => {
+                return Err(hysteria_transport::TransportError::Protocol(
+                    "rejected by client routing".into(),
+                ));
+            }
+            crate::routing::Action::Direct => {
+                let target = if decision.host.contains(':') {
+                    format!("[{}]:{}", decision.host, decision.port)
+                } else {
+                    format!("{}:{}", decision.host, decision.port)
+                };
+                let stream: Box<dyn hysteria_transport::ProxyStream> =
+                    if let Some(egress) = self.egress() {
+                        Box::new(egress.tcp(&decision.host, decision.port).await.map_err(
+                            |error| hysteria_transport::TransportError::Io(error.to_string()),
+                        )?)
+                    } else {
+                        hysteria_transport::DirectOutbound.tcp(&target).await?
+                    };
+                return Ok(Box::new(crate::client_stream::DirectStream::new(
+                    stream,
+                    self.stop_signal.subscribe(),
+                )));
+            }
+            crate::routing::Action::Proxy => {}
+        }
         let client = self
             .client()
             .await
             .map_err(|error| hysteria_transport::TransportError::Connect(error.to_string()))?;
-        let result = client.tcp(address).await;
+        let result = client.tcp(&address).await;
         if result.is_err() && client.is_closed() {
             self.invalidate(&client).await;
         }
-        result
+        result.map(|stream| Box::new(stream) as Box<dyn hysteria_transport::ProxyStream>)
     }
 
-    pub(crate) async fn udp(
+    pub(crate) async fn proxy_udp(
         &self,
     ) -> std::result::Result<hysteria_transport::UdpSession, hysteria_transport::TransportError>
     {
@@ -452,6 +509,47 @@ impl ClientHandle {
         result
     }
 
+    pub(crate) fn route(
+        &self,
+        address: &str,
+        protocol: crate::routing::Protocol,
+    ) -> std::result::Result<crate::routing::Decision, hysteria_transport::TransportError> {
+        if *self.stop_signal.borrow() {
+            return Err(hysteria_transport::TransportError::Closed);
+        }
+        if let Some(router) = &self.routing {
+            return router.decide(address, protocol).map_err(|error| {
+                hysteria_transport::TransportError::Configuration(error.to_string())
+            });
+        }
+        // Legacy mode preserves the original destination without new validation.
+        Ok(crate::routing::Decision {
+            schema_version: 1,
+            routing_version: 1,
+            host: address.into(),
+            port: 0,
+            protocol,
+            outbound: crate::routing::Action::Proxy,
+            matched_rule: None,
+            reason: "routing_disabled",
+            dns_performed: false,
+        })
+    }
+    pub(crate) async fn udp(
+        self: &Arc<Self>,
+    ) -> std::result::Result<crate::client_udp::ClientUdpSession, hysteria_transport::TransportError>
+    {
+        if self.routing.is_some() {
+            Ok(crate::client_udp::ClientUdpSession::routed(Arc::clone(
+                self,
+            )))
+        } else {
+            self.proxy_udp()
+                .await
+                .map(crate::client_udp::ClientUdpSession::Proxy)
+        }
+    }
+
     async fn invalidate(&self, client: &Arc<ProxyClient>) {
         let mut state = self.state.lock().await;
         if state
@@ -464,7 +562,97 @@ impl ClientHandle {
         }
     }
 
+    pub(crate) fn egress(&self) -> Option<&crate::client_egress::EgressConfig> {
+        self.config.tun.as_ref().and_then(|tun| tun.egress.as_ref())
+    }
+    pub(crate) fn has_fake_dns(&self) -> bool {
+        self.fake_dns.is_some()
+    }
+    pub(crate) fn destination(
+        &self,
+        address: &str,
+    ) -> std::result::Result<String, hysteria_transport::TransportError> {
+        if let Some(dns) = &self.fake_dns {
+            let (host, port) = crate::outbound::parse_host_port(address)
+                .map_err(hysteria_transport::TransportError::Configuration)?;
+            if let Ok(ip) = host.parse()
+                && let Some(name) = dns
+                    .reverse(ip)
+                    .map_err(|e| hysteria_transport::TransportError::Configuration(e.to_string()))?
+            {
+                return Ok(format!("{name}:{port}"));
+            }
+        }
+        Ok(address.to_owned())
+    }
+    pub(crate) async fn dns_answer(
+        &self,
+        query: &[u8],
+        protocol: crate::routing::Protocol,
+    ) -> Result<Vec<u8>> {
+        use hickory_resolver::proto::op::{Message, ResponseCode};
+        let dns = Arc::clone(
+            self.fake_dns
+                .as_ref()
+                .ok_or_else(|| CliError::new("TUN DNS is not enabled"))?,
+        );
+        let data = query.to_vec();
+        if let Some(reply) = tokio::task::spawn_blocking(move || dns.answer(&data))
+            .await
+            .map_err(|_| CliError::new("DNS worker failed"))??
+        {
+            return Ok(reply);
+        }
+        let resolver = self
+            .egress()
+            .ok_or_else(|| CliError::new("missing DNS egress"))?
+            .resolver;
+        let message = Message::from_vec(query).map_err(|_| CliError::new("invalid DNS query"))?;
+        let question = message
+            .queries
+            .first()
+            .ok_or_else(|| CliError::new("missing DNS question"))?;
+        let decision = self.route(&format!("{}:53", question.name().to_ascii()), protocol)?;
+        if decision.outbound == crate::routing::Action::Reject {
+            let mut reply = Message::error_msg(
+                message.metadata.id,
+                message.metadata.op_code,
+                ResponseCode::Refused,
+            );
+            reply.queries = message.queries;
+            return reply
+                .to_vec()
+                .map_err(|_| CliError::new("cannot encode DNS refusal"));
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            if decision.outbound == crate::routing::Action::Direct {
+                let mut stream = self
+                    .egress()
+                    .ok_or_else(|| CliError::new("missing protected DNS egress"))?
+                    .tcp_ip(resolver)
+                    .await?;
+                crate::client_egress::exchange(&mut stream, query).await
+            } else {
+                let proxy = self.client().await?;
+                let mut stream = proxy.tcp(&resolver.to_string()).await?;
+                crate::client_egress::exchange(&mut stream, query).await
+            }
+        })
+        .await
+        .map_err(|_| CliError::new("DNS query timed out"))?
+    }
+
+    pub(crate) async fn stopped(&self) {
+        crate::client_stream::stopped(self.stop_signal.subscribe()).await;
+    }
+
     async fn close(&self) {
+        self.stop_signal.send_replace(true);
+        if let Some(dns) = &self.fake_dns
+            && let Err(error) = dns.close()
+        {
+            eprintln!("failed to release Fake-IP cache: {error}");
+        }
         let mut state = self.state.lock().await;
         state.closed = true;
         if let Some(connected) = state.connected.take() {
@@ -483,6 +671,13 @@ fn close_connected(connected: &ConnectedClient, reason: &'static [u8]) {
 
 async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
     let target = resolve_client_target(config).await?;
+    connect_client_target(config, target).await
+}
+
+async fn connect_client_target(
+    config: &ClientConfig,
+    target: ClientTarget,
+) -> Result<ConnectedClient> {
     let ClientTarget {
         server_host,
         server_addresses,
@@ -529,13 +724,14 @@ async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
         IpAddr::V6(Ipv6Addr::UNSPECIFIED)
     };
     let bind_address = SocketAddr::new(bind_ip, 0);
+    let options = client_socket_options(config);
     let socket = match socket {
         Some(socket) => socket,
-        None => client_udp_socket(bind_address, &config.quic.sockopts)?,
+        None => client_udp_socket(bind_address, &options)?,
     };
     let obfs = config.obfs.transport_config()?;
     let mut endpoint = if port_hopping {
-        let options = config.quic.sockopts.clone();
+        let options = options.clone();
         let factory = Arc::new(move || {
             client_udp_socket(bind_address, &options)
                 .map_err(|error| std::io::Error::other(error.to_string()))
@@ -582,6 +778,15 @@ async fn connect_client(config: &ClientConfig) -> Result<ConnectedClient> {
     })
 }
 
+fn client_socket_options(config: &ClientConfig) -> ClientQuicSocketOptions {
+    let mut options = config.quic.sockopts.clone();
+    if let Some(egress) = config.tun.as_ref().and_then(|tun| tun.egress.as_ref()) {
+        options.bind_interface.clone_from(&egress.interface);
+        options.firewall_mark = Some(egress.mark);
+    }
+    options
+}
+
 fn monitor_disconnect(client: &Arc<ProxyClient>) -> tokio::task::JoinHandle<()> {
     let client = Arc::clone(client);
     tokio::spawn(async move {
@@ -603,7 +808,29 @@ async fn resolve_client_target(config: &ClientConfig) -> Result<ClientTarget> {
         return resolve_realm_target(config).await;
     }
     let (server_host, server_addresses, port_hopping) =
-        resolve_server_addresses(&config.server).await?;
+        if let Some(egress) = config.tun.as_ref().and_then(|tun| tun.egress.as_ref()) {
+            let (host, ports) = split_server_address(&config.server)?;
+            let hopping = ports.contains([',', '-']);
+            let ports = parse_port_union(&ports)?;
+            let first = *ports
+                .first()
+                .ok_or_else(|| CliError::new("empty server ports"))?;
+            let addresses = egress.resolve(&host, first).await?;
+            let ip = addresses
+                .first()
+                .ok_or_else(|| CliError::new("server did not resolve"))?
+                .ip();
+            (
+                host,
+                ports
+                    .into_iter()
+                    .map(|port| SocketAddr::new(ip, port))
+                    .collect(),
+                hopping,
+            )
+        } else {
+            resolve_server_addresses(&config.server).await?
+        };
     Ok(ClientTarget {
         server_host,
         server_addresses,
@@ -614,6 +841,13 @@ async fn resolve_client_target(config: &ClientConfig) -> Result<ClientTarget> {
 }
 
 async fn resolve_realm_target(config: &ClientConfig) -> Result<ClientTarget> {
+    resolve_realm_target_progress(config, &mut 0).await
+}
+
+async fn resolve_realm_target_progress(
+    config: &ClientConfig,
+    stage: &mut usize,
+) -> Result<ClientTarget> {
     use hysteria_realm::{
         AddrFamily, ConnectRequest, PunchConfig, RealmAddr, RealmClient, StunConfig, discover,
         new_punch_metadata, punch,
@@ -643,6 +877,7 @@ async fn resolve_realm_target(config: &ClientConfig) -> Result<ClientTarget> {
         Duration::from_secs(4),
         "realm.stunTimeout",
     )?;
+    *stage = 1;
     let mut local_addresses = discover(
         &socket,
         &StunConfig {
@@ -656,6 +891,7 @@ async fn resolve_realm_target(config: &ClientConfig) -> Result<ClientTarget> {
     if let Some(mapping) = &port_mapping {
         merge_realm_address(&mut local_addresses, mapping.external_address());
     }
+    *stage = 2;
     let metadata = new_punch_metadata().map_err(|error| {
         CliError::new(format!("failed to create Realm punch metadata: {error}"))
     })?;
@@ -685,6 +921,7 @@ async fn resolve_realm_target(config: &ClientConfig) -> Result<ClientTarget> {
         Duration::from_secs(10),
         "realm.punchTimeout",
     )?;
+    *stage = 3;
     let result = punch(
         &socket,
         &local_addresses,
@@ -698,8 +935,9 @@ async fn resolve_realm_target(config: &ClientConfig) -> Result<ClientTarget> {
     )
     .await
     .map_err(|error| CliError::new(format!("Realm punch failed: {error}")))?;
+    *stage = 4;
     Ok(ClientTarget {
-        server_host: realm.host,
+        server_host: realm.host.trim_matches(['[', ']']).to_owned(),
         server_addresses: vec![result.peer_address],
         port_hopping: false,
         socket: Some(socket.into_std()?),
@@ -785,6 +1023,31 @@ pub(crate) fn parse_optional_duration(
     }
     humantime::parse_duration(value)
         .map_err(|error| CliError::new(format!("invalid {field}: {error}")))
+}
+
+#[derive(Default)]
+pub(crate) struct ProbeProgress {
+    pub resolved: bool,
+    /// 1=STUN, 2=rendezvous, 3=punch, 4=ready for QUIC.
+    pub realm_stage: usize,
+}
+
+/// Bounded by the caller; does not start local proxy listeners or forwarding.
+pub(crate) async fn probe_client(
+    config: &ClientConfig,
+    progress: &mut ProbeProgress,
+) -> Result<(bool, bool)> {
+    let target = if config.server.starts_with("realm:") || config.server.starts_with("realm+http:")
+    {
+        resolve_realm_target_progress(config, &mut progress.realm_stage).await?
+    } else {
+        resolve_client_target(config).await?
+    };
+    progress.resolved = true;
+    let connected = connect_client_target(config, target).await?;
+    let result = (connected.udp_enabled, connected.ech_accepted);
+    close_connected_and_wait(&connected, b"diagnosis complete").await;
+    Ok(result)
 }
 
 /// Connects to a Hysteria server and measures a TCP tunnel establishment.
@@ -1258,6 +1521,16 @@ pub(crate) fn normalize_listen(address: &str) -> String {
         .map_or_else(|| address.to_owned(), |port| format!("0.0.0.0:{port}"))
 }
 
+pub(crate) fn check_client_address(address: &str) -> Result<()> {
+    let (host, ports) = split_server_address(address)?;
+    if parse_port_union(&ports)?.contains(&0) {
+        return Err(CliError::new("server port must not be zero"));
+    }
+    rustls::pki_types::ServerName::try_from(host)
+        .map_err(|_| CliError::new("invalid server hostname or IP address"))?;
+    Ok(())
+}
+
 fn split_server_address(address: &str) -> Result<(String, String)> {
     if let Ok(socket) = address.parse::<SocketAddr>() {
         return Ok((socket.ip().to_string(), socket.port().to_string()));
@@ -1638,5 +1911,131 @@ mod tests {
         let socket = client_udp_socket("127.0.0.1:0".parse().unwrap(), &options).unwrap();
         assert!(socket.local_addr().unwrap().port() != 0);
         receiver.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod fake_ip_routing_tests {
+    use super::*;
+    use hickory_resolver::proto::{
+        op::{Message, Query},
+        rr::{Name, RData, RecordType},
+    };
+    #[tokio::test]
+    async fn shutdown_cancels_pending_proxy_handshake() {
+        let blackhole = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let config: ClientConfig = serde_json::from_value(serde_json::json!({
+            "server": blackhole.local_addr().unwrap().to_string(), "auth": "secret",
+            "tls": {"insecure": true}, "routing": {"version": 1}
+        }))
+        .unwrap();
+        let client = ClientHandle::new(config, false).await.unwrap();
+        let pending = Arc::clone(&client);
+        let request = tokio::spawn(async move { pending.client().await });
+        // Observe a real initial QUIC packet so cancellation races a pending handshake.
+        let mut packet = [0; 2048];
+        tokio::time::timeout(Duration::from_secs(3), blackhole.recv_from(&mut packet))
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), client.close())
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), request)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert!(client.client().await.is_err());
+    }
+    fn query() -> Vec<u8> {
+        let mut query = Message::query();
+        query.queries.push(Query::query(
+            Name::from_ascii("localhost").unwrap(),
+            RecordType::A,
+        ));
+        query.to_vec().unwrap()
+    }
+    #[tokio::test]
+    async fn synthetic_destination_is_restored_before_tcp_udp_rules_and_dialing() {
+        tokio::time::timeout(Duration::from_secs(5), round_trip())
+            .await
+            .unwrap();
+    }
+    async fn round_trip() {
+        let directory = tempfile::tempdir().unwrap();
+        let dns = Arc::new(
+            crate::fake_dns::FakeDns::open(&crate::fake_dns::FakeDnsConfig {
+                cache: directory.path().join("fake.json"),
+            })
+            .unwrap(),
+        );
+        let bytes = dns.answer(&query()).unwrap().unwrap();
+        let reply = Message::from_vec(&bytes).unwrap();
+        let RData::A(ip) = reply.answers[0].data else {
+            panic!("expected A")
+        };
+        let config: ClientConfig = serde_json::from_value(serde_json::json!({
+            "server":"127.0.0.1:1","auth":"secret",
+            "routing":{"version":1,"default":"reject","rules":["direct(localhost)"]}
+        }))
+        .unwrap();
+        let mut client = ClientHandle::new(config, false).await.unwrap();
+        Arc::get_mut(&mut client).unwrap().fake_dns = Some(dns);
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            let (mut request, response) = tokio::io::duplex(1024);
+            let dns_client = Arc::clone(&client);
+            let task =
+                tokio::spawn(async move { crate::tun::test_dns_tcp(response, &dns_client).await });
+            let query = query();
+            request
+                .write_u16(u16::try_from(query.len()).unwrap())
+                .await
+                .unwrap();
+            request.write_all(&query).await.unwrap();
+            let size = usize::from(request.read_u16().await.unwrap());
+            let mut bytes = vec![0; size];
+            request.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(
+                Message::from_vec(&bytes).unwrap().answers[0].data,
+                RData::A(ip)
+            );
+            drop(request);
+            assert!(task.await.unwrap().is_err());
+        }
+        let host = tokio::net::lookup_host("localhost:0")
+            .await
+            .unwrap()
+            .next()
+            .unwrap()
+            .ip();
+        let tcp = TcpListener::bind(SocketAddr::new(host, 0)).await.unwrap();
+        let mut stream = client
+            .tcp(&format!("{}:{}", ip.0, tcp.local_addr().unwrap().port()))
+            .await
+            .unwrap();
+        let (mut peer, _) = tcp.accept().await.unwrap();
+        stream.write_all(b"fake").await.unwrap();
+        let mut data = [0; 4];
+        peer.read_exact(&mut data).await.unwrap();
+        assert_eq!(&data, b"fake");
+        let udp = UdpSocket::bind(SocketAddr::new(host, 0)).await.unwrap();
+        let mut session = client.udp().await.unwrap();
+        session
+            .send(
+                b"fake",
+                &format!("{}:{}", ip.0, udp.local_addr().unwrap().port()),
+            )
+            .await
+            .unwrap();
+        let (n, remote) = udp.recv_from(&mut data).await.unwrap();
+        udp.send_to(&data[..n], remote).await.unwrap();
+        assert_eq!(session.receive().await.unwrap().0, b"fake");
+        assert!(client.tcp("198.19.255.254:80").await.is_err());
+        assert!(client.state.lock().await.connected.is_none());
+        client.close().await;
     }
 }

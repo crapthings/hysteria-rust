@@ -1,10 +1,13 @@
-//! Offline deployment diagnostics; no listeners, network requests or runtime startup.
-use crate::{Result, config::ServerConfig};
+//! Offline deployment diagnostics with an explicit, bounded client connection probe.
+use crate::{
+    Result,
+    config::{ClientConfig, ServerConfig},
+};
 use serde::Serialize;
 use std::{fs::File, path::Path};
 use x509_parser::prelude::FromDer;
 
-/// A versioned offline report. Passing checks does not establish runtime readiness.
+/// A versioned diagnostic report. Passing checks does not establish full runtime readiness.
 #[derive(Serialize)]
 pub struct Report {
     pub schema_version: u8,
@@ -175,5 +178,243 @@ fn check_validity(report: &mut Report, path: &Path) {
             "Certificate chain dates are valid for more than 30 days",
             "",
         ),
+    }
+}
+
+/// Inspects client inputs offline, optionally attempting a bounded authenticated connection.
+/// No local proxy listener, TUN, system proxy or route configuration is started.
+pub async fn client(path: &Path, connect: bool, timeout: std::time::Duration) -> Report {
+    let mut report = Report {
+        schema_version: 1,
+        mode: "client",
+        passed: true,
+        checks: Vec::new(),
+    };
+    let config = match ClientConfig::load(path) {
+        Ok(config) => {
+            report.add("configuration_read", "pass", "Configuration parsed", "");
+            config
+        }
+        Err(error) => {
+            report.add(
+                "configuration_read",
+                "fail",
+                error.to_string(),
+                "Check the configuration path and YAML/JSON schema.",
+            );
+            return report;
+        }
+    };
+    if config.validate().is_err() {
+        report.add(
+            "configuration_validate",
+            "fail",
+            "Invalid client settings",
+            "Run check client to identify the configuration field; no network request was made.",
+        );
+        return report;
+    }
+    report.add(
+        "configuration_validate",
+        "pass",
+        "Semantic configuration checks passed",
+        "",
+    );
+    if !config.server.starts_with("realm:") && !config.server.starts_with("realm+http:") {
+        if crate::runtime::check_client_address(&config.server).is_ok() {
+            report.add(
+                "server_address",
+                "pass",
+                "Server address syntax accepted",
+                "DNS is not queried offline.",
+            );
+        } else {
+            report.add(
+                "server_address",
+                "fail",
+                "Invalid server hostname, IP address or ports",
+                "Use hostname:port or [IPv6]:port; port hopping uses comma-separated ports/ranges.",
+            );
+        }
+    }
+    client_local_checks(&mut report, &config);
+    if connect && report.passed {
+        client_network_checks(&mut report, &config, timeout).await;
+    } else {
+        report.add(
+            "server_resolution",
+            "skip",
+            "Server address resolution was not attempted",
+            "Use --connect to opt into network diagnosis.",
+        );
+        report.add(
+            "server_connection",
+            "skip",
+            "Remote connection was not tested",
+            "Use doctor client --connect after offline checks pass.",
+        );
+    }
+    report.add("forwarding", "skip", "Local binding, remote forwarding and system integration were not tested", "Use ping with an explicit target to test TCP forwarding. No system proxy, routes or DNS were changed.");
+    report
+}
+
+fn client_local_checks(report: &mut Report, config: &ClientConfig) {
+    if config.server.starts_with("realm+http:") || config.realm.insecure {
+        report.add("realm_security", "warn", "Rendezvous transport is plaintext or its certificate verification is disabled", "Prefer realm:// with normal rendezvous verification; tls.insecure controls a separate proxy TLS connection.");
+    }
+    if config.tun.is_some() {
+        report.add("tun_runtime", "skip", "TUN permissions, policy routing, cache ownership and system DNS integration are not exercised offline", "Routed TUN requires Linux protected egress; validate in an isolated Linux environment.");
+    }
+    let ca = (!config.tls.ca.is_empty()).then(|| Path::new(&config.tls.ca));
+    let pin = (!config.tls.pin_sha256.is_empty())
+        .then(|| crate::config::normalize_certificate_pin(&config.tls.pin_sha256))
+        .transpose();
+    let identity = (!config.tls.client_certificate.is_empty()).then(|| {
+        (
+            Path::new(&config.tls.client_certificate),
+            Path::new(&config.tls.client_key),
+        )
+    });
+    let material = pin.and_then(|pin| {
+        crate::tls::client_config(
+            ca,
+            config.tls.insecure,
+            pin,
+            identity,
+            (!config.tls.ech.is_empty()).then_some(config.tls.ech.as_str()),
+        )
+    });
+    if material.is_ok() {
+        report.add(
+            "tls_material",
+            "pass",
+            "Local TLS trust, client identity and ECH inputs accepted",
+            "Remote certificate validity is not established by this check.",
+        );
+    } else {
+        report.add("tls_material", "fail", "Local TLS material could not be loaded", "Check CA/client certificate/private key/ECH files and the system trust store; paths use the working directory.");
+    }
+    if config.tls.insecure {
+        report.add(
+            "tls_verification",
+            "warn",
+            "Certificate verification is disabled (an explicit pin may still apply)",
+            "Prefer normal CA verification; review tls.insecure and tls.pinSHA256.",
+        );
+    }
+    let mut addresses = std::collections::HashSet::new();
+    for (id, address) in [
+        (
+            "socks5_listener",
+            config.socks5.as_ref().map(|p| p.listen.as_str()),
+        ),
+        (
+            "http_listener",
+            config.http.as_ref().map(|p| p.listen.as_str()),
+        ),
+    ] {
+        if let Some(address) = address {
+            if let Ok(socket) = address.parse::<std::net::SocketAddr>() {
+                if socket.port() != 0 && !addresses.insert(socket) {
+                    report.add(
+                        id,
+                        "fail",
+                        "Local proxy listeners use the same TCP address",
+                        "Choose distinct local ports.",
+                    );
+                } else if socket.ip().is_loopback() {
+                    report.add(
+                        id,
+                        "pass",
+                        "Configured to listen on loopback",
+                        "Port availability is not checked offline.",
+                    );
+                } else {
+                    report.add(
+                        id,
+                        "warn",
+                        "Proxy listener is not restricted to loopback",
+                        "Review authentication, bind address and firewall before starting.",
+                    );
+                }
+            } else {
+                report.add(
+                    id,
+                    "skip",
+                    "Listener is not a numeric socket address",
+                    "Name resolution and binding are deferred to runtime.",
+                );
+            }
+        }
+    }
+}
+
+async fn client_network_checks(
+    report: &mut Report,
+    config: &ClientConfig,
+    timeout: std::time::Duration,
+) {
+    let realm = config.server.starts_with("realm:") || config.server.starts_with("realm+http:");
+    if (realm && config.realm.port_mapping.enabled)
+        || !config.quic.sockopts.fd_control_unix_socket.is_empty()
+    {
+        report.add(
+            "server_connection",
+            "fail",
+            "Active diagnosis refuses enabled router port mapping or external socket control",
+            "Disable realm.portMapping.enabled for diagnosis; external FD control is not supported.",
+        );
+    } else {
+        let mut progress = crate::runtime::ProbeProgress::default();
+        let result =
+            tokio::time::timeout(timeout, crate::runtime::probe_client(config, &mut progress))
+                .await;
+        if realm {
+            for (stage, id, label) in [
+                (1, "realm_stun", "STUN discovery"),
+                (2, "realm_rendezvous", "Rendezvous introduction"),
+                (3, "realm_punch", "UDP hole punching"),
+            ] {
+                let status = match progress.realm_stage.cmp(&stage) {
+                    std::cmp::Ordering::Greater => "pass",
+                    std::cmp::Ordering::Equal => "fail",
+                    std::cmp::Ordering::Less => "skip",
+                };
+                report.add(id, status, label, if status == "fail" { "This phase did not complete; a timeout does not establish a specific NAT or authentication cause." } else { "" });
+            }
+        } else {
+            report.add(
+                "server_resolution",
+                if progress.resolved { "pass" } else { "fail" },
+                if progress.resolved {
+                    "Server address resolved"
+                } else {
+                    "Server address resolution did not complete"
+                },
+                "This does not establish server reachability.",
+            );
+        }
+        if !progress.resolved {
+            if realm && progress.realm_stage == 0 {
+                report.add(
+                    "realm_socket",
+                    "fail",
+                    "Realm socket preparation did not complete",
+                    "Check local bind options and permissions.",
+                );
+            }
+            report.add(
+                "server_connection",
+                "skip",
+                "QUIC/TLS and Hysteria authentication were not attempted",
+                "Resolve the preceding failure first.",
+            );
+            return;
+        }
+        match result {
+                Ok(Ok((udp, ech))) => report.add("server_connection", "pass", format!("QUIC/TLS and Hysteria authentication completed; UDP advertised: {udp}; ECH accepted: {ech}"), "This does not test remote TCP/UDP forwarding or server egress."),
+                Ok(Err(error)) => report.add("server_connection", "fail", format!("Connection did not complete ({})", error.code().as_str()), "Check DNS, reachability, TLS and authentication. This result alone does not identify the failed phase."),
+                Err(_) => report.add("server_connection", "fail", "Connection probe timed out; cause is unknown", "A timeout does not establish an authentication, certificate or firewall failure."),
+            }
     }
 }

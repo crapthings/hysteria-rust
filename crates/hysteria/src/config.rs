@@ -343,6 +343,8 @@ pub struct MasqueradeString {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientConfig {
+    #[serde(default)]
+    pub routing: Option<crate::routing::RoutingConfig>,
     pub server: String,
     pub auth: String,
     #[serde(default)]
@@ -517,6 +519,10 @@ pub struct TransparentUdpConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunConfig {
+    #[serde(default)]
+    pub egress: Option<crate::client_egress::EgressConfig>,
+    #[serde(default)]
+    pub dns: Option<crate::fake_dns::FakeDnsConfig>,
     pub name: String,
     #[serde(default)]
     pub mtu: u16,
@@ -1012,9 +1018,10 @@ impl ClientConfig {
             .add(b'|')
             .add(b'}');
 
-        if self.server.trim().is_empty() {
-            return Err(CliError::new("client server is required"));
+        if self.server.starts_with("realm:") || self.server.starts_with("realm+http:") {
+            return crate::sharing::realm_uri(self);
         }
+        let server = crate::sharing::normalize_address(&self.server)?;
         self.obfs.transport_config()?;
         let user = if self.auth.is_empty() {
             String::new()
@@ -1071,7 +1078,7 @@ impl ClientConfig {
         let query = serializer.finish();
         Ok(format!(
             "hysteria2://{user}{}/{}{}",
-            self.server,
+            server,
             if query.is_empty() { "" } else { "?" },
             query
         ))
@@ -1084,6 +1091,17 @@ impl ClientConfig {
     /// Returns an error for missing, invalid, or unsupported values.
     pub fn validate(&self) -> Result<()> {
         self.validate_connection()?;
+        if let Some(routing) = &self.routing {
+            crate::routing::Router::compile(routing)?;
+            if self.tcp_redirect.is_some() || self.tcp_tproxy.is_some() || self.udp_tproxy.is_some()
+            {
+                return Err(CliError::new(
+                    "transparent proxy routing is not supported yet; routed TUN requires the protected Linux configuration",
+                ));
+            }
+        }
+
+        self.validate_tun_routing()?;
         if self.tcp_forwarding.is_empty()
             && self.udp_forwarding.is_empty()
             && self.socks5.is_none()
@@ -1122,6 +1140,62 @@ impl ClientConfig {
         }
         if let Some(tun) = &self.tun {
             tun.validate()?;
+        }
+        Ok(())
+    }
+
+    fn validate_tun_routing(&self) -> Result<()> {
+        if let Some(tun) = &self.tun {
+            if self.routing.is_some() {
+                let egress = tun
+                    .egress
+                    .as_ref()
+                    .ok_or_else(|| CliError::new("TUN routing requires tun.egress"))?;
+                egress.validate(&tun.name)?;
+                if tun
+                    .dns
+                    .as_ref()
+                    .is_none_or(|dns| dns.cache.as_os_str().is_empty())
+                    || tun.route.as_ref().is_none_or(|route| !route.strict)
+                {
+                    return Err(CliError::new(
+                        "TUN routing requires tun.dns.cache and tun.route.strict: true",
+                    ));
+                }
+                let route = tun
+                    .route
+                    .as_ref()
+                    .ok_or_else(|| CliError::new("TUN route is required"))?;
+                if route.ipv4.len() > 1
+                    || route.ipv6.len() > 1
+                    || route.ipv4.iter().any(|p| p != "0.0.0.0/0")
+                    || route.ipv6.iter().any(|p| p != "::/0")
+                    || !route.ipv4_exclude.is_empty()
+                    || !route.ipv6_exclude.is_empty()
+                {
+                    return Err(CliError::new(
+                        "routed TUN currently requires full capture without route exclusions; express bypasses in routing.rules",
+                    ));
+                }
+                if (self.server.starts_with("realm:") || self.server.starts_with("realm+http:"))
+                    || !self.quic.sockopts.fd_control_unix_socket.is_empty()
+                    || (!self.quic.sockopts.bind_interface.is_empty()
+                        && self.quic.sockopts.bind_interface != egress.interface)
+                    || self
+                        .quic
+                        .sockopts
+                        .firewall_mark
+                        .is_some_and(|mark| mark != egress.mark)
+                {
+                    return Err(CliError::new(
+                        "routed TUN requires direct-mode Hysteria and matching egress socket settings; Realm/FD-control are not supported yet",
+                    ));
+                }
+            } else if tun.egress.is_some() || tun.dns.is_some() {
+                return Err(CliError::new(
+                    "tun.egress and tun.dns require client routing",
+                ));
+            }
         }
         Ok(())
     }

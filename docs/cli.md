@@ -23,6 +23,13 @@ The `check` command requires `client` or `server` as a positional role. It does 
 
 ## Help
 
+Help uses explicit usage-priority ordering: guided/template setup, foreground
+roles and service management, checks/diagnostics, sharing and advanced tools.
+The server/client role guides group examples by setup, running, monitoring
+(where available), diagnosis and sharing. Server subcommands show `status`,
+`stats`, then `share`; service help prioritizes installation, status and logs.
+This changes presentation only; command syntax and defaults remain unchanged.
+
 `hysteria`, `hysteria help` and `hysteria --help` show the command overview and
 quick-start examples. `hysteria help server` / `hysteria server --help` and
 `hysteria help client` / `hysteria client --help` provide detailed role-specific
@@ -480,3 +487,211 @@ systemctl operations, including name ambiguity, collision protection, startup
 failure and validation-before-restart. The generated fixture is also suitable
 for `systemd-analyze verify` on Linux. Live boot/restart behavior requires testing
 on a Linux host running systemd; these tests do not register services on the host.
+
+## Client setup and diagnosis
+
+Start with a small editable template or an interactive guide:
+
+```shell
+hysteria init client -c client.yaml
+hysteria guide client -c client.yaml
+```
+
+The guide accepts a sharing link, or a server address and authentication entered
+manually, then asks for one local SOCKS5 port (default 1080). It binds only to
+`127.0.0.1`; no HTTP listener, TUN or system proxy is enabled. Input may be visible
+in the terminal. Prompts and summaries do not print imported credentials.
+The template uses placeholders for the server and password; replace them before
+connecting. Existing output paths are never overwritten; Unix files use mode
+0600. As with server setup, `-c -` explicitly prints configuration, including
+credentials, to stdout.
+
+For scripted import:
+
+```shell
+hysteria init client --uri 'hy2://PASSWORD@vpn.example.com:443/' -c client.yaml
+```
+
+A link passed on the command line can appear in shell history/process listings;
+prefer the guide when entering real credentials. Import accepts `hy2` and
+`hysteria2`, percent-encoded authentication (including userpass), IPv6 and
+multi-port addresses, SNI, certificate pins, inline base64 ECH and Salamander or
+Gecko obfuscation. Omitted ports use 443. The optional display-name fragment is
+ignored. Unknown/duplicate parameters, malformed encodings and unsupported
+schemes are rejected rather than silently discarded. Combined `hysteria2+realm://` and `hysteria2+realm+http://` links are also supported; see the Realm section below. Imported links never select local listeners or bandwidth settings.
+These connection fields follow the [upstream URI scheme](https://hysteria.network/docs/developers/URI-Scheme/).
+
+A link with `insecure=1` requires a default-no confirmation in the guide, or
+explicit `--allow-insecure` alongside `--uri`. This preserves the user's choice
+without silently weakening TLS verification. The generated summary clearly
+identifies disabled verification.
+
+```shell
+hysteria check client -c client.yaml
+hysteria doctor client -c client.yaml
+hysteria doctor client --connect --timeout 10s -c client.yaml
+hysteria doctor client --connect -c client.yaml --output json
+hysteria client -c client.yaml
+```
+
+`doctor client` defaults to offline checks: configuration, server-address syntax,
+local TLS trust/client identity/ECH loading, and SOCKS5/HTTP listener exposure or
+identical-address conflicts. It reports unchecked network/bind conditions as
+`skip`. Non-loopback listeners and disabled verification are warnings, not hidden
+changes. Hostname listener resolution, wildcard binding conflicts, actual port
+availability and TUN/system integration are not verified offline.
+
+`--connect` explicitly permits address resolution and a temporary authenticated
+QUIC connection to the configured server. It does not bind the configured proxy
+listeners, activate TUN, modify system proxy/routes/DNS, or make an update query.
+The probe timeout defaults to 10 seconds and accepts 1–60 seconds. It applies to
+the network phase; local configuration/material checks precede it. Realm probes additionally perform STUN discovery, rendezvous introduction and
+UDP punching. Configurations enabling `realm.portMapping.enabled` or external
+FD control are rejected before the probe, to avoid router/control side effects.
+
+Reports distinguish address resolution from the combined QUIC/TLS/Hysteria
+handshake. The combined handshake currently does not expose a separate reliable
+result for each failure phase. A timeout has unknown cause; it is not reported
+as a proven TLS, password or firewall fault. UDP capability advertised by the
+server is not an actual UDP forwarding test. Remote egress and forwarding remain
+unverified; `ping TARGET -c client.yaml` tests an explicit TCP target separately.
+
+Text uses aligned English check identifiers and terminal-only status highlights
+(respecting `NO_COLOR` and `TERM=dumb`). JSON retains schema version 1 with
+`mode: client`, stable check identifiers, `passed` and per-check statuses.
+Warnings/skips alone do not fail the command. Diagnostic failures exit 3;
+argument errors exit 2. File and stdin configuration are both supported.
+
+## Export a client link from the server
+
+```shell
+hysteria server share -c server.yaml --address vpn.example.com:443
+hysteria server share -c server.yaml --address vpn.example.com:8443 --user alice
+hysteria server share -c server.yaml --address 203.0.113.10:443 \
+  --sni vpn.example.com --name 'My server' --qr
+```
+
+`--address` is required for direct mode. Supply the address and public port that clients actually
+reach (including NAT/port hopping where applicable); the command never guesses
+from `listen`. Omitting the public port means 443, regardless of the listening
+port. IPv6 is bracketed in the generated URI. Unspecified listening IPs such as
+`0.0.0.0` and `::` are rejected. No DNS or connectivity test is performed.
+
+Password authentication uses the configured password. Userpass authentication
+requires `--user` even with one account; only that account is exported. HTTP or
+command authentication requires `--auth-stdin`, which reads one nonempty
+credential line (up to 4 KiB); it does not call the backend, execute the command,
+or infer credentials from backend URLs. `--auth-stdin` cannot share stdin with
+`-c -`. Authentication credentials are not verified by export.
+
+The link contains only the selected authentication, public address, configured
+Salamander/Gecko obfuscation, and selected TLS connection fields. Configured ECH
+keys contribute their **public config list**, not private key bytes. Statistics
+secrets, other users, ACME API tokens, certificate private keys and local file
+paths are not exported. The link and QR code still contain the selected login
+and obfuscation secrets: distribute them as credentials.
+
+Normal CA/name verification stays enabled. `--sni` selects the certificate name
+when it differs from the public address; it is not inferred from ACME or
+certificate files. `--insecure` explicitly disables normal CA/name verification.
+For a self-signed static certificate, use both `--insecure --pin-cert`: the
+client then requires the exact leaf fingerprint. `--pin-cert` alone retains
+normal verification in addition to pinning. Certificate renewal/rotation changes
+that fingerprint and requires a new link. This command does not pin ACME cache
+certificates. Pinning reads only `tls.cert`; the TLS private key is not read.
+
+`--name` adds a percent-encoded display fragment. `--qr` also prints a terminal
+QR code. Without it stdout is exactly one URI line, suitable for copying or
+piping. Export is offline and does not start/restart the server, issue a
+certificate, change networking, or mutate the configuration.
+
+```shell
+hysteria init client --uri 'hysteria2://...' -c client.yaml
+```
+
+The generated URI uses the same direct-mode format as `hysteria share` (which
+reads a client configuration). Both generation paths normalize addresses.
+Realm configurations use their own standard combined scheme, described below.
+Servers requiring client certificates are rejected by `server share`, because
+the link cannot carry the required client identity. Use a full client
+configuration for those deployments.
+
+Round-trip tests cover both obfuscation modes, percent-encoded passwords,
+userpass selection, default ports, IPv6, port ranges, SNI, certificate pins and
+public ECH config. The importer intentionally ignores the optional display name.
+
+## Realm setup, sharing and diagnosis
+
+The existing Realm runtime supports native `realm://TOKEN@HOST/NAME` addresses
+in server `listen` and client `server`, with proxy authentication separately in
+`auth`. HTTPS is the default rendezvous transport; `realm+http://` is intended
+for local development. The rendezvous introduces peers; it does not relay proxy
+traffic. NAT compatibility still depends on both networks.
+
+`guide server` now accepts either a UDP port or a Realm URI at its first prompt.
+Realm setup generates a separate random proxy password and uses existing
+certificate files; it does not register with the rendezvous during setup. For
+automatic certificates behind NAT, configure DNS-01 ACME separately. The guide
+does not select HTTP-01 issuance for Realm mode or change router mappings.
+
+For example, prepare a certificate, enter your Realm URI in the guide, and export
+an explicitly pinned link:
+
+```shell
+hysteria cert --host proxy.example.com
+hysteria guide server -c server.yaml
+hysteria server share -c server.yaml --sni proxy.example.com --insecure --pin-cert
+```
+
+Use `--sni` matching the certificate; with a normal trusted CA certificate,
+omit `--insecure --pin-cert`. The exporter does not infer SNI from certificates.
+Server-side SNI guards still apply even when the client uses a fingerprint.
+
+Realm `server share` reads the rendezvous address from `listen`; omit `--address`.
+It emits `hysteria2+realm://` (or `hysteria2+realm+http://`) using the rendezvous
+Token in userinfo and the selected **proxy credential** in the `auth` query
+parameter. Common TLS/ECH/obfuscation parameters remain supported. Repeated
+`stun` parameters and a client's `lport` round-trip. URI STUN settings override
+YAML settings; otherwise configured `realm.stunServers` are embedded.
+Server export deliberately omits the server's `lport`, which is a local binding
+choice and must not be imposed on clients. Nonstandard Realm address parameters
+and `realm.insecure: true` are rejected during export instead of being silently
+lost. Rendezvous verification and proxy `tls.insecure` are distinct settings.
+
+`guide client` accepts a combined Realm sharing link. Manual setup also accepts
+a native Realm URI, asks separately for proxy authentication, and requires a
+certificate name for normal TLS verification. For self-signed deployments,
+import the pinned link instead; keeping `insecure=1` still requires explicit
+acceptance. Setup keeps local SOCKS5 on loopback and router mapping disabled.
+
+```shell
+hysteria doctor client -c client.yaml
+hysteria doctor client --connect --timeout 30s -c client.yaml
+```
+
+Offline diagnosis does not contact STUN or the rendezvous. Active diagnosis
+reports `realm_stun`, `realm_rendezvous`, `realm_punch`, then the combined
+`server_connection` handshake. Later phases are skipped when an earlier phase
+fails. Failures/timeouts identify the incomplete phase, not a guessed NAT type.
+The diagnostic sends real introduction/punch traffic, may appear in rendezvous
+logs, and closes the resulting temporary QUIC connection. It never activates
+configured local proxies or router mappings; explicitly enabled mappings are
+rejected rather than overridden. It does not test server egress/forwarding.
+
+Validation includes Rust-to-Rust forwarding, wrong rendezvous/proxy credentials,
+expired-session re-registration followed by a fresh authenticated connection,
+and Go v2.13.0 ↔ Rust TCP/UDP forwarding through local STUN/rendezvous fixtures.
+The combined URI codec is tested against the documented format and Rust round
+trips; this is not a claim that the older Go v2.13.0 CLI understands that newer
+combined URI. Real-world NAT combinations, public rendezvous availability and
+router mapping behavior are not established by these local tests.
+
+## Client routing and GUI capabilities
+
+Use `capabilities --output json` for compiled feature/API support and
+`route explain HOST:PORT --protocol tcp -c client.yaml --output json` for an
+**offline** decision using the same algorithm as forwarding. Client routing v1
+supports SOCKS5, HTTP, explicit TCP/UDP forwarding and opt-in
+[protected Linux TUN with Fake-IP DNS](client-tun-routing.md). Other-platform TUN
+routing, transparent routing, process matching and persistent IPC remain unsupported. See the complete
+[configuration and GUI integration contract](client-routing.md).

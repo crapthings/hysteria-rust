@@ -47,3 +47,29 @@ server startup.
 Profile libraries, server groups and ordered client rules are additional application capabilities, not changes to the Hysteria wire protocol. If implemented in this workspace, give them independent configuration, lifecycle and tests outside the transport/protocol crates. Clarify how TCP, UDP, DNS, process attribution and direct routing behave before exposing GUI controls or claiming cross-platform parity.
 
 A full Surge-like rules engine is not included in the first CLI increment. No additional routing engine has been introduced by this work.
+
+## Client first-use experience
+
+Implemented: `init client`, `guide client`, standard sharing-link import,
+loopback-only SOCKS5 defaults, offline `doctor client` and an opt-in bounded
+`--connect` probe. The probe distinguishes address resolution from the combined
+QUIC/TLS/authentication result and does not guess timeout causes. See
+[client setup](cli.md#client-setup-and-diagnosis). Realm sharing/import, guided setup and phased active probes are implemented.
+Finer QUIC/TLS/authentication diagnostics, profiles and client runtime status/events
+remain subsequent work.
+
+Server-side `server share` now exports a standard direct-mode client URI from an
+explicit public address and selected credentials. Generation and import share
+address normalization and round-trip coverage. Realm configurations use standard combined Realm URIs; mTLS still requires
+a full client configuration instead of this exporter.
+
+## Client routing and GUI contract v1
+
+Implemented: ordered domain/suffix/IP/CIDR/private-network/protocol/port rules,
+proxy/direct/reject dispatch for SOCKS5, HTTP and explicit forwarding, offline
+`route explain`, and `capabilities` JSON. See [client routing](client-routing.md).
+Protected Linux TUN now has explicit egress protection and persistent Fake-IP DNS;
+see [configuration and validation limits](client-tun-routing.md). Isolated real Linux TUN
+acceptance tests passed; public-network and system resolver validation remain pending. Other-platform protection, transparent routing,
+process matching, rule sets and persistent control IPC/events remain later
+increments; GUI consumers can use CLI JSON now.

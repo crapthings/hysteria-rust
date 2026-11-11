@@ -3,7 +3,7 @@ use clap::{Args, ValueEnum};
 use hysteria_cli::{CliError, Result, config::ServerConfig};
 use std::{
     fs::OpenOptions,
-    io::{self, BufRead, Write},
+    io::{self, BufRead, Read, Write},
     path::Path,
 };
 
@@ -11,18 +11,30 @@ use std::{
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum InitMode {
     Server,
+    Client,
 }
 
 /// Generates a small starter configuration with safe defaults.
 #[derive(Debug, Args)]
 pub(crate) struct InitOptions {
-    /// Configuration role to generate (currently server only).
+    /// Configuration role to generate.
     #[arg(value_enum)]
     mode: InitMode,
+    /// Import a client sharing link (contains credentials; prefer guide client interactively).
+    #[arg(long)]
+    uri: Option<String>,
+    /// Explicitly retain insecure=1 from an imported client link.
+    #[arg(long, requires = "uri")]
+    allow_insecure: bool,
 }
 
 impl InitOptions {
     pub(crate) fn run(&self, path: &Path, interactive: bool) -> Result<()> {
+        if matches!(self.mode, InitMode::Server) && (self.uri.is_some() || self.allow_insecure) {
+            return Err(CliError::new(
+                "--uri and --allow-insecure apply only to client setup",
+            ));
+        }
         if path != Path::new("-") && path.symlink_metadata().is_ok() {
             return Err(CliError::new(format!(
                 "{} already exists; choose another path with --config",
@@ -33,6 +45,13 @@ impl InitOptions {
         let mut prompts = io::stderr().lock();
         let text = match self.mode {
             InitMode::Server => generate(interactive, &mut input, &mut prompts)?,
+            InitMode::Client => crate::client_setup::generate(
+                interactive,
+                self.uri.as_deref(),
+                self.allow_insecure,
+                &mut input,
+                &mut prompts,
+            )?,
         };
         if path == Path::new("-") {
             let mut stdout = io::stdout().lock();
@@ -59,12 +78,20 @@ impl InitOptions {
                 "Created {} (password stored in this file).",
                 path.display()
             )?;
+            if matches!(self.mode, InitMode::Client) {
+                summarize_client(&text, path, &mut prompts)?;
+                return Ok(());
+            }
             let config: ServerConfig = serde_yaml_ng::from_str(&text)
                 .map_err(|_| CliError::new("failed to summarize generated configuration"))?;
             writeln!(
                 prompts,
                 "  Listen: {} (UDP)\n  Authentication: generated password",
-                config.listen
+                if config.listen.starts_with("realm:") || config.listen.starts_with("realm+http:") {
+                    "Realm (address stored in configuration)"
+                } else {
+                    &config.listen
+                }
             )?;
             if let Some(acme) = &config.acme {
                 writeln!(
@@ -105,12 +132,44 @@ impl InitOptions {
     }
 }
 
+fn summarize_client(text: &str, path: &Path, prompts: &mut impl Write) -> Result<()> {
+    let config: hysteria_cli::config::ClientConfig = serde_yaml_ng::from_str(text)
+        .map_err(|_| CliError::new("failed to summarize client configuration"))?;
+    writeln!(
+        prompts,
+        "  SOCKS5: {}\n  TLS verification: {}\n  System proxy/routes/DNS: unchanged",
+        config
+            .socks5
+            .as_ref()
+            .map_or("disabled", |proxy| proxy.listen.as_str()),
+        if config.tls.insecure {
+            "DISABLED (explicitly accepted)"
+        } else {
+            "enabled"
+        }
+    )?;
+    let argument = path
+        .to_str()
+        .filter(|value| {
+            value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
+        })
+        .unwrap_or("<your-config-path>");
+    writeln!(
+        prompts,
+        "Next: edit placeholders if present, then run:\n  hysteria doctor client -c {argument}\n  hysteria doctor client --connect -c {argument}\n  hysteria client -c {argument}"
+    )?;
+    Ok(())
+}
+
 fn generate(
     interactive: bool,
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<String> {
     let mut port = 443;
+    let mut realm_address = None;
     let mut certificate = "server.crt".to_owned();
     let mut key = "server.key".to_owned();
     let mut domain = None;
@@ -119,16 +178,7 @@ fn generate(
             output,
             "Server setup — Enter accepts defaults. A random password is generated automatically."
         )?;
-        loop {
-            let value = ask(input, output, "UDP listen port", "443")?;
-            if let Ok(value) = value.parse::<u16>()
-                && value != 0
-            {
-                port = value;
-                break;
-            }
-            writeln!(output, "Enter a port between 1 and 65535.")?;
-        }
+        (port, realm_address) = ask_listen(input, output)?;
         let mode = loop {
             let value = ask(
                 input,
@@ -136,6 +186,13 @@ fn generate(
                 "Certificate: 1 = existing files, 2 = automatic ACME",
                 "1",
             )?;
+            if value == "2" && realm_address.is_some() {
+                writeln!(
+                    output,
+                    "Realm guide uses existing certificate files. For automatic issuance, configure DNS-01 ACME separately; HTTP validation is not suitable behind NAT."
+                )?;
+                continue;
+            }
             if value == "1" || value == "2" {
                 break value;
             }
@@ -180,8 +237,14 @@ fn generate(
         "# Set paths to your certificate and private key before starting.\n# Relative paths are resolved from the working directory.\n".to_owned()
             + &format!("tls:\n  cert: {}\n  key: {}\n", serde_json::Value::String(certificate), serde_json::Value::String(key))
     };
+    let listen_hint = if realm_address.is_some() {
+        "# Realm mode uses outbound rendezvous/STUN and UDP hole punching."
+    } else {
+        "# Listen on all interfaces; allow this UDP port for clients."
+    };
+    let listen = serde_json::Value::String(realm_address.unwrap_or_else(|| format!(":{port}")));
     let text = format!(
-        "# Hysteria server configuration. Keep this file private.\n# Listen on all interfaces; allow this UDP port for clients.\nlisten: \":{port}\"\n\n{tls}\n# Automatically generated password; use the same value on clients.\nauth:\n  type: password\n  password: {password}\n\nmasquerade:\n  type: string\n  string:\n    content: Not Found\n    headers:\n      content-type: text/plain; charset=utf-8\n    statusCode: 404\n"
+        "# Hysteria server configuration. Keep this file private.\n{listen_hint}\nlisten: {listen}\n\n{tls}\n# Automatically generated password; use the same value on clients.\nauth:\n  type: password\n  password: {password}\n\nmasquerade:\n  type: string\n  string:\n    content: Not Found\n    headers:\n      content-type: text/plain; charset=utf-8\n    statusCode: 404\n"
     );
     let config: ServerConfig = serde_yaml_ng::from_str(&text)
         .map_err(|_| CliError::new("failed to build server configuration"))?;
@@ -189,7 +252,7 @@ fn generate(
     Ok(text)
 }
 
-fn ask(
+pub(crate) fn ask(
     input: &mut impl BufRead,
     output: &mut impl Write,
     label: &str,
@@ -198,9 +261,14 @@ fn ask(
     write!(output, "{label} [{default}]: ")?;
     output.flush()?;
     let mut value = String::new();
-    if input.read_line(&mut value)? == 0 {
+    if (&mut *input).take(65537).read_line(&mut value)? == 0 {
         return Err(CliError::new(
             "setup cancelled: input ended; no configuration written",
+        ));
+    }
+    if value.len() > 65536 {
+        return Err(CliError::new(
+            "setup input exceeds 64 KiB; no configuration written",
         ));
     }
     let value = value.trim();
@@ -220,4 +288,26 @@ fn valid_domain(value: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
+}
+
+fn ask_listen(input: &mut impl BufRead, output: &mut impl Write) -> Result<(u16, Option<String>)> {
+    loop {
+        let value = ask(input, output, "UDP port or realm:// address", "443")?;
+        if value.starts_with("realm:") || value.starts_with("realm+http:") {
+            if hysteria_realm::RealmAddr::parse(&value).is_ok() {
+                return Ok((443, Some(value)));
+            }
+            writeln!(
+                output,
+                "Invalid Realm address. Include the rendezvous token and realm name."
+            )?;
+            continue;
+        }
+        if let Ok(value) = value.parse::<u16>()
+            && value != 0
+        {
+            return Ok((value, None));
+        }
+        writeln!(output, "Enter a port between 1 and 65535.")?;
+    }
 }

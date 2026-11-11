@@ -1,9 +1,9 @@
+use crate::client_udp::ClientUdpSession;
 use crate::{
     CliError, Result,
     config::Socks5Config,
     runtime::{ClientHandle, normalize_listen},
 };
-use hysteria_transport::UdpSession;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
@@ -46,7 +46,7 @@ pub(crate) async fn serve(config: Socks5Config, client: Arc<ClientHandle>) -> Re
 async fn handle_connection(
     mut stream: TcpStream,
     config: &Socks5Config,
-    client: &ClientHandle,
+    client: &Arc<ClientHandle>,
 ) -> Result<()> {
     negotiate(&mut stream, config).await?;
     let mut header = [0; 3];
@@ -125,7 +125,7 @@ async fn handle_connect(mut stream: TcpStream, client: &ClientHandle, address: &
     Ok(())
 }
 
-async fn handle_udp_associate(mut stream: TcpStream, client: &ClientHandle) -> Result<()> {
+async fn handle_udp_associate(mut stream: TcpStream, client: &Arc<ClientHandle>) -> Result<()> {
     let local_ip = stream.local_addr()?.ip();
     let bind = SocketAddr::new(local_ip, 0);
     let socket = UdpSocket::bind(bind).await?;
@@ -143,9 +143,10 @@ async fn handle_udp_associate(mut stream: TcpStream, client: &ClientHandle) -> R
 async fn relay_udp(
     stream: &mut TcpStream,
     socket: &UdpSocket,
-    session: &mut UdpSession,
+    session: &mut ClientUdpSession,
 ) -> Result<()> {
     let mut client_address = None;
+    let mut reported_failure = false;
     let mut datagram = vec![0; 65_535];
     let mut tcp_probe = [0; 1];
     loop {
@@ -164,7 +165,10 @@ async fn relay_udp(
                     continue;
                 };
                 client_address.get_or_insert(source);
-                session.send(payload, &target).await?;
+                if let Err(error) = session.send(payload, &target).await {
+                    if !session.is_routed() { return Err(error.into()); }
+                    if !reported_failure { eprintln!("SOCKS5 UDP request failed: {error}"); reported_failure = true; }
+                }
             }
             received = session.receive(), if client_address.is_some() => {
                 let (payload, source) = received?;

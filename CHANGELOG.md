@@ -8,6 +8,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Cancel pending client handshakes on shutdown so an unreachable server cannot
+  hold the connection-state lock and delay SIGTERM cleanup. Verified on Linux TUN.
+
 - Check Cloudflare ACME DNS API success envelopes for zone lookup, TXT creation
   and cleanup; omit response bodies from Cloudflare errors to avoid exposing
   credentials or challenge values.
@@ -44,6 +47,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Preserve sniffed UDP destinations on subsequent messages to the same target.
 
 ### Added
+
+- Add versioned client routing for domain/suffix/IP/CIDR/private-network and
+  protocol/port rules with proxy/direct/reject outbounds across SOCKS5, HTTP and
+  explicit forwarding. Match without DNS, isolate UDP destination flows and
+  close direct streams on runtime shutdown. Reject unsupported transparent
+  routing and process/Geo matchers explicitly.
+- Add opt-in protected Linux TUN routing with persistent dual-stack Fake-IP DNS,
+  marked/interface-bound egress sockets, bounded DNS forwarding and conservative
+  policy preflight. Isolated real Linux TUN installation and cleanup tests pass;
+  other-platform routed TUN and Realm in this mode are rejected.
+- Add `capabilities` JSON and offline `route explain` JSON/text as the first
+  GUI integration contract; persistent IPC and live apply/events remain pending.
+
+- Add combined Realm sharing URI import/export, guided setup and opt-in staged
+  STUN/rendezvous/punch diagnosis without enabling router mappings. Verify
+  expired-session recovery and Go v2.13.0 bidirectional TCP/UDP interoperability
+  using local fixtures.
+
+- Add offline `server share` for an explicit public address and selected user,
+  including standard obfuscation/TLS/ECH fields and optional QR output. Normalize
+  direct sharing addresses and use the dedicated scheme for Realm exports.
+
+- Add client templates, interactive setup and sharing-link import with loopback
+  SOCKS5 defaults and explicit consent for insecure TLS links.
+- Add offline client diagnostics and an opt-in bounded connection probe, with
+  aligned text/JSON output and explicit unknown/untested outcomes.
 
 - Add Linux systemd service management for named server/client instances, with
   default start/boot enablement, pre-restart validation, status and journal access.

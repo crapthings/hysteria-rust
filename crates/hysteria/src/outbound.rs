@@ -259,7 +259,7 @@ struct AclRule {
 }
 
 #[derive(Clone)]
-enum HostMatcher {
+pub(crate) enum HostMatcher {
     All,
     Exact(String),
     Suffix(String),
@@ -271,7 +271,7 @@ enum HostMatcher {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AclProtocol {
+pub(crate) enum AclProtocol {
     Both,
     Tcp,
     Udp,
@@ -357,7 +357,7 @@ impl ServerOutbound for RejectOutbound {
 }
 
 impl HostMatcher {
-    fn matches(&self, host: &str, ips: &[IpAddr]) -> bool {
+    pub(crate) fn matches(&self, host: &str, ips: &[IpAddr]) -> bool {
         match self {
             Self::All => true,
             Self::Exact(pattern) => host == pattern,
@@ -476,7 +476,11 @@ fn acl_lines(text: &str) -> Result<Vec<(usize, Vec<String>)>> {
     Ok(rules)
 }
 
-fn compile_matcher(value: &str, line: usize, geo: Option<&GeoDatabases>) -> Result<HostMatcher> {
+pub(crate) fn compile_matcher(
+    value: &str,
+    line: usize,
+    geo: Option<&GeoDatabases>,
+) -> Result<HostMatcher> {
     let value = value.trim_end_matches('.').to_ascii_lowercase();
     if matches!(value.as_str(), "*" | "all") {
         return Ok(HostMatcher::All);
@@ -526,7 +530,7 @@ fn compile_matcher(value: &str, line: usize, geo: Option<&GeoDatabases>) -> Resu
     }
 }
 
-fn parse_proto_port(value: &str, line: usize) -> Result<(AclProtocol, u16, u16)> {
+pub(crate) fn parse_proto_port(value: &str, line: usize) -> Result<(AclProtocol, u16, u16)> {
     let value = value.to_ascii_lowercase();
     if matches!(value.as_str(), "" | "*" | "*/*") {
         return Ok((AclProtocol::Both, 0, 0));
@@ -1417,7 +1421,7 @@ fn decode_address(
     Ok((format_authority(&host, port), port_offset + 2))
 }
 
-fn parse_host_port(address: &str) -> std::result::Result<(String, u16), String> {
+pub(crate) fn parse_host_port(address: &str) -> std::result::Result<(String, u16), String> {
     let authority = address
         .parse::<http::uri::Authority>()
         .map_err(|error| format!("invalid address {address:?}: {error}"))?;

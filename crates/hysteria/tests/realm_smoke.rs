@@ -3,7 +3,7 @@ use axum::{
     body::Body,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use bytes::Bytes;
@@ -27,7 +27,9 @@ use tokio_stream::wrappers::ReceiverStream;
 #[derive(Clone)]
 struct RendezvousState {
     events: Arc<Mutex<Option<mpsc::Receiver<Bytes>>>>,
-    event_sender: mpsc::Sender<Bytes>,
+    event_sender: Arc<Mutex<mpsc::Sender<Bytes>>>,
+    registrations: Arc<std::sync::atomic::AtomicUsize>,
+    expire_once: Arc<std::sync::atomic::AtomicBool>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Vec<String>>>>>,
     registered: Arc<Notify>,
 }
@@ -57,7 +59,7 @@ async fn realm_round_trip() {
     let realm_uri =
         format!("realm+http://realm-token@{rendezvous_address}/integration?stun={stun_address}");
     let server: ServerConfig = serde_yaml_ng::from_str(&format!(
-        "listen: '{realm_uri}'\nrealm: {{ ipMode: v4, stunTimeout: 1s, punchTimeout: 2s }}\ntls: {{ cert: '{}', key: '{}', sniGuard: disable }}\nauth: {{ type: password, password: secret }}\n",
+        "listen: '{realm_uri}'\nrealm: {{ ipMode: v4, stunTimeout: 1s, punchTimeout: 2s, heartbeatInterval: 100ms }}\ntls: {{ cert: '{}', key: '{}', sniGuard: disable }}\nauth: {{ type: password, password: secret }}\n",
         cert_path.display(),
         key_path.display()
     ))
@@ -118,7 +120,7 @@ async fn realm_round_trip() {
     let mut reply = [0; 17];
     forwarded.read_exact(&mut reply).await.unwrap();
     assert_eq!(&reply, b"realm integration");
-
+    check_diagnostics_and_recovery(directory.path(), &state, &realm_uri).await;
     let _ = client_shutdown.send(());
     let _ = server_shutdown.send(());
     client_task.await.unwrap();
@@ -126,6 +128,53 @@ async fn realm_round_trip() {
     echo_task.await.unwrap();
     stun_task.abort();
     rendezvous_task.abort();
+}
+
+async fn check_diagnostics_and_recovery(
+    directory: &std::path::Path,
+    state: &RendezvousState,
+    realm_uri: &str,
+) {
+    for (realm_auth, proxy_auth, expected_phase) in [
+        ("realm-token", "secret", "server_connection"),
+        ("wrong-token", "secret", "realm_rendezvous"),
+        ("realm-token", "wrong-password", "server_connection"),
+    ] {
+        let path = directory.join("probe.json");
+        std::fs::write(&path, serde_json::to_vec(&serde_json::json!({"server":realm_uri.replace("realm-token",realm_auth),"auth":proxy_auth,"realm":{"ipMode":"v4","stunTimeout":"1s","punchTimeout":"2s"},"tls":{"insecure":true,"sni":"localhost"},"socks5":{"listen":"127.0.0.1:1080"}})).unwrap()).unwrap();
+        let report = hysteria_cli::doctor::client(&path, true, Duration::from_secs(5)).await;
+        let success = realm_auth == "realm-token" && proxy_auth == "secret";
+        assert_eq!(report.passed, success);
+        assert!(report.checks.iter().any(|check| check.id == expected_phase
+            && check.status == if success { "pass" } else { "fail" }));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("realm-token") && !json.contains("wrong-password"));
+    }
+    state
+        .expire_once
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    tokio::time::timeout(Duration::from_secs(4), async {
+        while state
+            .registrations
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < 2
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("server did not re-register after expired session");
+    let probe_path = directory.join("probe.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&probe_path).unwrap()).unwrap();
+    config["auth"] = "secret".into();
+    std::fs::write(&probe_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    assert!(
+        hysteria_cli::doctor::client(&probe_path, true, Duration::from_secs(5))
+            .await
+            .passed
+    );
 }
 
 async fn start_stun() -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -152,7 +201,9 @@ async fn start_rendezvous() -> (SocketAddr, RendezvousState, tokio::task::JoinHa
     let (event_sender, event_receiver) = mpsc::channel(8);
     let state = RendezvousState {
         events: Arc::new(Mutex::new(Some(event_receiver))),
-        event_sender,
+        event_sender: Arc::new(Mutex::new(event_sender)),
+        registrations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        expire_once: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         pending: Arc::new(Mutex::new(HashMap::new())),
         registered: Arc::new(Notify::new()),
     };
@@ -174,14 +225,26 @@ async fn register(
     Path(realm): Path<String>,
     headers: HeaderMap,
     Json(_request): Json<serde_json::Value>,
-) -> Json<RegisterResponse> {
+) -> Response {
     assert_eq!(realm, "integration");
-    assert_bearer(&headers, "realm-token");
+    if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("Bearer realm-token") {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if state
+        .registrations
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        > 0
+    {
+        let (sender, receiver) = mpsc::channel(8);
+        *state.events.lock().await = Some(receiver);
+        *state.event_sender.lock().await = sender;
+    }
     state.registered.notify_one();
     Json(RegisterResponse {
         session_id: "session-token".to_owned(),
         ttl: 60,
     })
+    .into_response()
 }
 
 async fn deregister(headers: HeaderMap) -> StatusCode {
@@ -189,9 +252,15 @@ async fn deregister(headers: HeaderMap) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
-async fn heartbeat(headers: HeaderMap) -> Json<HeartbeatResponse> {
+async fn heartbeat(State(state): State<RendezvousState>, headers: HeaderMap) -> Response {
     assert_bearer(&headers, "session-token");
-    Json(HeartbeatResponse { ttl: 60 })
+    if state
+        .expire_once
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Json(HeartbeatResponse { ttl: 60 }).into_response()
 }
 
 async fn events(State(state): State<RendezvousState>, headers: HeaderMap) -> Response {
@@ -209,8 +278,10 @@ async fn connect(
     State(state): State<RendezvousState>,
     headers: HeaderMap,
     Json(request): Json<ConnectRequest>,
-) -> Json<ConnectResponse> {
-    assert_bearer(&headers, "realm-token");
+) -> Response {
+    if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("Bearer realm-token") {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     let nonce = request.punch.nonce.clone();
     let event = PunchEvent {
         addresses: request.addresses,
@@ -221,6 +292,8 @@ async fn connect(
     let encoded = serde_json::to_string(&event).unwrap();
     state
         .event_sender
+        .lock()
+        .await
         .send(Bytes::from(format!("event: punch\ndata: {encoded}\n\n")))
         .await
         .unwrap();
@@ -232,6 +305,7 @@ async fn connect(
         addresses,
         punch: request.punch,
     })
+    .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -294,4 +368,75 @@ fn stun_response(transaction: [u8; 12], address: SocketAddr) -> Vec<u8> {
             .map(|(byte, mask)| byte ^ mask),
     );
     packet
+}
+
+/// Uses only local STUN/rendezvous fixtures; no router discovery or public service.
+#[tokio::test]
+async fn go_and_rust_realm_interoperate_in_both_directions() {
+    let Ok(go) = std::env::var("HYSTERIA_GO_BIN") else {
+        eprintln!("set HYSTERIA_GO_BIN to run Go Realm interoperability");
+        return;
+    };
+    tokio::time::timeout(Duration::from_secs(40), async {
+        for go_server in [true, false] {
+            let (stun, stun_task) = start_stun().await;
+            let (rendezvous, state, rendezvous_task) = start_rendezvous().await;
+            let directory = tempfile::tempdir().unwrap();
+            let cert = directory.path().join("cert.pem");
+            let key = directory.path().join("key.pem");
+            let generated = generate(&CertOptions { hosts: "localhost".into(), cert_file: cert.clone(), key_file: key.clone(), valid_for: Duration::from_secs(3600), overwrite: false }).unwrap();
+            let uri = format!("realm+http://realm-token@{rendezvous}/integration?stun={stun}");
+            let server_path = directory.path().join("server.json");
+            std::fs::write(&server_path, serde_json::to_vec(&serde_json::json!({"listen":uri,"realm":{"ipMode":"v4","stunTimeout":"1s","punchTimeout":"2s"},"tls":{"cert":cert,"key":key,"sniGuard":"disable"},"auth":{"type":"password","password":"secret"}})).unwrap()).unwrap();
+            let rust = env!("CARGO_BIN_EXE_hysteria");
+            let (server_bin, client_bin) = if go_server { (go.as_str(), rust) } else { (rust, go.as_str()) };
+            let mut server = tokio::process::Command::new(server_bin).args(["server", "-c"]).arg(&server_path).env("HYSTERIA_DISABLE_UPDATE_CHECK", "true").kill_on_drop(true).stdout(std::process::Stdio::null()).spawn().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), state.registered.notified()).await.unwrap();
+            let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let target = echo.local_addr().unwrap();
+            let echo_task = tokio::spawn(async move {
+                let (mut stream, _) = echo.accept().await.unwrap();
+                let mut data = [0; 5];
+                stream.read_exact(&mut data).await.unwrap();
+                stream.write_all(&data).await.unwrap();
+            });
+            let udp_echo = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let udp_target = udp_echo.local_addr().unwrap();
+            let udp_task = tokio::spawn(async move {
+                let mut bytes = [0; 1500];
+                let (n, peer) = udp_echo.recv_from(&mut bytes).await.unwrap();
+                udp_echo.send_to(&bytes[..n], peer).await.unwrap();
+            });
+            let udp_reservation = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let udp_local = udp_reservation.local_addr().unwrap();
+            drop(udp_reservation);
+            let local = free_tcp_address();
+            let client_path = directory.path().join("client.json");
+            std::fs::write(&client_path, serde_json::to_vec(&serde_json::json!({"server":uri,"auth":"secret","realm":{"ipMode":"v4","stunTimeout":"1s","punchTimeout":"2s"},"tls":{"sni":"localhost","insecure":true,"pinSHA256":generated.pin_sha256},"tcpForwarding":[{"listen":local.to_string(),"remote":target.to_string()}],"udpForwarding":[{"listen":udp_local.to_string(),"remote":udp_target.to_string()}]})).unwrap()).unwrap();
+            let mut client = tokio::process::Command::new(client_bin).args(["client", "-c"]).arg(&client_path).env("HYSTERIA_DISABLE_UPDATE_CHECK", "true").kill_on_drop(true).stdout(std::process::Stdio::null()).spawn().unwrap();
+            let mut stream = tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    assert!(server.try_wait().unwrap().is_none(), "server exited");
+                    assert!(client.try_wait().unwrap().is_none(), "client exited");
+                    if let Ok(stream) = TcpStream::connect(local).await { break stream; }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }).await.unwrap();
+            stream.write_all(b"realm").await.unwrap();
+            let mut reply = [0; 5];
+            tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut reply)).await.unwrap().unwrap();
+            assert_eq!(&reply, b"realm");
+            let udp_client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            udp_client.send_to(b"realm-udp", udp_local).await.unwrap();
+            let mut data = [0; 32];
+            let (n, _) = tokio::time::timeout(Duration::from_secs(5), udp_client.recv_from(&mut data)).await.unwrap().unwrap();
+            assert_eq!(&data[..n], b"realm-udp");
+            udp_task.await.unwrap();
+            echo_task.await.unwrap();
+            client.kill().await.unwrap();
+            server.kill().await.unwrap();
+            stun_task.abort();
+            rendezvous_task.abort();
+        }
+    }).await.expect("Realm interop deadline exceeded");
 }

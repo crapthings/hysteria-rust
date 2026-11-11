@@ -277,3 +277,27 @@ hysteria service logs
 Installation starts the service and enables it at boot. For multiple instances,
 add `--name NAME`; clients use `install client`. See [service management](docs/cli.md#linux-system-services)
 for permissions, path handling and removal.
+
+### Client quick start
+
+```shell
+hysteria guide client -c client.yaml
+hysteria doctor client -c client.yaml
+hysteria doctor client --connect -c client.yaml
+hysteria client -c client.yaml
+```
+
+Paste a sharing link into the guide, or enter the server and authentication
+manually. The default proxy is SOCKS5 at `127.0.0.1:1080`; system proxy, routes and
+DNS remain unchanged. See [client setup and diagnosis](docs/cli.md#client-setup-and-diagnosis).
+
+Realm configurations are also supported by the guides and sharing commands.
+`server share` uses the Realm address in `listen` without `--address`;
+`doctor client --connect` reports STUN, rendezvous and punching stages separately.
+See [Realm setup and validation limits](docs/cli.md#realm-setup-sharing-and-diagnosis).
+
+Client domain/IP routing and its CLI JSON contract are documented in
+[client routing](docs/client-routing.md). The opt-in
+[protected Linux TUN mode](docs/client-tun-routing.md) adds persistent Fake-IP DNS
+and explicit egress protection; isolated Linux acceptance tests passed, with public-network and system resolver
+validation still pending.

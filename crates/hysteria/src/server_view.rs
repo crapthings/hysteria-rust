@@ -23,9 +23,14 @@ pub(crate) struct ServerOptions {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ServerCommand {
+    /// Export one standard client link offline (contains credentials).
+    #[command(display_order = 30)]
+    Share(crate::server_share::Options),
     /// Show readiness, uptime and local listeners of the running server.
+    #[command(display_order = 10)]
     Status(ViewOptions),
     /// Show aggregate connections and payload traffic (samples for two seconds).
+    #[command(display_order = 20)]
     Stats(ViewOptions),
 }
 
@@ -210,6 +215,7 @@ impl ServerCommand {
         let (stats, options) = match self {
             Self::Status(options) => (false, options),
             Self::Stats(options) => (true, options),
+            Self::Share(options) => return options.run(path),
         };
         let config = ServerConfig::load(path)?;
         let monitor = Monitor::new(&config)?;

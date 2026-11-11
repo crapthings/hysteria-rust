@@ -2,11 +2,14 @@
 mod check;
 /// Defines command syntax independently of execution.
 mod cli;
+mod client_setup;
 /// Formats offline deployment diagnostics.
 mod doctor_cli;
 mod ech_cli;
 /// Generates starter configurations without starting a server.
 mod init;
+mod routing_cli;
+mod server_share;
 mod server_view;
 mod service;
 /// Installs platform-specific graceful service termination handlers.
@@ -44,7 +47,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     let update_checks = !cli.disable_update_check;
     let result = match cli.command.unwrap_or(Command::Client) {
         Command::Check(options) => return options.run(&cli.config, cli.diagnostic),
-        Command::Doctor(options) => return options.run(&cli.config),
+        Command::Doctor(options) => return options.run(&cli.config).await,
         Command::Init(options) => options.run(&cli.config, false),
         Command::Guide(options) => options.run(&cli.config, true),
         Command::Client => {
@@ -66,6 +69,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             )
             .await
         }
+        Command::Capabilities(options) => options.run(),
+        Command::Route(options) => return options.run(&cli.config),
         Command::Version => {
             println!("Hysteria 2 Rust {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -95,24 +100,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             )
             .await
         }
-        Command::Share { notext, qr } => {
-            let uri = ClientConfig::load(&cli.config)?.share_uri()?;
-            if !notext {
-                println!("{uri}");
-            }
-            if qr {
-                let code = qrcode::QrCode::new(uri.as_bytes()).map_err(|error| {
-                    hysteria_cli::CliError::new(format!("failed to encode QR code: {error}"))
-                })?;
-                println!(
-                    "{}",
-                    code.render::<qrcode::render::unicode::Dense1x2>()
-                        .quiet_zone(true)
-                        .build()
-                );
-            }
-            Ok(())
-        }
+        Command::Share { notext, qr } => print_share(&cli.config, notext, qr),
         Command::CheckUpdate => print_update().await,
         Command::Ech(options) => options.run(),
         Command::Service(options) => options.run(&cli.config),
@@ -196,4 +184,23 @@ fn format_speed(result: hysteria_cli::runtime::SpeedTestResult, use_bytes: bool)
         result.bytes,
         humantime::format_duration(result.elapsed)
     )
+}
+
+fn print_share(path: &std::path::Path, notext: bool, qr: bool) -> Result<()> {
+    let uri = ClientConfig::load(path)?.share_uri()?;
+    if !notext {
+        println!("{uri}");
+    }
+    if qr {
+        let code = qrcode::QrCode::new(uri.as_bytes()).map_err(|error| {
+            hysteria_cli::CliError::new(format!("failed to encode QR code: {error}"))
+        })?;
+        println!(
+            "{}",
+            code.render::<qrcode::render::unicode::Dense1x2>()
+                .quiet_zone(true)
+                .build()
+        );
+    }
+    Ok(())
 }

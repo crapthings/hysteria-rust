@@ -327,7 +327,10 @@ fn doctor_acme_is_offline_and_reports_skipped_checks() {
             .any(|check| check["id"] == "acme_issuance" && check["status"] == "skip")
     );
     assert_eq!(execute(&["doctor"], b"").status.code(), Some(2));
-    assert_eq!(execute(&["doctor", "client"], b"").status.code(), Some(2));
+    assert_eq!(
+        execute(&["doctor", "client", "-c", "-"], b"").status.code(),
+        Some(3)
+    );
 }
 
 /// Uses real certificates to exercise validity boundaries and mismatching private keys.
@@ -771,4 +774,641 @@ fn service_help_and_invalid_names_are_offline() {
         assert_eq!(output.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&output.stderr).contains("Linux running systemd"));
     }
+}
+
+#[test]
+fn client_setup_imports_privately_and_guide_does_not_echo_credentials() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("client.yaml");
+    let output = execute(
+        &["guide", "client", "-c", path.to_str().unwrap()],
+        b"hy2://private-sentinel@example.com/?obfs=gecko&obfs-password=obfs-sentinel\n\n",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel"));
+    let config = hysteria_cli::config::ClientConfig::load(&path).unwrap();
+    assert_eq!(config.auth, "private-sentinel");
+    assert_eq!(config.obfs.gecko.password, "obfs-sentinel");
+    assert_eq!(config.socks5.unwrap().listen, "127.0.0.1:1080");
+    let before = fs::read(&path).unwrap();
+    assert!(
+        !execute(&["init", "client", "-c", path.to_str().unwrap()], b"")
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let output = execute(&["init", "client", "-c", "-"], b"");
+    assert!(output.status.success());
+    let config: hysteria_cli::config::ClientConfig =
+        serde_yaml_ng::from_slice(&output.stdout).unwrap();
+    assert!(!config.tls.insecure);
+    assert!(config.tun.is_none());
+    let rejected = directory.path().join("rejected.yaml");
+    assert!(
+        !execute(
+            &["guide", "client", "-c", rejected.to_str().unwrap()],
+            b"hy2://private-sentinel@example.com/?insecure=1\n\n"
+        )
+        .status
+        .success()
+    );
+    assert!(!rejected.exists());
+}
+
+#[test]
+fn client_doctor_is_offline_by_default_and_bounds_active_timeout() {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let config = format!(
+        "server: {}\nauth: private-sentinel\ntls: {{insecure: true}}\nsocks5: {{listen: '127.0.0.1:1080'}}\n",
+        socket.local_addr().unwrap()
+    );
+    let output = execute(
+        &["doctor", "client", "-c", "-", "--output", "json"],
+        config.as_bytes(),
+    );
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["mode"], "client");
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "server_connection" && c["status"] == "skip")
+    );
+    assert!(socket.recv(&mut [0u8; 1]).is_err());
+    let output = execute(
+        &[
+            "doctor",
+            "client",
+            "--connect",
+            "--timeout",
+            "1s",
+            "-c",
+            "-",
+            "--output",
+            "json",
+        ],
+        config.as_bytes(),
+    );
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("private-sentinel"));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "server_resolution" && c["status"] == "pass")
+    );
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["message"].as_str().unwrap().contains("cause is unknown"))
+    );
+    assert_eq!(
+        execute(&["doctor", "client", "--timeout", "0s"], b"")
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn client_doctor_authenticates_without_binding_local_proxy() {
+    let directory = tempfile::tempdir().unwrap();
+    let cert = directory.path().join("server.crt");
+    let key = directory.path().join("server.key");
+    hysteria_cli::cert::generate(&hysteria_cli::cert::CertOptions {
+        hosts: "localhost".into(),
+        cert_file: cert.clone(),
+        key_file: key.clone(),
+        valid_for: Duration::from_secs(3600),
+        overwrite: false,
+    })
+    .unwrap();
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = socket.local_addr().unwrap();
+    drop(socket);
+    let server_path = directory.path().join("server.json");
+    fs::write(&server_path, serde_json::to_vec(&serde_json::json!({"listen":address.to_string(),"tls":{"cert":cert,"key":key},"auth":{"type":"password","password":"private-sentinel"}})).unwrap()).unwrap();
+    let logs_path = directory.path().join("logs");
+    let logs = fs::File::create(&logs_path).unwrap();
+    let mut server = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_hysteria"))
+            .args([
+                "server",
+                "--disable-update-check",
+                "-c",
+                server_path.to_str().unwrap(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(logs)
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fs::read_to_string(&logs_path)
+        .unwrap()
+        .contains("server listening")
+    {
+        assert!(server.0.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline, "server startup timed out");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    for (auth, expected) in [("private-sentinel", 0), ("wrong-sentinel", 3)] {
+        let config = serde_json::to_vec(&serde_json::json!({"server":address.to_string(),"auth":auth,"tls":{"ca":cert,"sni":"localhost"},"socks5":{"listen":occupied.local_addr().unwrap().to_string()}})).unwrap();
+        let output = execute(
+            &[
+                "doctor",
+                "client",
+                "--connect",
+                "--timeout",
+                "3s",
+                "-c",
+                "-",
+                "--output",
+                "json",
+            ],
+            &config,
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["passed"], expected == 0);
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("sentinel"));
+    }
+}
+
+#[test]
+fn client_doctor_rejects_local_material_and_listener_conflicts_before_network() {
+    for settings in [
+        "tls: {ca: /nonexistent/hysteria-test-ca.pem}",
+        "tls: {insecure: true}\nhttp: {listen: '127.0.0.1:1080'}",
+    ] {
+        let config = format!(
+            "server: 127.0.0.1:1\nauth: private-sentinel\nsocks5: {{listen: '127.0.0.1:1080'}}\n{settings}\n"
+        );
+        let output = execute(
+            &[
+                "doctor",
+                "client",
+                "--connect",
+                "-c",
+                "-",
+                "--output",
+                "json",
+            ],
+            config.as_bytes(),
+        );
+        assert_eq!(output.status.code(), Some(3));
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            report["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|check| check["id"] == "server_connection" && check["status"] == "skip")
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private-sentinel"));
+    }
+}
+
+#[test]
+fn server_share_roundtrips_selected_user_obfs_tls_and_public_ech() {
+    let directory = tempfile::tempdir().unwrap();
+    let cert = directory.path().join("server.crt");
+    let key = directory.path().join("server.key");
+    let certificate = hysteria_cli::cert::generate(&hysteria_cli::cert::CertOptions {
+        hosts: "edge.example.com".into(),
+        cert_file: cert.clone(),
+        key_file: key.clone(),
+        valid_for: Duration::from_secs(3600),
+        overwrite: false,
+    })
+    .unwrap();
+    let ech = hysteria_cli::ech::generate(&hysteria_cli::ech::Options {
+        public_name: "public.example.com".into(),
+        output: directory.path().join("ech.pem"),
+        config_id: Some(42),
+        max_name_length: 0,
+        aeads: vec![hysteria_cli::ech::Aead::Aes128Gcm],
+        overwrite: false,
+        retain_keys: None,
+    })
+    .unwrap();
+    let config = serde_json::to_vec(&serde_json::json!({
+        "listen":"0.0.0.0:12345", "tls":{"cert":cert,"key":key}, "ech":{"keyPath":ech.output},
+        "auth":{"type":"userpass","userpass":{"alice":"p@ss: +%/?#","bob":"do-not-export-bob"}},
+        "obfs":{"type":"gecko","gecko":{"password":"obfs +/?"}},
+        "trafficStats":{"listen":"127.0.0.1:9999","secret":"do-not-export-stats"}
+    }))
+    .unwrap();
+    let args = [
+        "server",
+        "share",
+        "-c",
+        "-",
+        "--address",
+        "[2001:db8::1]:443,8443-8444",
+        "--user",
+        "alice",
+        "--sni",
+        "edge.example.com",
+        "--pin-cert",
+        "--insecure",
+        "--name",
+        "My server 中文",
+    ];
+    let output = execute(&args, &config);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let uri = String::from_utf8(output.stdout).unwrap();
+    let uri = uri.trim();
+    assert!(uri.starts_with("hysteria2://alice:"));
+    assert!(!uri.contains("do-not-export"));
+    assert!(!uri.contains("PRIVATE KEY"));
+    let key_pem = fs::read_to_string(&ech.output).unwrap();
+    assert!(!uri.contains(key_pem.lines().nth(1).unwrap()));
+    let imported = execute(
+        &[
+            "init",
+            "client",
+            "--uri",
+            uri,
+            "--allow-insecure",
+            "-c",
+            "-",
+        ],
+        b"",
+    );
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let client: hysteria_cli::config::ClientConfig =
+        serde_yaml_ng::from_slice(&imported.stdout).unwrap();
+    assert_eq!(client.server, "[2001:db8::1]:443,8443-8444");
+    assert_eq!(client.auth, "alice:p@ss: +%/?#");
+    assert_eq!(client.tls.pin_sha256, certificate.pin_sha256);
+    assert_eq!(client.tls.ech, ech.client_config);
+    assert_eq!(client.obfs.gecko.password, "obfs +/?");
+    assert_eq!(client.tls.sni, "edge.example.com");
+    assert_eq!(client.share_uri().unwrap(), uri.split('#').next().unwrap());
+}
+
+#[test]
+fn server_share_requires_explicit_address_and_credential_selection() {
+    let config = b"tls: {cert: unused.crt, key: unused.key}\nauth: {type: userpass, userpass: {alice: private-secret}}\n";
+    for extra in [
+        vec![],
+        vec!["--address", "example.com"],
+        vec!["--address", "0.0.0.0", "--user", "alice"],
+        vec!["--address", "example.com", "--user", "missing"],
+    ] {
+        let mut args = vec!["server", "share", "-c", "-"];
+        args.extend(extra);
+        let output = execute(&args, config);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("private-secret"));
+    }
+    let config = b"tls: {cert: unused.crt, key: unused.key}\nauth: {type: password, password: private-secret}\n";
+    let output = execute(
+        &["server", "share", "--address", "example.com", "-c", "-"],
+        config,
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "hysteria2://private-secret@example.com:443/\n"
+    );
+    let mtls = b"tls: {cert: unused.crt, key: unused.key, clientCA: unused-ca.crt}\nauth: {type: password, password: private-secret}\n";
+    assert!(
+        !execute(
+            &["server", "share", "--address", "example.com", "-c", "-"],
+            mtls
+        )
+        .status
+        .success()
+    );
+}
+
+#[test]
+fn external_auth_share_reads_only_explicit_stdin_credential() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("server.yaml");
+    fs::write(&path, "tls: {cert: unused.crt, key: unused.key}\nauth: {type: http, http: {url: 'https://backend.invalid/private-backend-path'}}\n").unwrap();
+    let output = execute(
+        &[
+            "server",
+            "share",
+            "--address",
+            "example.com",
+            "--auth-stdin",
+            "-c",
+            path.to_str().unwrap(),
+        ],
+        b"selected-secret\r\n",
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "hysteria2://selected-secret@example.com:443/\n"
+    );
+    assert!(
+        !execute(
+            &[
+                "server",
+                "share",
+                "--address",
+                "example.com",
+                "--auth-stdin",
+                "-c",
+                "-"
+            ],
+            b""
+        )
+        .status
+        .success()
+    );
+}
+
+#[test]
+fn client_share_normalizes_bare_ipv6_and_uses_realm_scheme() {
+    let output = execute(&["share", "-c", "-"], b"server: '::1'\nauth: secret\n");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "hysteria2://secret@[::1]:443/\n"
+    );
+    let output = execute(
+        &["share", "-c", "-"],
+        b"server: 'realm://secret@rendezvous.example/test'\nauth: password\n",
+    );
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("hysteria2+realm://secret@rendezvous.example/test?auth=password")
+    );
+}
+
+#[test]
+fn realm_links_separate_credentials_and_roundtrip_parameters() {
+    for scheme in ["hysteria2+realm", "hysteria2+realm+http"] {
+        let uri = format!(
+            "{scheme}://realm%3Atoken@[::1]:8443/my-room?auth=alice%3Ap%40ss%2Bword&sni=proxy.example.com&obfs=gecko&obfs-password=obfs+secret&stun=127.0.0.1%3A3478&stun=127.0.0.1%3A3479&lport=43210#name"
+        );
+        let imported = execute(&["init", "client", "--uri", &uri, "-c", "-"], b"");
+        assert!(
+            imported.status.success(),
+            "{}",
+            String::from_utf8_lossy(&imported.stderr)
+        );
+        let client: hysteria_cli::config::ClientConfig =
+            serde_yaml_ng::from_slice(&imported.stdout).unwrap();
+        assert_eq!(client.auth, "alice:p@ss+word");
+        let realm = hysteria_realm::RealmAddr::parse(&client.server).unwrap();
+        assert_eq!(realm.token, "realm:token");
+        assert_eq!(realm.local_port, Some(43210));
+        assert_eq!(realm.query_values("stun").len(), 2);
+        let shared = client.share_uri().unwrap();
+        assert!(shared.starts_with(scheme));
+        let again = execute(&["init", "client", "--uri", &shared, "-c", "-"], b"");
+        assert!(again.status.success());
+        let again: hysteria_cli::config::ClientConfig =
+            serde_yaml_ng::from_slice(&again.stdout).unwrap();
+        assert_eq!(again.server, client.server);
+        assert_eq!(again.auth, client.auth);
+        assert_eq!(again.tls.sni, client.tls.sni);
+        assert_eq!(again.obfs.gecko.password, client.obfs.gecko.password);
+    }
+    for query in [
+        "",
+        "auth=a&auth=b",
+        "auth=a&lport=0",
+        "auth=a&lport=1&lport=2",
+        "auth=a&stun=",
+        "auth=a&unknown=secret",
+    ] {
+        let uri = format!("hysteria2+realm://token@example.com/room?{query}");
+        let output = execute(&["init", "client", "--uri", &uri, "-c", "-"], b"");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn realm_server_share_omits_server_local_port_and_guide_preserves_secrets() {
+    let config = b"listen: 'realm://realm-token@rendezvous.example/my-room?lport=4444'\nrealm: {stunServers: ['127.0.0.1:3478']}\ntls: {cert: cert.pem, key: key.pem}\nauth: {type: password, password: proxy-password}\n";
+    let shared = execute(
+        &["server", "share", "-c", "-", "--sni", "proxy.example.com"],
+        config,
+    );
+    assert!(
+        shared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shared.stderr)
+    );
+    let uri = String::from_utf8(shared.stdout).unwrap();
+    assert!(uri.starts_with("hysteria2+realm://realm-token@"));
+    assert!(uri.contains("auth=proxy-password"));
+    assert!(!uri.contains("lport"));
+    assert!(uri.contains("stun="));
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("realm-server.yaml");
+    let guided = execute(
+        &["guide", "server", "-c", path.to_str().unwrap()],
+        b"realm://private-token@rendezvous.example/my-room\n\n\n\n",
+    );
+    assert!(guided.status.success());
+    assert!(!String::from_utf8_lossy(&guided.stderr).contains("private-token"));
+    let server = hysteria_cli::config::ServerConfig::load(&path).unwrap();
+    assert!(server.listen.starts_with("realm://"));
+    assert!(!server.realm.port_mapping.enabled);
+    let client = b"server: 'realm://private-token@127.0.0.1/room'\nauth: secret\nrealm: {portMapping: {enabled: true}}\ntls: {insecure: true}\nsocks5: {listen: '127.0.0.1:1080'}\n";
+    let output = execute(
+        &[
+            "doctor",
+            "client",
+            "--connect",
+            "-c",
+            "-",
+            "--output",
+            "json",
+        ],
+        client,
+    );
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("refuses enabled router port mapping")
+    );
+}
+
+#[test]
+fn realm_manual_guide_and_stun_failure_are_explicit() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("client.yaml");
+    let output = execute(&["guide", "client", "-c", path.to_str().unwrap()], b"\nrealm://private-token@rendezvous.example/my-room\nprivate-password\nproxy.example.com\n\n");
+    assert!(output.status.success());
+    let config = hysteria_cli::config::ClientConfig::load(&path).unwrap();
+    assert!(config.server.starts_with("realm://"));
+    assert_eq!(config.auth, "private-password");
+    assert_eq!(config.tls.sni, "proxy.example.com");
+    assert!(!config.tls.insecure);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private-token"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private-password"));
+    let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let config = format!(
+        "server: 'realm+http://private-token@127.0.0.1:1/room?stun={}'\nauth: private-password\nrealm: {{ipMode: v4, stunTimeout: 100ms}}\ntls: {{insecure: true}}\nsocks5: {{listen: '127.0.0.1:1080'}}",
+        blackhole.local_addr().unwrap()
+    );
+    let output = execute(
+        &[
+            "doctor",
+            "client",
+            "--connect",
+            "--timeout",
+            "1s",
+            "--output",
+            "json",
+            "-c",
+            "-",
+        ],
+        config.as_bytes(),
+    );
+    assert_eq!(output.status.code(), Some(3));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for (id, status) in [
+        ("realm_stun", "fail"),
+        ("realm_rendezvous", "skip"),
+        ("realm_punch", "skip"),
+        ("server_connection", "skip"),
+    ] {
+        assert!(
+            report["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|check| check["id"] == id && check["status"] == status)
+        );
+    }
+}
+
+#[test]
+fn gui_capabilities_and_route_explanation_are_versioned_and_offline() {
+    let output = execute(&["capabilities"], b"");
+    assert!(output.status.success());
+    let caps: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(caps["schema_version"], 1);
+    assert_eq!(caps["routing"]["process_matching"], false);
+    assert_eq!(caps["tun"]["routing_supported"], cfg!(target_os = "linux"));
+    assert_eq!(caps["control"]["persistent_ipc"], false);
+    let config = b"server: unreachable.invalid:443\nauth: private-sentinel\nsocks5: {listen: '127.0.0.1:1080'}\nrouting:\n  version: 1\n  default: proxy\n  rules: ['direct(lan)', 'reject(suffix:blocked.invalid)']\n";
+    for (destination, action, rule) in [
+        ("192.168.1.2:80", "direct", Some(1)),
+        ("a.blocked.invalid:443", "reject", Some(2)),
+        ("no-dns.invalid:443", "proxy", None),
+    ] {
+        let output = execute(
+            &[
+                "route",
+                "explain",
+                destination,
+                "--output",
+                "json",
+                "-c",
+                "-",
+            ],
+            config,
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["outbound"], action);
+        assert_eq!(report["matched_rule"], serde_json::json!(rule));
+        assert_eq!(report["dns_performed"], false);
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private-sentinel"));
+    }
+    for extra in ["tun: {name: hytun}", "tcpTProxy: {listen: ':12345'}"] {
+        let mut unsupported = config.to_vec();
+        unsupported.extend_from_slice(extra.as_bytes());
+        let output = execute(
+            &["check", "client", "--output", "json", "-c", "-"],
+            &unsupported,
+        );
+        assert_eq!(output.status.code(), Some(3));
+    }
+    let output = execute(
+        &["route", "explain", "host:0", "--output", "json", "-c", "-"],
+        config,
+    );
+    assert_eq!(output.status.code(), Some(3));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(report["error"]["code"].is_string());
+}
+
+#[test]
+fn protected_tun_configuration_is_linux_only_and_checks_are_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("fake.json");
+    let mut config = serde_json::json!({"server":"proxy.example.com:443","auth":"secret","routing":{"version":1,"default":"proxy"},"tun":{"name":"hytun","route":{"strict":true},"egress":{"interface":"eth0","mark":4_741_426,"resolver":"1.1.1.1:53"},"dns":{"cache":cache}}});
+    let output = execute(
+        &["check", "client", "-c", "-", "--output", "json"],
+        &serde_json::to_vec(&config).unwrap(),
+    );
+    assert_eq!(output.status.success(), cfg!(target_os = "linux"));
+    assert!(!cache.exists());
+    config["tun"]["egress"]["mark"] = 0.into();
+    assert!(
+        !execute(
+            &["check", "client", "-c", "-"],
+            &serde_json::to_vec(&config).unwrap()
+        )
+        .status
+        .success()
+    );
+    config["tun"]["egress"]["mark"] = 4_741_426.into();
+    config["tun"]["route"]["ipv4Exclude"] = serde_json::json!(["198.18.0.0/15"]);
+    assert!(
+        !execute(
+            &["check", "client", "-c", "-"],
+            &serde_json::to_vec(&config).unwrap()
+        )
+        .status
+        .success()
+    );
+    assert!(!cache.exists());
 }

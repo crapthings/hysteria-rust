@@ -20,6 +20,7 @@ pub(crate) struct ServiceOptions {
 #[derive(Debug, Subcommand)]
 enum Action {
     /// Validate, register, start and enable a system service (Linux; requires root).
+    #[command(display_order = 10)]
     Install {
         #[arg(value_enum)]
         role: Role,
@@ -34,22 +35,29 @@ enum Action {
         no_enable: bool,
     },
     /// Show all managed instances.
+    #[command(display_order = 70)]
     List,
     /// Show systemd state; this does not establish proxy readiness.
+    #[command(display_order = 20)]
     Status { name: Option<String> },
     /// Validate configuration and start an instance.
+    #[command(display_order = 50)]
     Start { name: Option<String> },
     /// Stop an instance; boot startup remains unchanged.
+    #[command(display_order = 60)]
     Stop { name: Option<String> },
     /// Validate configuration before stopping and restarting an instance.
+    #[command(display_order = 40)]
     Restart { name: Option<String> },
     /// Print recent journal entries; add --follow to stream them.
+    #[command(display_order = 30)]
     Logs {
         name: Option<String>,
         #[arg(short, long)]
         follow: bool,
     },
     /// Stop, disable and unregister an instance; preserve configuration and keys.
+    #[command(display_order = 80)]
     Uninstall { name: Option<String> },
 }
 

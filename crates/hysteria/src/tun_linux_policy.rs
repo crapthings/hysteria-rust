@@ -23,6 +23,21 @@ pub(super) struct PolicyRules {
 }
 
 impl PolicyRules {
+    pub(super) fn preflight_routed() -> io::Result<()> {
+        validate_routed_environment(&list_rules()?)
+    }
+    pub(super) fn install_routed(table: u8, mark: u32) -> io::Result<Self> {
+        let existing = list_rules()?;
+        validate_routed_environment(&existing)?;
+        let priority = select_priority(&existing)
+            .ok_or_else(|| io::Error::other("no policy priority available"))?;
+        let mut installed = Self { rules: Vec::new() };
+        for rule in routed_rules(table, priority, mark) {
+            add_rule(&rule)?;
+            installed.rules.push(rule);
+        }
+        Ok(installed)
+    }
     pub(super) fn install(
         table: u8,
         ipv4_address: (Ipv4Addr, u8),
@@ -49,6 +64,63 @@ impl Drop for PolicyRules {
             }
         }
     }
+}
+
+fn validate_routed_environment(existing: &[RuleMessage]) -> io::Result<()> {
+    for rule in existing {
+        let expected = match rule_priority(rule).unwrap_or(0) {
+            0 => 255,
+            32766 => 254,
+            32767 => 253,
+            _ => {
+                return Err(io::Error::other(
+                    "routed TUN requires standard Linux policy rules; custom rules already exist",
+                ));
+            }
+        };
+        if rule.header.table != expected
+            || rule.header.action != RuleAction::ToTable
+            || !(rule.header.flags & !RuleFlags::Permanent).is_empty()
+            || rule.header.src_len != 0
+            || rule.header.dst_len != 0
+            || rule.attributes.iter().any(|a| {
+                !matches!(
+                    a,
+                    RuleAttribute::Priority(_)
+                        | RuleAttribute::Table(_)
+                        | RuleAttribute::Protocol(_)
+                        | RuleAttribute::SuppressPrefixLen(u32::MAX)
+                )
+            })
+        {
+            return Err(io::Error::other(
+                "custom Linux policy selectors prevent safe routed TUN installation",
+            ));
+        }
+    }
+    Ok(())
+}
+fn routed_rules(table: u8, priority: u32, mark: u32) -> Vec<RuleMessage> {
+    let mut rules = Vec::new();
+    for family in [AddressFamily::Inet, AddressFamily::Inet6] {
+        let attributes = vec![RuleAttribute::FwMark(mark), RuleAttribute::FwMask(u32::MAX)];
+        rules.push(table_rule(
+            family,
+            priority,
+            MAIN_TABLE,
+            attributes.clone(),
+            0,
+        ));
+        let mut captured = table_rule(family, priority + 1, table, attributes, 0);
+        captured.header.flags = RuleFlags::Invert;
+        rules.push(captured);
+        let mut stop = base_rule(family, priority + 2, RuleAction::Unreachable);
+        stop.header.flags = RuleFlags::Invert;
+        stop.attributes
+            .extend([RuleAttribute::FwMark(mark), RuleAttribute::FwMask(u32::MAX)]);
+        rules.push(stop);
+    }
+    rules
 }
 
 fn strict_rules(
@@ -263,6 +335,35 @@ fn request(
 mod tests {
     use super::*;
 
+    #[test]
+    #[ignore = "read-only policy preflight requires an isolated Linux namespace with default rules"]
+    fn routed_policy_read_only_preflight() {
+        PolicyRules::preflight_routed().unwrap();
+    }
+    #[test]
+    fn routed_policy_never_captures_marked_egress() {
+        let rules = routed_rules(202, 9000, 0x0048_5932);
+        assert_eq!(rules.len(), 6);
+        for pair in rules.chunks_exact(3) {
+            assert_eq!(pair[0].header.table, 254);
+            assert_eq!(pair[1].header.table, 202);
+            assert!(!pair[0].header.flags.contains(RuleFlags::Invert));
+            assert!(pair[1].header.flags.contains(RuleFlags::Invert));
+            assert_eq!(pair[2].header.action, RuleAction::Unreachable);
+            assert!(pair[2].header.flags.contains(RuleFlags::Invert));
+            assert!(
+                pair[1]
+                    .attributes
+                    .contains(&RuleAttribute::FwMark(0x0048_5932))
+            );
+        }
+        let defaults = vec![
+            table_rule(AddressFamily::Inet, 0, 255, vec![], 0),
+            table_rule(AddressFamily::Inet, 32766, 254, vec![], 0),
+        ];
+        assert!(validate_routed_environment(&defaults).is_ok());
+        assert!(validate_routed_environment(&rules).is_err());
+    }
     #[test]
     fn strict_rule_order_matches_sing_tun() {
         let rules = strict_rules(

@@ -7,18 +7,15 @@ use std::path::PathBuf;
     name = "hysteria",
     version,
     about = "Hysteria 2 client and server in Rust",
-    after_help = "Getting started:
-  hysteria guide server       Set up a server step by step
-  hysteria doctor server      Check local deployment conditions
-  hysteria server             Start the server
-  hysteria service install server -c server.yaml
-                              Install a Linux systemd service
-  hysteria client -c client.yaml
+    after_help = "Quick start:
+  hysteria guide server                      Set up a server
+  hysteria guide client                      Import a link or set up a client
 
-Detailed help:
-  hysteria help server
-  hysteria help client
-  hysteria help <command>
+Role guides:
+  hysteria help server                       Setup, run, monitor and share
+  hysteria help client                       Setup, run and diagnose
+  hysteria help service                      Background services and instances
+  hysteria help <command>                    Detailed command options
 
 Running without arguments shows this help."
 )]
@@ -54,44 +51,76 @@ pub(crate) enum Command {
         long_about = "Run the local Hysteria 2 proxy client in the foreground.
 
 Reads YAML/JSON configuration (default: config.yaml). Configure a server, authentication and at least one local proxy/forwarding mode. Relative file paths use the working directory.",
-        after_help = "Examples:
-  hysteria client -c client.yaml
-  hysteria check client -c client.yaml
-  hysteria client --config -
-  hysteria share -c client.yaml
-  hysteria ping example.com:443 -c client.yaml
-  hysteria speedtest -c client.yaml
+        after_help = "Setup:
+  hysteria guide client -c client.yaml       Guided setup / link import
+  hysteria init client -c client.yaml        Editable template
 
-Use --config - to read stdin until EOF. Stop with Ctrl+C or Unix SIGTERM.
---disable-update-check disables automatic update queries.
+Run:
+  hysteria client -c client.yaml             Start local proxies
+  hysteria service install client -c client.yaml
+                                             Linux background service (root)
+
+Check and diagnose:
+  hysteria check client -c client.yaml       Validate configuration offline
+  hysteria doctor client -c client.yaml      Inspect local inputs
+  hysteria route explain example.com:443 -c client.yaml
+                                             Explain routing without DNS
+  hysteria doctor client --connect -c client.yaml
+                                             Test server authentication
+  hysteria ping example.com:443 -c client.yaml
+                                             Test TCP forwarding
+  hysteria speedtest -c client.yaml          Measure throughput
+
+Share:
+  hysteria share -c client.yaml              Export a link / optional QR
+
+Advanced input:
+  hysteria client --config -                 Read configuration from stdin
+
+Stop with Ctrl+C or Unix SIGTERM. Relative paths use the working directory.
+Connection diagnosis requires --connect; throughput tests transfer traffic.
 Proxy, TLS, authentication and routing settings belong in the configuration file."
     )]
+    #[command(display_order = 40)]
     Client,
     /// Run the remote proxy server.
     #[command(
         long_about = "Run the Hysteria 2 server in the foreground.
 
 Reads YAML/JSON configuration (default: config.yaml). Configure authentication and either certificate/key files or ACME. Relative file paths use the working directory.",
-        after_help = "Setup and startup:
-  hysteria init server -c server.yaml     Generate an editable template
-  hysteria guide server -c server.yaml    Guided setup
-  hysteria check server -c server.yaml    Validate configuration
-  hysteria doctor server -c server.yaml   Inspect local TLS/deployment conditions
-  hysteria server -c server.yaml          Start serving
-  hysteria server status -c server.yaml   View local readiness
+        after_help = "Setup:
+  hysteria guide server -c server.yaml       Guided setup
+  hysteria init server -c server.yaml        Editable template
+
+Run:
+  hysteria server -c server.yaml             Start serving
+  hysteria service install server -c server.yaml
+                                             Linux background service (root)
+
+Monitor:
+  hysteria server status -c server.yaml      View readiness
   hysteria server stats --watch -c server.yaml
-                                         Watch aggregate traffic
+                                             Watch traffic
 
-Other options:
-  hysteria server --config -             Read configuration from stdin until EOF
-  hysteria cert --host example.com       Generate a self-signed certificate
+Check and diagnose:
+  hysteria check server -c server.yaml       Validate configuration offline
+  hysteria doctor server -c server.yaml      Inspect local TLS and deployment
+
+Share:
+  hysteria server share --address vpn.example.com:443 -c server.yaml
+                                             Export one client link
+
+Advanced tools:
+  hysteria cert --host vpn.example.com       Generate a self-signed certificate
   hysteria ech --public-name public.example.com
-                                         Generate ECH keys offline
+                                             Generate ECH keys offline
+  hysteria server --config -                 Read configuration from stdin
 
-Stop with Ctrl+C or Unix SIGTERM. --disable-update-check disables automatic update queries.
-Listen address, authentication, TLS/ACME, ACL and traffic statistics are configured in YAML/JSON.
-Doctor is offline; successful checks do not establish network reachability or client trust."
+Stop with Ctrl+C or Unix SIGTERM. Relative paths use the working directory.
+Doctor is offline; successful checks do not establish network reachability or client trust.
+Listen, authentication, TLS/ACME and proxy settings belong in YAML/JSON."
     )]
+    #[command(display_order = 30)]
     Server(crate::server_view::ServerOptions),
     /// Install and manage named system services (Linux systemd).
     #[command(after_help = "Examples:
@@ -108,23 +137,42 @@ Use --no-start / --no-enable to opt out. System services run as root.
 Configuration and binary stay in place; keep their paths available at boot.
 Without a name, actions select the only instance. With multiple instances,
 provide a name for actions and logs; status lists all instances.")]
+    #[command(display_order = 50)]
     Service(crate::service::ServiceOptions),
     /// Validate configuration offline.
+    #[command(display_order = 60)]
     Check(crate::check::CheckOptions),
-    /// Generate a server configuration template.
+    /// Generate a server/client configuration template or import a client link.
+    #[command(display_order = 20)]
     Init(crate::init::InitOptions),
-    /// Set up a server interactively.
+    /// Set up a server or client interactively.
+    #[command(
+        after_help = "Server: enter a UDP port or realm:// URI at the first prompt.
+Client: paste a direct/Realm sharing link, or enter connection settings manually.
+Realm setup is offline and never enables router port mapping."
+    )]
+    #[command(display_order = 10)]
     Guide(crate::init::InitOptions),
-    /// Diagnose local server configuration and TLS.
+    /// Diagnose local inputs; optionally test a client connection with --connect.
+    #[command(display_order = 70)]
     Doctor(crate::doctor_cli::DoctorOptions),
+    /// Explain client routing decisions without sending traffic.
+    #[command(display_order = 75)]
+    Route(crate::routing_cli::RouteOptions),
+    /// Report platform and integration capabilities (JSON by default).
+    #[command(display_order = 125)]
+    Capabilities(crate::routing_cli::CapabilitiesOptions),
     /// Print version information.
+    #[command(display_order = 130)]
     Version,
     /// Test a TCP connection through the server.
+    #[command(display_order = 80)]
     Ping {
         /// Remote TCP destination in host:port form.
         address: String,
     },
     /// Measure upload and download speed.
+    #[command(display_order = 90)]
     Speedtest {
         /// Skip the download measurement.
         #[arg(long)]
@@ -143,6 +191,7 @@ provide a name for actions and logs; status lists all instances.")]
         use_bytes: bool,
     },
     /// Export a client URI or QR code.
+    #[command(display_order = 100)]
     Share {
         /// Suppress the sharing URI text.
         #[arg(long)]
@@ -152,10 +201,13 @@ provide a name for actions and logs; status lists all instances.")]
         qr: bool,
     },
     /// Check for a newer release.
+    #[command(display_order = 140)]
     CheckUpdate,
     /// Generate private ECH keys and public client configuration offline.
+    #[command(display_order = 120)]
     Ech(crate::ech_cli::EchOptions),
     /// Generate a self-signed certificate and key.
+    #[command(display_order = 110)]
     Cert {
         /// Comma-separated DNS names or IP addresses for the certificate.
         #[arg(long, default_value_t = hysteria_cli::cert::default_host())]
