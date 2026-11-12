@@ -1,6 +1,6 @@
 # Fake-IP capacity and persistence
 
-Development behavior; not included in rc.6. Fake-IP mappings bind an address to a
+Available since rc.7. Fake-IP mappings bind an address to a
 name across restarts. DNS TTL expiry is not proof that all applications discarded
 an address: existing connections, application caches and stored literal IPs can
 outlive a DNS answer. This implementation therefore never evicts or reassigns IDs.

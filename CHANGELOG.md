@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-rc.7] - 2026-11-12
+
 ### Fixed
 
 - Keep Brutal's congestion window at least two current MTUs so Quinn can send
@@ -346,7 +348,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cross-platform packaging for the upstream 27-target release matrix.
 - Real Go/Rust interoperability tests in both client/server directions.
 
-[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.6...HEAD
+[Unreleased]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.7...HEAD
+[0.1.0-rc.7]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.6...v0.1.0-rc.7
 [0.1.0-rc.6]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.5...v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.4...v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/crapthings/hysteria-rust/compare/v0.1.0-rc.3...v0.1.0-rc.4

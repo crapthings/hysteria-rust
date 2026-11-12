@@ -16,7 +16,7 @@ The everyday import/configure/check/run/explain/recovery flow has passed
 local set. Ordinary proxy-mode routing v1 is ready for change review and dev
 release preparation within this scope. Remaining work is supported-platform
 acceptance, release review and fixes for reproducible issues. This checkpoint
-describes development source; the additions remain outside rc.6.
+describes rc.7 source and its remaining development work.
 
 Protected Linux TUN has passed isolated forwarding, DNS and application acceptance.
 Whole-host DNS integration, interface handover, sleep/wake and long-running use

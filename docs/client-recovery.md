@@ -2,7 +2,7 @@
 
 The client reconnects on demand. It does not run an independent background retry
 loop, choose another server or change routing policy after a connection failure.
-These changes are in development source, not the published rc.6 binary.
+This recovery behavior is available since rc.7.
 
 ## Behavior
 

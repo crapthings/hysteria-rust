@@ -1,6 +1,6 @@
 # Client profiles
 
-Development CLI feature; not included in rc.6. A profile is a named, private
+Available since rc.7. A profile is a named, private
 client YAML file. It uses the normal client configuration schema and runtime.
 There is no background profile manager or implicitly selected default server.
 

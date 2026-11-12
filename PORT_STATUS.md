@@ -56,9 +56,9 @@ The native executable is `target/release/hysteria`. Cross-release artifacts and 
 
 ## Completion status
 
-### Development CLI and client routing
+### CLI and client routing
 
-These additions are in development source, beyond the published rc.6 binaries:
+These additions are included in rc.7:
 
 - Offline checks, guided/template setup, standard sharing links, private client
   profiles, phased connection diagnosis and versioned lifecycle events.

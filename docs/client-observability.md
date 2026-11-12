@@ -1,6 +1,6 @@
 # Client diagnosis and lifecycle events
 
-Development CLI features; not included in rc.6. These interfaces work with the
+Available since rc.7. These interfaces work with the
 standalone binary and do not require a GUI, helper or control service.
 
 ## Diagnose a connection

@@ -14,7 +14,7 @@ for TCP and UDP proxying over QUIC. One standalone executable provides:
 [Quick start](#quick-start) · [Documentation](#documentation) ·
 [Website](https://crapthings.github.io/hysteria-rust/)
 
-The quick start works with [rc.6](docs/releases/v0.1.0-rc.6.md).
+The quick start works with [rc.7](docs/releases/v0.1.0-rc.7.md).
 Features marked **dev** require a development source build; pushing `dev` does
 not update release binaries. See [compatibility and limitations](PORT_STATUS.md).
 
@@ -77,9 +77,9 @@ curl --proxy socks5h://127.0.0.1:1080 https://example.com/
 set `tls.ca` to its public certificate file; keep private keys on the server.
 More modes and options are in the [configuration examples](examples).
 
-## CLI tools — dev
+## CLI tools
 
-These additions are not included in rc.6. Run `hysteria help`,
+These tools are included in rc.7. Run `hysteria help`,
 `hysteria help server` or `hysteria help client` for usage.
 
 | Task | Command / guide |
