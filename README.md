@@ -11,7 +11,7 @@ for TCP and UDP proxying over QUIC. One standalone executable provides:
 - **Client:** SOCKS5, HTTP proxy, TCP/UDP forwarding and platform-specific TUN modes.
 
 [Downloads](https://github.com/crapthings/hysteria-rust/releases) ·
-[Quick start](#quick-start) · [Documentation](#documentation) ·
+[Quick start](#quick-start) · [Documentation](docs/README.md) ·
 [Website](https://crapthings.github.io/hysteria-rust/)
 
 The quick start works with [rc.7](docs/releases/v0.1.0-rc.7.md).
@@ -94,7 +94,7 @@ These tools are included in rc.7. Run `hysteria help`,
 | Route client traffic | [Domain/IP rules, local rule sets, `route lint` and `route explain --trace`](docs/client-routing.md) |
 | Use Linux routed TUN | [Protected egress and Fake-IP DNS](docs/client-tun-routing.md); [verify DNS capture](docs/client-dns-diagnosis.md) |
 
-Client routing v1 has passed [ordinary-use Linux acceptance](docs/client-routing-jp1-2026-11-12.md),
+Client routing v1 has passed [ordinary-use Linux acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/client-routing-jp1-2026-11-12.md),
 including direct/proxy/reject and server-outage recovery. Protected routed TUN is
 Linux-only and has passed isolated tests; whole-host DNS integration, network
 handover and long-running use still need platform validation.
@@ -104,7 +104,7 @@ handover and long-running use still need platform validation.
 - [CLI reference](docs/cli.md): setup, diagnostics, services, monitoring, ECH and JSON output.
 - [Compatibility](PORT_STATUS.md) · [Changelog](CHANGELOG.md) · [Roadmap](docs/cli-roadmap.md).
 - [ACME DNS providers](docs/acme-dns-providers.md) · [Experimental Chrome QUIC profile](docs/chrome-quic-port.md).
-- [Linux validation checklist](docs/linux-validation-2026-11-11.md): completed acceptance and remaining platform checks.
+- [Validation status](docs/validation.md): coverage and remaining platform checks.
 
 ## Build and contribute
 

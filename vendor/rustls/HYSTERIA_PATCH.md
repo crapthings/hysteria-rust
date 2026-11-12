@@ -49,7 +49,7 @@ Merged from crates.io 0.23.46 (upstream commit
 ECH retry handling now uses upstream `PreviousClientHello`; ALPS preserves its
 0-RTT restrictions while upstream checks the selected PSK index. The Chrome
 version check uses `Protocol::Quic`. See
-[dependency update validation](../../docs/tls-http-dependency-upgrade.md).
+[dependency update validation](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/tls-http-dependency-upgrade.md).
 
 ## ECH rejection policy and key validation
 
@@ -70,4 +70,4 @@ Tests cover trusted/untrusted/wrong-name rejection certificates, ignored inner
 pins on rejection, accepted ECH, ordinary clients on an ECH server, stale and
 retired keys, all generated AEADs and overlapping rotation. Run workspace tests,
 the Go bidirectional/Chrome commands and the isolated upstream rustls library
-suite described in [dependency validation](../../docs/tls-http-dependency-upgrade.md).
+suite described in [dependency validation](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/tls-http-dependency-upgrade.md).

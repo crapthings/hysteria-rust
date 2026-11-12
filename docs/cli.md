@@ -219,10 +219,10 @@ cargo test --locked --package hysteria-cli --lib configuration_
 cargo clippy --locked --package hysteria-cli --all-targets -- -D warnings
 ```
 
-The [ordinary-use Linux acceptance](client-routing-jp1-2026-11-12.md) covers profiles,
+The [ordinary-use Linux acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/client-routing-jp1-2026-11-12.md) covers profiles,
 small local rule sets, actual forwarding, recovery and shutdown. Protected TUN/DNS
-has separate [isolated acceptance](linux-dns-probe-jp1-2026-11-12.md); remaining
-platform checks are tracked in the [Linux checklist](linux-validation-2026-11-11.md).
+has separate [isolated acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-dns-probe-jp1-2026-11-12.md); remaining
+platform checks are tracked in the [Linux checklist](validation.md).
 
 ## Update checks
 

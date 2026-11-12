@@ -52,4 +52,4 @@ Parser regressions cover malformed authorities and CONNECT encoding. A raw
 HTTP/3 regression verifies H3_MESSAGE_ERROR on the malformed stream followed by
 a successful request on the same connection. Local validation: the standalone
 command above passed all 234 tests. See also
-[the review](../../docs/upstream-hardening.md).
+[the review](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/upstream-hardening.md).

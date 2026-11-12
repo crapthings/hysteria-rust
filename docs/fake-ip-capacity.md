@@ -133,39 +133,15 @@ With isolated arrivals B=1. Even at B=64, the asymptotic dependence on N remains
 An append-only journal could reduce normal append work, but durable sync, replay,
 checkpointing and crash recovery would still require explicit design and testing.
 
-## Bounded persistence measurement
+## Validation
 
-A temporary-file test compared the prior implementation and this working tree on
-macOS ARM64 / Apple M1 Max / Rust 1.91.1. Each size had one warm-up and 16 durable
-full-file replacements. These are **unoptimized test builds**, not release binaries,
-DNS-response latency or forwarding throughput. Background host activity was not
-controlled. The baseline writer was called directly at larger sizes; the old
-runtime itself rejected caches above 4096 entries.
+Regression tests cover stable IDs, capacity limits, concurrent allocation,
+reads during persistence, durable acknowledgement, failure recovery, bounded
+batches and shutdown. Snapshot writes remain O(N); larger caches need workload
+measurements before increasing the default or changing the storage format.
 
-| Entries | Snapshot bytes | Before median | Buffered writer median |
-| --- | ---: | ---: | ---: |
-| 4096 | 125889 | 45.026 ms | 11.992 ms |
-| 16384 | 513201 | 121.528 ms | 23.067 ms |
-| 65536 | 2086065 | 456.179 ms | 66.701 ms |
-
-[Raw measurements and limitations](benchmarks/2026-11-12-fake-ip-persistence.json).
-The local sample supports reducing small writes and redundant copying; it does not
-establish production performance. A subsequent [bounded Linux release cold-domain measurement](fake-ip-linux-pressure.md)
-confirms substantial snapshot write volume and burst queuing at larger tables.
-Long-running production-storage validation remains necessary before raising the
-default or choosing a new format.
-
-Reproduce the bounded writer check explicitly:
-
-```shell
-cargo test --locked -p hysteria-cli --lib measure_persistence_cost -- --ignored --nocapture
-```
-
-Regression tests cover growth without renumbering, lower-limit refusal, the maximum
-ID in both pools, concurrent allocation, reads during blocked persistence, no early
-publication, a simulated post-replacement failure followed by restart, batch limits,
-unpublished reservations, writer-panic cleanup, queue saturation and shutdown
-while a batch is in flight.
+Historical measurements are available in the
+[rc.7 benchmark records](https://github.com/crapthings/hysteria-rust/tree/v0.1.0-rc.7/docs/benchmarks).
 
 ## Maintenance boundary
 
