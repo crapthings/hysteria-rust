@@ -83,8 +83,10 @@ The current source adds embedded control and `client --control stdio`, with stat
 events, per-rule statistics and revision-checked routing-only replacement. Existing
 flows retain their original decisions. Payload-byte samples and a GUI-owned daily
 JSON storage helper are also available; the core does not automatically save history.
-These additions are not in rc.7 and have local macOS validation only; cross-platform
-CI and real GUI acceptance remain pending. See the [control contract](docs/client-observability.md)
+Opt-in TCP connection tracking adds paginated inspection and individual close,
+retaining each flow's actual routing revision. These additions are not in rc.7;
+automated coverage and remaining platform/GUI checks are described in
+[validation status](docs/validation.md). See the [control contract](docs/client-observability.md)
 and [validation status](docs/validation.md).
 
 ### Other capabilities and compatibility gaps

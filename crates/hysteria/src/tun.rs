@@ -193,7 +193,13 @@ mod platform {
         client: Arc<ClientHandle>,
         errors: Arc<ErrorLog>,
     ) {
-        let mut tunnel = match client.tcp(&destination.to_string()).await {
+        let mut tunnel = match client
+            .tcp_named(
+                &destination.to_string(),
+                crate::client_connections::TcpInbound::Tun,
+            )
+            .await
+        {
             Ok(tunnel) => tunnel,
             Err(error) => {
                 errors.report(format_args!(

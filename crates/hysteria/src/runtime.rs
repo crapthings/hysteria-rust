@@ -604,6 +604,7 @@ impl ClientHandle {
         self.events.emit("local_ready", Some(component), None);
     }
 
+    #[cfg(test)]
     pub(crate) async fn tcp(
         &self,
         address: &str,
@@ -611,11 +612,46 @@ impl ClientHandle {
         Box<dyn hysteria_transport::ProxyStream>,
         hysteria_transport::TransportError,
     > {
-        use hysteria_transport::ServerOutbound as _;
+        self.tcp_named(address, crate::client_connections::TcpInbound::Embedded)
+            .await
+    }
+    pub(crate) async fn tcp_named(
+        &self,
+        address: &str,
+        inbound: crate::client_connections::TcpInbound,
+    ) -> std::result::Result<
+        Box<dyn hysteria_transport::ProxyStream>,
+        hysteria_transport::TransportError,
+    > {
         let address = self.destination(address)?;
         let selection = self.route_selection(&address, crate::routing::Protocol::Tcp)?;
         selection.record();
-        let decision = selection.decision;
+        let registration = if selection.decision.outbound == crate::routing::Action::Reject {
+            None
+        } else {
+            self.telemetry()
+                .and_then(|t| t.connections.register(inbound, &address, &selection))
+        };
+        let dial = self.dial_tcp(&address, &selection.decision);
+        if let Some(registration) = registration {
+            tokio::select! {
+                biased;
+                ()=registration.cancelled()=>Err(hysteria_transport::TransportError::Closed),
+                result=dial=>result.map(|stream|registration.attach(stream)),
+            }
+        } else {
+            dial.await
+        }
+    }
+    async fn dial_tcp(
+        &self,
+        address: &str,
+        decision: &crate::routing::Decision,
+    ) -> std::result::Result<
+        Box<dyn hysteria_transport::ProxyStream>,
+        hysteria_transport::TransportError,
+    > {
+        use hysteria_transport::ServerOutbound as _;
         match decision.outbound {
             crate::routing::Action::Reject => {
                 return Err(hysteria_transport::TransportError::Protocol(
@@ -651,7 +687,7 @@ impl ClientHandle {
             .client()
             .await
             .map_err(|error| hysteria_transport::TransportError::Connect(error.to_string()))?;
-        let result = client.tcp(&address).await;
+        let result = client.tcp(address).await;
         if result.is_err() && client.is_closed() {
             self.invalidate(&client).await;
         }
@@ -1665,7 +1701,13 @@ async fn run_tcp_forwarding(config: TcpForwarding, client: Arc<ClientHandle>) ->
         let client = Arc::clone(&client);
         let remote = config.remote.clone();
         tokio::spawn(async move {
-            let Ok(mut tunnel) = client.tcp(&remote).await else {
+            let Ok(mut tunnel) = client
+                .tcp_named(
+                    &remote,
+                    crate::client_connections::TcpInbound::TcpForwarding,
+                )
+                .await
+            else {
                 return;
             };
             let _ = copy_bidirectional(&mut local, &mut tunnel).await;

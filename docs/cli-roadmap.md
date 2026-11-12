@@ -27,6 +27,8 @@ the latest rules. `client --control stdio` exposes versioned JSON requests,
 automatic events and prepared routing updates to an owning GUI process.
 Payload-byte samples support monotonic speed calculations; an optional GUI-owned
 JSON store provides daily totals with atomic checkpoints and explicit retention.
+Opt-in TCP connection listing and per-connection close now preserve the actual
+rule revision/action used by each flow; target metadata stays in memory only.
 These features are not included in the published rc.7 binaries.
 
 ## Next priorities

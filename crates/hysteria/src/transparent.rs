@@ -38,7 +38,12 @@ mod linux {
         loop {
             let (stream, _) = listener.accept().await?;
             let target = original_destination(&stream)?;
-            spawn_relay(stream, target, Arc::clone(&client));
+            spawn_relay(
+                stream,
+                target,
+                Arc::clone(&client),
+                crate::client_connections::TcpInbound::Redirect,
+            );
         }
     }
 
@@ -54,7 +59,12 @@ mod linux {
         loop {
             let (stream, _) = listener.accept().await?;
             let target = stream.local_addr()?;
-            spawn_relay(stream, target, Arc::clone(&client));
+            spawn_relay(
+                stream,
+                target,
+                Arc::clone(&client),
+                crate::client_connections::TcpInbound::Tproxy,
+            );
         }
     }
 
@@ -288,9 +298,10 @@ mod linux {
         mut stream: tokio::net::TcpStream,
         target: SocketAddr,
         client: Arc<ClientHandle>,
+        inbound: crate::client_connections::TcpInbound,
     ) {
         tokio::spawn(async move {
-            let Ok(mut tunnel) = client.tcp(&target.to_string()).await else {
+            let Ok(mut tunnel) = client.tcp_named(&target.to_string(), inbound).await else {
                 return;
             };
             let _ = copy_bidirectional(&mut stream, &mut tunnel).await;

@@ -3,6 +3,7 @@ mod acme_dns;
 mod acme_namecheap;
 mod auth;
 pub mod cert;
+pub mod client_connections;
 pub mod client_control;
 pub mod client_egress;
 pub mod client_events;

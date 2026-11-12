@@ -324,3 +324,81 @@ async fn sigterm_cleans_up_with_idle_control_input() {
     gui.closed().await;
     gui.exit(true).await;
 }
+
+#[tokio::test]
+async fn gui_lists_and_closes_one_connection_without_disrupting_another() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let directory = tempfile::tempdir().unwrap();
+        let (remote, echo) = echo().await;
+        let mut gui = Gui::start(directory.path(), remote).await;
+        assert_eq!(
+            gui.call("connections.list", json!({})).await["result"]["tracking"]["enabled"],
+            false
+        );
+        assert_eq!(
+            gui.call("connections.track", json!({"enabled":true})).await["result"]["enabled"],
+            true
+        );
+        let mut first = TcpStream::connect(gui.local).await.unwrap();
+        roundtrip(&mut first).await;
+        let mut second = TcpStream::connect(gui.local).await.unwrap();
+        roundtrip(&mut second).await;
+        let page = gui.call("connections.list", json!({"limit":1})).await;
+        let connection = &page["result"]["connections"][0];
+        let id = connection["id"].clone();
+        assert_eq!(connection["target"], remote.to_string());
+        assert_eq!(connection["inbound"], "tcp_forwarding");
+        assert_eq!(connection["outbound"], "direct");
+        assert_eq!(connection["routing_revision"], 1);
+        assert_eq!(connection["state"], "active");
+        assert_eq!(
+            gui.call(
+                "connections.list",
+                json!({"after":page["result"]["next_cursor"],"limit":1})
+            )
+            .await["result"]["connections"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            gui.call("connections.list", json!({"limit":201})).await["error"]["code"],
+            "invalid_page"
+        );
+        assert_eq!(
+            gui.call(
+                "connections.close",
+                json!({"id":"other-runtime-0000000000000001"})
+            )
+            .await["error"]["code"],
+            "invalid_connection_id"
+        );
+        assert_eq!(
+            gui.call("connections.close", json!({"id":id})).await["result"]["closed"],
+            true
+        );
+        assert_eq!(first.read(&mut [0; 1]).await.unwrap_or(0), 0);
+        roundtrip(&mut second).await;
+        assert_eq!(
+            gui.call("connections.close", json!({"id":id})).await["result"]["closed"],
+            false
+        );
+        gui.call("connections.track", json!({"enabled":false}))
+            .await;
+        let hidden = gui.call("connections.list", json!({})).await;
+        assert!(
+            hidden["result"]["connections"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        roundtrip(&mut second).await;
+        gui.call("shutdown", json!({})).await;
+        gui.closed().await;
+        gui.exit(true).await;
+        echo.abort();
+    })
+    .await
+    .unwrap();
+}

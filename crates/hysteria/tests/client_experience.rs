@@ -413,3 +413,145 @@ async fn proxy_traffic_counts_payload_for_routed_and_legacy_udp() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn connection_control_preserves_rule_revision_and_other_quic_streams() {
+    use hysteria_cli::client_control::{ClientRuntime, PreparedRouting};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let directory = tempfile::tempdir().unwrap();
+        let mut server = server(directory.path()).await;
+        let (target, echo_task) = connection_echo_server().await;
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let mut config = server.config;
+        config["routing"] = json!({"version":1,"default":"proxy"});
+        config["tcpForwarding"] = json!([{"listen":local.to_string(),"remote":target.to_string()}]);
+        let (control, runtime) =
+            ClientRuntime::prepare(serde_json::from_value(config).unwrap(), false).unwrap();
+        control.set_connection_tracking(true).unwrap();
+        let mut state = control.subscribe_status();
+        let run = tokio::spawn(runtime.run());
+        while state.snapshot().ready_components.len() != 2 {
+            state.changed().await.unwrap();
+        }
+        let mut first = TcpStream::connect(local).await.unwrap();
+        connection_echo(&mut first).await;
+        let mut second = TcpStream::connect(local).await.unwrap();
+        connection_echo(&mut second).await;
+        let page = control.connections(None, 1).unwrap();
+        let id = page.connections[0].id.clone();
+        assert_eq!(page.connections[0].routing_revision, Some(1));
+        assert!(matches!(
+            page.connections[0].inbound,
+            hysteria_cli::client_connections::TcpInbound::TcpForwarding
+        ));
+        assert_eq!(
+            control
+                .connections(page.next_cursor.as_deref(), 1)
+                .unwrap()
+                .connections
+                .len(),
+            1
+        );
+        let candidate = PreparedRouting::load(
+            serde_json::from_value(json!({"version":1,"rules":["direct(all)"]})).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        control.apply_routing(candidate, 1).unwrap();
+        let mut third = TcpStream::connect(local).await.unwrap();
+        connection_echo(&mut third).await;
+        let entries = control.connections(None, 100).unwrap().connections;
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].routing_revision, Some(1));
+        assert_eq!(entries[2].routing_revision, Some(2));
+        assert_eq!(entries[2].matched_rule, Some(1));
+        assert_eq!(entries[2].outbound, hysteria_cli::routing::Action::Direct);
+        retire_initial_revision(&control).await;
+        assert!(control.close_connection(&id).unwrap());
+        assert_eq!(first.read(&mut [0; 1]).await.unwrap_or(0), 0);
+        assert!(!control.close_connection(&id).unwrap());
+        connection_echo(&mut second).await;
+        connection_echo(&mut third).await;
+        assert!(control.close_connection(&entries[2].id).unwrap());
+        assert_eq!(third.read(&mut [0; 1]).await.unwrap_or(0), 0);
+        connection_echo(&mut second).await;
+        control.set_connection_tracking(false).unwrap();
+        assert!(
+            control
+                .connections(None, 100)
+                .unwrap()
+                .connections
+                .is_empty()
+        );
+        connection_echo(&mut second).await;
+        control.set_connection_tracking(true).unwrap();
+        let mut fourth = TcpStream::connect(local).await.unwrap();
+        connection_echo(&mut fourth).await;
+        assert_eq!(control.connections(None, 100).unwrap().connections.len(), 1);
+        fourth.shutdown().await.unwrap();
+        assert_eq!(fourth.read(&mut [0; 1]).await.unwrap(), 0);
+        while !control
+            .connections(None, 100)
+            .unwrap()
+            .connections
+            .is_empty()
+        {
+            tokio::task::yield_now().await;
+        }
+        control.shutdown();
+        run.await.unwrap().unwrap();
+        server.child.kill().await.unwrap();
+        echo_task.abort();
+    })
+    .await
+    .unwrap();
+}
+async fn connection_echo(stream: &mut TcpStream) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    stream.write_all(b"ping").await.unwrap();
+    let mut bytes = [0; 4];
+    stream.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(&bytes, b"ping");
+}
+
+async fn connection_echo_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = echo.local_addr().unwrap();
+    let echo_task = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = echo.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut b = [0; 16];
+                while let Ok(n) = stream.read(&mut b).await {
+                    if n == 0 || stream.write_all(&b[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (target, echo_task)
+}
+
+async fn retire_initial_revision(control: &hysteria_cli::client_control::ClientControl) {
+    use hysteria_cli::client_control::PreparedRouting;
+    for revision in 2..7 {
+        let candidate = PreparedRouting::load(
+            serde_json::from_value(json!({"version":1,"default":"direct"})).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        control.apply_routing(candidate, revision).unwrap();
+    }
+    assert!(control.routing_history().iter().all(|r| r.revision > 1));
+    assert_eq!(
+        control.connections(None, 100).unwrap().connections[0].routing_revision,
+        Some(1)
+    );
+}

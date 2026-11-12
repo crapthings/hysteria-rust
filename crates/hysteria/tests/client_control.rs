@@ -240,3 +240,61 @@ fn assert_events(
     assert_eq!(sequence, control.status().sequence);
     assert_eq!(updates, 1);
 }
+
+#[tokio::test]
+async fn closing_connecting_tcp_cancels_handshake_and_keeps_runtime_available() {
+    use hysteria_cli::client_connections::TcpState;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let remote = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = remote.local_addr().unwrap();
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let mut config = config(&local.to_string(), "127.0.0.1:0", &target.to_string());
+        config.server = blackhole.local_addr().unwrap().to_string();
+        config.routing = Some(
+            serde_json::from_value(serde_json::json!({"version":1,"default":"proxy"})).unwrap(),
+        );
+        let (control, runtime) = ClientRuntime::prepare(config, false).unwrap();
+        control.set_connection_tracking(true).unwrap();
+        let mut states = control.subscribe_status();
+        let task = tokio::spawn(runtime.run());
+        while states.snapshot().ready_components.len() != 2 {
+            states.changed().await.unwrap();
+        }
+        let mut pending = TcpStream::connect(local).await.unwrap();
+        pending.write_all(b"pending").await.unwrap();
+        // Establish that a real QUIC handshake is in flight before cancelling it.
+        blackhole.recv_from(&mut [0; 2048]).await.unwrap();
+        let page = control.connections(None, 10).unwrap();
+        assert_eq!(page.connections.len(), 1);
+        assert!(matches!(page.connections[0].state, TcpState::Connecting));
+        assert!(control.close_connection(&page.connections[0].id).unwrap());
+        assert_eq!(pending.read(&mut [0; 1]).await.unwrap_or(0), 0);
+        assert!(
+            control
+                .connections(None, 10)
+                .unwrap()
+                .connections
+                .is_empty()
+        );
+        let candidate = PreparedRouting::load(
+            serde_json::from_value(serde_json::json!({"version":1,"default":"direct"})).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        control.apply_routing(candidate, 1).unwrap();
+        let mut direct = TcpStream::connect(local).await.unwrap();
+        direct.write_all(b"ok").await.unwrap();
+        let (mut received, _) = remote.accept().await.unwrap();
+        let mut payload = [0; 2];
+        received.read_exact(&mut payload).await.unwrap();
+        assert_eq!(&payload, b"ok");
+        control.shutdown();
+        task.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}

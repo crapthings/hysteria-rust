@@ -156,6 +156,9 @@ return an error with `id: null`; errors contain fixed messages, not input excerp
 | Method | Parameters | Result |
 | --- | --- | --- |
 | `status` | `{}` | Current runtime snapshot |
+| `connections.track` | `enabled` | Enable/disable new TCP tracking, with counts/limits |
+| `connections.list` | Optional `after`, `limit` (1–200; default 100) | Active TCP page and next cursor |
+| `connections.close` | `id` | Whether the selected tracked TCP was found and closed |
 | `traffic.sample` | `{}` | Cumulative proxy/direct payload bytes and sample times |
 | `routing.stats` | `{}` | Active-revision and runtime pressure counters |
 | `routing.history` | `{}` | Up to four retired revisions |
@@ -343,6 +346,66 @@ Pinned flows retain only their selected rule counter, not a retired router or
 entire rule-set snapshot. Memory is therefore not an unbounded history of rules.
 Each call is a separate snapshot; compare revisions rather than assuming several
 API calls observe the same instant.
+
+## Active TCP connections (development)
+
+Tracking is disabled by default. Opt in using `connections.track` with
+`{"enabled":true}`, or `ClientControl::set_connection_tracking(true)` before
+starting an embedded runtime. Only subsequently admitted TCP forwarding attempts
+are captured. Local proxy handshakes, rejected routes, UDP flows and the shared
+QUIC transport itself are not connection-list entries.
+
+`connections.list` / `ClientControl::connections` reports each connection's opaque
+`id`, `inbound`, `target`, `outbound`, `routing_revision`, `matched_rule`,
+`started_at` and `state`. State is `connecting` while establishing the outbound
+stream, and `active` after the stream object is created. With fast-open enabled,
+remote acceptance may still be pending; active is not a forwarding-health claim.
+Routing-disabled connections have a null revision and rule index.
+
+The captured revision/action/rule index remain attached to the original flow,
+even after routing updates or eviction of that revision's statistics. This lets
+a GUI explain why an old connection still follows its original route. Active
+connections do not retain a whole retired router snapshot.
+
+Pages are ordered by monotonically allocated IDs within one random runtime
+namespace. Pass the returned `next_cursor` as `after` to continue; null means no
+later entries existed at that instant. Pagination is weakly consistent: records
+may close between calls and new higher IDs may appear. A foreign/malformed cursor
+or ID is rejected. IDs are never reused within a runtime.
+
+`connections.close` / `ClientControl::close_connection` removes one entry and drops
+its outbound stream immediately, including when the caller is idle. It never
+closes the shared established QUIC connection. Other direct/proxy TCP streams
+continue independently. A pending dial is cancelled; if it was initiating the
+first shared handshake, cancellation follows the existing connection-attempt
+cooldown behavior. It does not replay application bytes. Closing an already removed
+ID returns `closed: false`; completion does not acknowledge delivery at the peer.
+
+Half-closed TCP remains visible while its other direction is open. Both-direction
+completion, I/O failure, failed/cancelled establishment or dropping the stream
+removes its entry. Runtime stop closes remaining controlled streams and clears
+tracking. These operations are scoped to the supported inbounds; they do not add
+transparent-routing or platform TUN capabilities.
+
+There are at most 4096 live tracking/control handles and 200 entries per page.
+At capacity, or for a target exceeding 1024 bytes, forwarding continues without a
+new record and `tracking.skipped` increases. A nonzero skipped count means the list
+is incomplete. `tracked` counts visible entries; `control_handles` also includes
+still-live wrappers whose metadata was forgotten when tracking was disabled.
+
+Disabling tracking clears target metadata and invalidates those entries for
+individual control without disconnecting the streams. Re-enabling captures only
+new attempts. The runtime retains bounded weak control references for shutdown,
+without target data. Connection targets are only returned by explicit list calls;
+they are not added to lifecycle events, traffic samples or daily JSON history.
+
+Example request flow (IDs continue the current control session):
+
+```json
+{"schema_version":1,"id":10,"method":"connections.track","params":{"enabled":true}}
+{"schema_version":1,"id":11,"method":"connections.list","params":{"limit":100}}
+{"schema_version":1,"id":12,"method":"connections.close","params":{"id":"<id returned by connections.list>"}}
+```
 
 ## Traffic sampling and daily JSON history (development)
 

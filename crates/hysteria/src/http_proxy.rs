@@ -66,7 +66,10 @@ async fn handle_connect(
     request: HttpRequest,
 ) -> Result<()> {
     let target = normalize_authority(&request.target, 80)?;
-    let mut tunnel = match client.tcp(&target).await {
+    let mut tunnel = match client
+        .tcp_named(&target, crate::client_connections::TcpInbound::HttpConnect)
+        .await
+    {
         Ok(tunnel) => tunnel,
         Err(error) => {
             write_bad_gateway(&mut stream, &request.version).await?;
@@ -89,7 +92,13 @@ async fn handle_plain_http(
     request: HttpRequest,
 ) -> Result<()> {
     let (target, origin_form) = parse_absolute_http_target(&request.target)?;
-    let mut tunnel = match client.tcp(&target).await {
+    let mut tunnel = match client
+        .tcp_named(
+            &target,
+            crate::client_connections::TcpInbound::HttpForwarding,
+        )
+        .await
+    {
         Ok(tunnel) => tunnel,
         Err(error) => {
             write_bad_gateway(&mut stream, &request.version).await?;

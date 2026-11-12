@@ -14,6 +14,8 @@ The GUI/control and traffic-history changes have passed local macOS workspace
 tests, Clippy and formatting checks. Tests cover:
 
 - Embedded status/events, slow consumers, real TCP/UDP payload counts and cleanup.
+- Opt-in TCP registry limits, pagination, half-close cleanup, pending-dial
+  cancellation and single-stream closure without disrupting a shared QUIC peer.
 - Prepared routing snapshots, revision conflicts, old-flow preservation and UDP
   expiry/limits, with bounded retired-revision statistics.
 - Real stdio child processes: requests/events, malformed input, pipe failures,
@@ -21,10 +23,11 @@ tests, Clippy and formatting checks. Tests cover:
 - Daily JSON locking, private permissions, schema/type validation, duplicate
   samples, reopening, uncertain post-rename failures, rollover and retention.
 
-These local results do not replace cross-platform CI. Linux/Windows control-pipe
-acceptance, Windows storage ACL/durability behavior and real GUI integration for
-these new features remain unverified. The rc.7 release results above apply to
-that release, not automatically to later source changes.
+The native CI matrix runs the applicable suite on Linux, macOS and Windows;
+consult the run for the selected commit rather than extending an older result to
+new code. Automated tests do not establish Windows ACL policy or crash durability
+on every filesystem, nor real GUI integration. Those remain deployment checks.
+The rc.7 release results above apply to that release, not later source changes.
 
 ## Recorded Linux acceptance
 

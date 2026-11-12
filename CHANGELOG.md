@@ -8,6 +8,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add opt-in bounded TCP connection tracking and paginated embedded/stdio control,
+  preserving each flow's inbound, target, action and routing revision. Close one
+  direct/proxy stream or cancel its pending dial without closing an established
+  shared QUIC connection; disable tracking to forget target metadata.
+
 - Embedded client control with owned status snapshots, bounded lifecycle event
   subscriptions, graceful shutdown and per-rule TCP/UDP decision statistics.
   Count routed UDP queue drops, direct flow-limit hits and worker failures without

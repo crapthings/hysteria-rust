@@ -71,6 +71,7 @@ pub(crate) struct Telemetry {
     events: broadcast::Sender<Observation>,
     pub(crate) routing: LiveRouting,
     pub(crate) traffic: crate::client_traffic::TrafficMeter,
+    pub(crate) connections: Arc<crate::client_connections::Connections>,
     pub(crate) udp_queue_drops: AtomicU64,
     pub(crate) udp_flow_limit_hits: AtomicU64,
     pub(crate) udp_worker_failures: AtomicU64,
@@ -89,17 +90,25 @@ impl Telemetry {
             connection_error_code: None,
             routing_revision: config.routing.as_ref().map(|_| 1),
         };
+        let traffic = crate::client_traffic::TrafficMeter::new()?;
+        let connections = Arc::new(crate::client_connections::Connections::new(
+            traffic.sample().session_id,
+        ));
         Ok(Self {
             status: watch::channel(status).0,
             events: broadcast::channel(128).0,
             routing: LiveRouting::new(config.routing.as_ref())?,
-            traffic: crate::client_traffic::TrafficMeter::new()?,
+            traffic,
+            connections,
             udp_queue_drops: AtomicU64::new(0),
             udp_flow_limit_hits: AtomicU64::new(0),
             udp_worker_failures: AtomicU64::new(0),
         })
     }
     pub(crate) fn observe(&self, event: &Observation) {
+        if matches!(event.event, "stopping" | "stopped") {
+            self.connections.shutdown();
+        }
         self.status.send_modify(|s| {
             s.sequence = event.sequence;
             if let Some(revision) = event.routing_revision {
@@ -213,6 +222,31 @@ impl ClientControl {
     #[must_use]
     pub fn routing_stats(&self) -> RoutingStats {
         self.telemetry.stats()
+    }
+    /// Enable tracking for newly admitted TCP connections; disabling forgets targets without closing streams.
+    /// # Errors
+    /// Rejects a stopped runtime.
+    pub fn set_connection_tracking(
+        &self,
+        enabled: bool,
+    ) -> Result<crate::client_connections::TrackingStatus> {
+        self.telemetry.connections.enable(enabled)
+    }
+    /// Read an ascending, weakly consistent page of active TCP connections.
+    /// # Errors
+    /// Rejects foreign/malformed cursors and limits outside 1..=200.
+    pub fn connections(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::client_connections::ConnectionPage> {
+        self.telemetry.connections.list(after, limit)
+    }
+    /// Close one tracked TCP stream (or cancel its pending dial), never the shared QUIC connection.
+    /// # Errors
+    /// Rejects malformed IDs or IDs from another runtime. Missing IDs return false.
+    pub fn close_connection(&self, id: &str) -> Result<bool> {
+        self.telemetry.connections.close(id)
     }
     /// Sample cumulative application payload bytes and monotonic elapsed time.
     #[must_use]

@@ -114,7 +114,10 @@ async fn authenticate_userpass(stream: &mut TcpStream, config: &Socks5Config) ->
 }
 
 async fn handle_connect(mut stream: TcpStream, client: &ClientHandle, address: &str) -> Result<()> {
-    let mut tunnel = match client.tcp(address).await {
+    let mut tunnel = match client
+        .tcp_named(address, crate::client_connections::TcpInbound::Socks5)
+        .await
+    {
         Ok(tunnel) => tunnel,
         Err(error) => {
             write_reply(&mut stream, REPLY_HOST_UNREACHABLE, unspecified_v4()).await?;

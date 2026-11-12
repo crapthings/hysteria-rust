@@ -122,6 +122,7 @@ impl RevisionCounters {
 #[derive(Clone)]
 pub(crate) struct RouteSelection {
     pub decision: Decision,
+    pub revision: Option<u64>,
     // Pin just one counter, not a retired router or its entire rule-set snapshot.
     counter: Option<Arc<RuleCounters>>,
 }
@@ -130,6 +131,7 @@ impl RouteSelection {
         Self {
             decision,
             counter: None,
+            revision: None,
         }
     }
     pub(crate) fn record(&self) {
@@ -203,6 +205,7 @@ impl LiveRouting {
         Ok(Some(RouteSelection {
             decision,
             counter: Some(Arc::clone(counter)),
+            revision: Some(revision.number),
         }))
     }
     pub(crate) fn explain(&self, address: &str, protocol: Protocol) -> Result<RoutingExplanation> {

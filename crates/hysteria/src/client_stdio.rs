@@ -26,7 +26,7 @@ const HEARTBEAT: Duration = Duration::from_secs(2);
 const MAX_ID: u64 = 9_007_199_254_740_991;
 
 pub(crate) fn capabilities() -> Value {
-    json!({"schema_version":1,"transport":"stdio-ndjson","methods":["status","traffic.sample","routing.stats","routing.history","routing.explain","routing.validate","routing.apply","events.subscribe","shutdown"],"max_request_bytes":MAX_REQUEST,"max_response_bytes":MAX_RESPONSE,"input_queue":INPUT_QUEUE,"output_queue":OUTPUT_QUEUE,"write_timeout_ms":5000,"heartbeat_interval_ms":2000,"automatic_events":true,"routing_apply":true})
+    json!({"schema_version":1,"transport":"stdio-ndjson","methods":["status","connections.track","connections.list","connections.close","traffic.sample","routing.stats","routing.history","routing.explain","routing.validate","routing.apply","events.subscribe","shutdown"],"max_request_bytes":MAX_REQUEST,"max_response_bytes":MAX_RESPONSE,"input_queue":INPUT_QUEUE,"output_queue":OUTPUT_QUEUE,"write_timeout_ms":5000,"heartbeat_interval_ms":2000,"automatic_events":true,"routing_apply":true})
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -67,6 +67,28 @@ struct Apply {
 struct Explain {
     address: String,
     protocol: Protocol,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Tracking {
+    enabled: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionList {
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default = "page_limit")]
+    limit: usize,
+}
+fn page_limit() -> usize {
+    100
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionClose {
+    id: String,
 }
 
 struct Session {
@@ -128,6 +150,9 @@ impl Session {
                     _ => json!({"shutdown_requested":true}),
                 })
             }
+            "connections.track" | "connections.list" | "connections.close" => {
+                connection_request(id, &request.method, request.params, control)
+            }
             "routing.explain" => {
                 let p: Explain = params(id, request.params)?;
                 control
@@ -185,6 +210,59 @@ impl Session {
                 "Unsupported control method",
             )),
         }
+    }
+}
+fn connection_request(
+    id: u64,
+    method: &str,
+    value: Value,
+    control: &ClientControl,
+) -> std::result::Result<Value, Value> {
+    match method {
+        "connections.track" => {
+            let p: Tracking = params(id, value)?;
+            control
+                .set_connection_tracking(p.enabled)
+                .map(|r| json!(r))
+                .map_err(|_| {
+                    failure(
+                        Some(id),
+                        "tracking_unavailable",
+                        "Client tracking is no longer available",
+                    )
+                })
+        }
+        "connections.list" => {
+            let p: ConnectionList = params(id, value)?;
+            control
+                .connections(p.after.as_deref(), p.limit)
+                .map(|r| json!(r))
+                .map_err(|_| {
+                    failure(
+                        Some(id),
+                        "invalid_page",
+                        "Use a cursor from this runtime and a limit from 1 through 200",
+                    )
+                })
+        }
+        "connections.close" => {
+            let p: ConnectionClose = params(id, value)?;
+            control
+                .close_connection(&p.id)
+                .map(|closed| json!({"closed":closed}))
+                .map_err(|_| {
+                    failure(
+                        Some(id),
+                        "invalid_connection_id",
+                        "Use a connection ID from this runtime",
+                    )
+                })
+        }
+        _ => Err(failure(
+            Some(id),
+            "unknown_method",
+            "Unsupported connection method",
+        )),
     }
 }
 fn apply_failure(id: u64, error: RoutingUpdateError) -> Value {
