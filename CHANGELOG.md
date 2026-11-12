@@ -8,6 +8,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add a bounded host-owned raw IP packet API for embedded clients, reusing native
+  TUN TCP/UDP forwarding without changing system routes or DNS. macOS Network
+  Extension integration remains a separate app-layer task.
+
 - Add opt-in bounded TCP connection tracking and paginated embedded/stdio control,
   preserving each flow's inbound, target, action and routing revision. Close one
   direct/proxy stream or cancel its pending dial without closing an established

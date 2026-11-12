@@ -19,6 +19,7 @@ mod geo;
 mod http_proxy;
 mod masquerade;
 mod outbound;
+pub mod packet_tunnel;
 mod realm_runtime;
 mod resolver;
 pub mod routing;

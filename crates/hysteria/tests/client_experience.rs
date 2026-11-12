@@ -555,3 +555,177 @@ async fn retire_initial_revision(control: &hysteria_cli::client_control::ClientC
         Some(1)
     );
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[tokio::test]
+async fn external_packet_tunnel_relays_udp_without_creating_a_device() {
+    use hysteria_cli::client_control::ClientRuntime;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let directory = tempfile::tempdir().unwrap();
+        let mut server = server(directory.path()).await;
+        let echo = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = echo.local_addr().unwrap();
+        let mut config = server.config;
+        config.as_object_mut().unwrap().remove("socks5");
+        config.as_object_mut().unwrap().remove("routing");
+        // Deliberately invalid as an OS device name: this mode must never create it.
+        config["tun"] = json!({"name":"external/packet-flow/not-a-device","mtu":1400});
+        let (control, runtime, mut packets) =
+            ClientRuntime::prepare_packet_tunnel(serde_json::from_value(config).unwrap(), false)
+                .unwrap();
+        let mut state = control.subscribe_status();
+        let task = tokio::spawn(runtime.run());
+        while !state.snapshot().ready_components.contains(&"tun") {
+            state.changed().await.unwrap();
+        }
+        let payload = b"raw-packet-through-hysteria";
+        let packet = raw_udp_packet(target.port(), payload);
+        packets.input.try_send(&packet).unwrap();
+        let mut received = [0; 128];
+        let (len, source) = echo.recv_from(&mut received).await.unwrap();
+        assert_eq!(&received[..len], payload);
+        echo.send_to(&received[..len], source).await.unwrap();
+        let reply = packets.output.recv().await.unwrap();
+        assert_eq!(reply[0] >> 4, 4);
+        assert_eq!(&reply[12..16], &[127, 0, 0, 1]);
+        assert_eq!(&reply[16..20], &[10, 0, 0, 2]);
+        let header = usize::from(reply[0] & 15) * 4;
+        assert_eq!(&reply[header + 8..], payload);
+        let traffic = control.traffic_sample();
+        assert_eq!(traffic.traffic.proxy.upload_bytes, payload.len() as u64);
+        assert_eq!(traffic.traffic.proxy.download_bytes, payload.len() as u64);
+        control.shutdown();
+        task.await.unwrap().unwrap();
+        assert!(packets.output.recv().await.is_none());
+        assert_eq!(
+            packets.input.try_send(&packet),
+            Err(hysteria_cli::packet_tunnel::PacketSendError::Closed)
+        );
+        server.child.kill().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn raw_udp_packet(port: u16, payload: &[u8]) -> Vec<u8> {
+    let mut packet = vec![0; 28];
+    packet[0] = 0x45;
+    packet[2..4].copy_from_slice(&u16::try_from(28 + payload.len()).unwrap().to_be_bytes());
+    packet[8] = 64;
+    packet[9] = 17;
+    packet[12..16].copy_from_slice(&[10, 0, 0, 2]);
+    packet[16..20].copy_from_slice(&[127, 0, 0, 1]);
+    let mut sum: u32 = packet[..20]
+        .chunks_exact(2)
+        .map(|pair| u32::from(u16::from_be_bytes([pair[0], pair[1]])))
+        .sum();
+    while sum > 65535 {
+        sum = (sum & 65535) + (sum >> 16);
+    }
+    packet[10..12].copy_from_slice(&(!u16::try_from(sum).unwrap()).to_be_bytes());
+    packet[20..22].copy_from_slice(&12345_u16.to_be_bytes());
+    packet[22..24].copy_from_slice(&port.to_be_bytes());
+    packet[24..26].copy_from_slice(&u16::try_from(8 + payload.len()).unwrap().to_be_bytes());
+    packet.extend_from_slice(payload);
+    packet
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[tokio::test]
+async fn external_packet_tunnel_relays_tcp_and_exposes_connection_control() {
+    use hysteria_cli::client_control::ClientRuntime;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let directory = tempfile::tempdir().unwrap();
+        let mut server = server(directory.path()).await;
+        let (target, echo) = connection_echo_server().await;
+        let mut config = server.config;
+        config.as_object_mut().unwrap().remove("socks5");
+        config.as_object_mut().unwrap().remove("routing");
+        config["tun"] = json!({"name":"external/packet-flow","mtu":1400});
+        let (control, runtime, mut packets) =
+            ClientRuntime::prepare_packet_tunnel(serde_json::from_value(config).unwrap(), false)
+                .unwrap();
+        control.set_connection_tracking(true).unwrap();
+        let task = tokio::spawn(runtime.run());
+        packets
+            .input
+            .try_send(&raw_tcp_packet(target.port(), 1, 0, 2, &[]))
+            .unwrap();
+        let syn_ack = packets.output.recv().await.unwrap();
+        let offset = usize::from(syn_ack[0] & 15) * 4;
+        assert_eq!(syn_ack[offset + 13] & 0x12, 0x12);
+        let ack =
+            u32::from_be_bytes(syn_ack[offset + 4..offset + 8].try_into().unwrap()).wrapping_add(1);
+        packets
+            .input
+            .try_send(&raw_tcp_packet(target.port(), 2, ack, 0x10, &[]))
+            .unwrap();
+        let payload = b"external-tcp-echo";
+        packets
+            .input
+            .try_send(&raw_tcp_packet(target.port(), 2, ack, 0x18, payload))
+            .unwrap();
+        let mut echoed = Vec::new();
+        while echoed.len() < payload.len() {
+            let reply = packets.output.recv().await.unwrap();
+            let ip = usize::from(reply[0] & 15) * 4;
+            let tcp = usize::from(reply[ip + 12] >> 4) * 4;
+            echoed.extend_from_slice(&reply[ip + tcp..]);
+        }
+        assert_eq!(echoed, payload);
+        let page = control.connections(None, 10).unwrap();
+        assert_eq!(page.connections.len(), 1);
+        assert_eq!(page.connections[0].target, target.to_string());
+        assert!(matches!(
+            page.connections[0].inbound,
+            hysteria_cli::client_connections::TcpInbound::Tun
+        ));
+        assert!(control.close_connection(&page.connections[0].id).unwrap());
+        control.shutdown();
+        task.await.unwrap().unwrap();
+        server.child.kill().await.unwrap();
+        echo.abort();
+    })
+    .await
+    .unwrap();
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn raw_tcp_packet(port: u16, seq: u32, ack: u32, flags: u8, payload: &[u8]) -> Vec<u8> {
+    let mut packet = vec![0; 40];
+    packet[0] = 0x45;
+    packet[2..4].copy_from_slice(&u16::try_from(40 + payload.len()).unwrap().to_be_bytes());
+    packet[8] = 64;
+    packet[9] = 6;
+    packet[12..16].copy_from_slice(&[10, 0, 0, 2]);
+    packet[16..20].copy_from_slice(&[127, 0, 0, 1]);
+    let checksum = internet_checksum(&packet[..20]);
+    packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+    packet[20..22].copy_from_slice(&12345_u16.to_be_bytes());
+    packet[22..24].copy_from_slice(&port.to_be_bytes());
+    packet[24..28].copy_from_slice(&seq.to_be_bytes());
+    packet[28..32].copy_from_slice(&ack.to_be_bytes());
+    packet[32] = 0x50;
+    packet[33] = flags;
+    packet[34..36].copy_from_slice(&65535_u16.to_be_bytes());
+    packet.extend_from_slice(payload);
+    let mut pseudo = packet[12..20].to_vec();
+    pseudo.extend_from_slice(&[0, 6]);
+    pseudo.extend_from_slice(&u16::try_from(20 + payload.len()).unwrap().to_be_bytes());
+    pseudo.extend_from_slice(&packet[20..]);
+    packet[36..38].copy_from_slice(&internet_checksum(&pseudo).to_be_bytes());
+    packet
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn internet_checksum(bytes: &[u8]) -> u16 {
+    let mut sum: u32 = bytes
+        .chunks(2)
+        .map(|pair| u32::from(u16::from_be_bytes([pair[0], *pair.get(1).unwrap_or(&0)])))
+        .sum();
+    while sum > 65535 {
+        sum = (sum & 65535) + (sum >> 16);
+    }
+    !u16::try_from(sum).unwrap()
+}

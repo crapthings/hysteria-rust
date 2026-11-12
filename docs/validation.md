@@ -14,6 +14,9 @@ The GUI/control and traffic-history changes have passed local macOS workspace
 tests, Clippy and formatting checks. Tests cover:
 
 - Embedded status/events, slow consumers, real TCP/UDP payload counts and cleanup.
+- Host-owned packet ingress/egress with real TCP handshakes and UDP payloads
+  forwarded through a loopback Rust server, bounded queues, malformed packets,
+  idle host disconnect and shutdown, without creating an OS TUN device.
 - Opt-in TCP registry limits, pagination, half-close cleanup, pending-dial
   cancellation and single-stream closure without disrupting a shared QUIC peer.
 - Prepared routing snapshots, revision conflicts, old-flow preservation and UDP

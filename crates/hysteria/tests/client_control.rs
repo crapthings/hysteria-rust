@@ -298,3 +298,55 @@ async fn closing_connecting_tcp_cancels_handshake_and_keeps_runtime_available() 
     .await
     .unwrap();
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[tokio::test]
+async fn external_packet_host_closure_stops_idle_runtime() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for close_input in [false, true] {
+            let config = serde_json::from_value(serde_json::json!({
+                "server":"127.0.0.1:1", "auth":"secret", "lazy":true,
+                "tun":{"name":"external/packet-flow"}
+            }))
+            .unwrap();
+            let (control, runtime, packets) =
+                ClientRuntime::prepare_packet_tunnel(config, false).unwrap();
+            let mut state = control.subscribe_status();
+            let task = tokio::spawn(runtime.run());
+            while !state.snapshot().ready_components.contains(&"tun") {
+                state.changed().await.unwrap();
+            }
+            let mut input = Some(packets.input);
+            let mut output = Some(packets.output);
+            if close_input {
+                drop(input.take());
+            } else {
+                drop(output.take());
+            }
+            assert!(task.await.unwrap().is_err());
+            assert!(matches!(
+                control.status().lifecycle,
+                hysteria_cli::client_control::Lifecycle::Stopped
+            ));
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn external_packet_mode_rejects_system_configuration() {
+    for extra in [
+        serde_json::json!({"route":{}}),
+        serde_json::json!({"mtu":1000}),
+    ] {
+        let mut value =
+            serde_json::json!({"server":"127.0.0.1:1","auth":"secret","tun":{"name":"external"}});
+        value["tun"]
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let config = serde_json::from_value(value).unwrap();
+        assert!(ClientRuntime::prepare_packet_tunnel(config, false).is_err());
+    }
+}

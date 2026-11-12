@@ -28,6 +28,27 @@ mod platform {
         let (device, _routes) = setup_device(&config)?;
         eprintln!("TUN proxy listening on interface {}", config.name);
 
+        serve_io(config, client, PacketDevice::Native(Arc::new(device))).await
+    }
+
+    pub(super) async fn serve_packets(
+        config: TunConfig,
+        client: Arc<ClientHandle>,
+        packets: crate::packet_tunnel::PacketEndpoint,
+    ) -> Result<()> {
+        serve_io(config, client, PacketDevice::External(packets)).await
+    }
+
+    enum PacketDevice {
+        Native(Arc<tun_rs::AsyncDevice>),
+        External(crate::packet_tunnel::PacketEndpoint),
+    }
+
+    async fn serve_io(
+        config: TunConfig,
+        client: Arc<ClientHandle>,
+        device: PacketDevice,
+    ) -> Result<()> {
         let (stack, runner, udp_socket, tcp_listener) = StackBuilder::default()
             .stack_buffer_size(512)
             .tcp_buffer_size(64 * 1024)
@@ -49,22 +70,7 @@ mod platform {
             });
         }
 
-        let device = Arc::new(device);
-        let (mut stack_sink, mut stack_stream) = stack.split();
-        let receive_device = Arc::clone(&device);
-        tasks.spawn(async move {
-            let mut buffer = vec![0_u8; 65_535];
-            loop {
-                let size = receive_device.recv(&mut buffer).await?;
-                stack_sink.send(buffer[..size].to_vec()).await?;
-            }
-        });
-        tasks.spawn(async move {
-            while let Some(packet) = stack_stream.next().await {
-                device.send(&packet?).await?;
-            }
-            Err(CliError::new("TUN packet output stopped"))
-        });
+        spawn_packet_pumps(&mut tasks, stack, device);
 
         let Some(mut tcp_listener) = tcp_listener else {
             return Err(CliError::new("TUN TCP stack was not created"));
@@ -107,6 +113,53 @@ mod platform {
             Some(Ok(result)) => result,
             Some(Err(error)) => Err(CliError::new(format!("TUN task failed: {error}"))),
             None => Err(CliError::new("all TUN tasks stopped")),
+        }
+    }
+
+    fn spawn_packet_pumps(
+        tasks: &mut tokio::task::JoinSet<Result<()>>,
+        stack: netstack_smoltcp::Stack,
+        device: PacketDevice,
+    ) {
+        let (mut stack_sink, mut stack_stream) = stack.split();
+        match device {
+            PacketDevice::Native(device) => {
+                let receive_device = Arc::clone(&device);
+                tasks.spawn(async move {
+                    let mut buffer = vec![0_u8; 65_535];
+                    loop {
+                        let size = receive_device.recv(&mut buffer).await?;
+                        stack_sink.send(buffer[..size].to_vec()).await?;
+                    }
+                });
+                tasks.spawn(async move {
+                    while let Some(packet) = stack_stream.next().await {
+                        device.send(&packet?).await?;
+                    }
+                    Err(CliError::new("TUN packet output stopped"))
+                });
+            }
+            PacketDevice::External(mut endpoint) => {
+                tasks.spawn(async move {
+                    while let Some(packet) = endpoint.input.recv().await {
+                        stack_sink.send(packet).await?;
+                    }
+                    Err(CliError::new("external TUN packet input closed"))
+                });
+                tasks.spawn(async move {
+                    loop {
+                        tokio::select! {
+                            () = endpoint.output.closed() => {
+                                return Err(CliError::new("external TUN packet output closed"));
+                            }
+                            packet = stack_stream.next() => {
+                                let packet = packet.ok_or_else(|| CliError::new("TUN packet output stopped"))??;
+                                endpoint.output.send(packet).await.map_err(|_| CliError::new("external TUN packet output closed"))?;
+                            }
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -706,4 +759,23 @@ pub(crate) fn inspect_routes(
     resolver: std::net::IpAddr,
 ) -> Result<(bool, bool, bool)> {
     platform::inspect_routes(tun_index, egress_index, resolver)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(crate) async fn serve_packets(
+    config: TunConfig,
+    client: Arc<ClientHandle>,
+    packets: crate::packet_tunnel::PacketEndpoint,
+) -> Result<()> {
+    platform::serve_packets(config, client, packets).await
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+pub(crate) async fn serve_packets(
+    _config: TunConfig,
+    _client: Arc<ClientHandle>,
+    _packets: crate::packet_tunnel::PacketEndpoint,
+) -> Result<()> {
+    Err(CliError::new(
+        "packet tunnels require Linux, macOS, or Windows",
+    ))
 }

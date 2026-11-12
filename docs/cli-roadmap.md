@@ -29,6 +29,9 @@ Payload-byte samples support monotonic speed calculations; an optional GUI-owned
 JSON store provides daily totals with atomic checkpoints and explicit retention.
 Opt-in TCP connection listing and per-connection close now preserve the actual
 rule revision/action used by each flow; target metadata stays in memory only.
+A host-owned raw IP packet API also reuses the TUN stack without creating a
+device or changing system routes/DNS; it is currently proxy-only. A Swift bridge
+and signed macOS Network Extension remain future app integration work.
 These features are not included in the published rc.7 binaries.
 
 ## Next priorities

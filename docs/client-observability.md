@@ -508,3 +508,54 @@ A saved record looks like this (illustrative values):
 This protects storage structure and update consistency, not against a trusted
 account deliberately rewriting valid JSON totals. There is no automatic repair,
 format migration, backup recovery or background upload.
+
+## Host-owned packet tunnel (development)
+
+`ClientRuntime::prepare_packet_tunnel(config, update_checks)` returns
+`(ClientControl, ClientRuntime, PacketIo)`. This Rust API is the packet boundary for
+an eventual macOS Network Extension adapter. It shares the existing TCP/UDP stack,
+Hysteria session, connection tracking and traffic counters with native TUN.
+Unlike `prepare`, this entry point never creates a TUN device, installs routes or
+changes system DNS. The CLI still uses the native device path.
+
+The initial contract is deliberately proxy-only: `tun` is required (its `name`
+is a diagnostic label, not an OS device name), MTU must be at least 1280, and
+`routing`, `tun.route`, `tun.egress`, `tun.dns` and other local proxy listeners
+are rejected. Address/timeout/connection configuration still undergoes normal
+validation. This does not enable macOS routed TUN or Fake-IP DNS. DNS packets
+that the host delivers use ordinary TCP/UDP forwarding, without DNS interception.
+
+```rust,ignore
+let (control, runtime, packets) =
+    ClientRuntime::prepare_packet_tunnel(config, false)?;
+let running = tokio::spawn(runtime.run());
+// Host callback: packets.input.try_send(&ip_packet)?;
+// Host output task: while let Some(packet) = output.recv().await { ... }
+// On stop, request shutdown and await completion before reusing host settings.
+control.shutdown();
+running.await??;
+```
+
+`PacketIo` has public `input` and `output` halves so they can move into separate
+host tasks. Input is cloneable and nonblocking. `try_send` validates raw IPv4/IPv6
+lengths and returns `InvalidPacket`, `Full` or `Closed`; the host must handle these
+without an unbounded retry queue. Checksums and transport parsing remain the IP
+stack's responsibility. There is no Ethernet header, Darwin four-byte family
+prefix, or JSON/base64 encoding. The version nibble identifies the address family.
+Packets are limited to 65535 bytes; IPv6 jumbograms are unsupported. Each direction
+has 256 queue slots. Egress waits for the host to drain it; shutdown interrupts
+this wait. Queue limits are not a guarantee against transport packet loss.
+
+`output.recv()` is cancellation-safe and returns `None` after closure (buffered
+packets may drain first). Dropping output, or every input clone, terminates the
+runtime with an error, including when no packets arrive. Use `shutdown()` for
+normal completion. `ready_components` reports `tun` when the core stack is ready;
+this does not prove that the host's network settings have been applied.
+
+The host remains responsible for packet-flow ownership, route/DNS settings,
+server bypass, network-change handling and restore/cleanup. No Swift/C ABI,
+signed app, Network Extension entitlement or privileged helper is provided by
+this interface. Those belong to the future macOS app integration. In particular,
+do not turn on full capture until the host can keep the Hysteria connection out
+of its own packet input. These unit/integration tests do not establish whole-host
+macOS network takeover or leak prevention.

@@ -290,6 +290,7 @@ impl ClientControl {
 /// Do not abort/drop the running future: use the control handle for graceful cleanup.
 pub struct ClientRuntime {
     config: ClientConfig,
+    packets: Option<crate::packet_tunnel::PacketEndpoint>,
     update_checks: bool,
     events: crate::client_events::ClientEvents,
     stop: watch::Receiver<bool>,
@@ -313,6 +314,7 @@ impl ClientRuntime {
             },
             Self {
                 config,
+                packets: None,
                 update_checks,
                 events,
                 stop: receiver,
@@ -320,17 +322,33 @@ impl ClientRuntime {
             },
         ))
     }
+    /// Prepare a host-owned IP packet tunnel without creating a device or changing routes/DNS.
+    /// The host must configure and protect its network path before supplying packets.
+    /// # Errors
+    /// Rejects native route/DNS/egress configuration and unsupported platforms.
+    pub fn prepare_packet_tunnel(
+        config: ClientConfig,
+        update_checks: bool,
+    ) -> Result<(ClientControl, Self, crate::packet_tunnel::PacketIo)> {
+        crate::packet_tunnel::validate_config(&config)?;
+        let (control, mut runtime) = Self::prepare(config, update_checks)?;
+        let (io, endpoint) = crate::packet_tunnel::channel();
+        runtime.packets = Some(endpoint);
+        Ok((control, runtime, io))
+    }
+
     /// Run once until shutdown or runtime failure. Final state remains queryable.
     /// # Errors
     /// Returns startup, listener or runtime errors after normal cleanup.
     pub async fn run(mut self) -> Result<()> {
-        crate::runtime::serve_client_observed(
+        crate::runtime::serve_client_with_packets(
             self.config,
             async move {
                 let _ = self.stop.wait_for(|stop| *stop).await;
             },
             self.update_checks,
             self.events,
+            self.packets,
         )
         .await
     }

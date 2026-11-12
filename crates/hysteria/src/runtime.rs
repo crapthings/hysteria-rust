@@ -344,8 +344,26 @@ pub async fn serve_client_observed(
     update_checks: bool,
     events: crate::client_events::ClientEvents,
 ) -> Result<()> {
+    serve_client_with_packets(config, shutdown, update_checks, events, None).await
+}
+
+pub(crate) async fn serve_client_with_packets(
+    config: ClientConfig,
+    shutdown: impl Future<Output = ()> + Send,
+    update_checks: bool,
+    events: crate::client_events::ClientEvents,
+    packets: Option<crate::packet_tunnel::PacketEndpoint>,
+) -> Result<()> {
     events.emit("starting", None, None);
-    let result = serve_client_inner(config, shutdown, update_checks, &events).await;
+    // Keep the startup state machine off callers' task stacks as adapters add state.
+    let result = Box::pin(serve_client_inner(
+        config,
+        shutdown,
+        update_checks,
+        &events,
+        packets,
+    ))
+    .await;
     if let Err(error) = &result {
         events.emit("failed", None, Some(error.code().as_str()));
     }
@@ -358,6 +376,7 @@ async fn serve_client_inner(
     shutdown: impl Future<Output = ()> + Send,
     update_checks: bool,
     events: &crate::client_events::ClientEvents,
+    packets: Option<crate::packet_tunnel::PacketEndpoint>,
 ) -> Result<()> {
     config.validate()?;
     tokio::pin!(shutdown);
@@ -366,7 +385,7 @@ async fn serve_client_inner(
         () = &mut shutdown => { events.emit("stopping", None, None); return Ok(()); },
         result = ClientHandle::new_observed(config.clone(), update_checks, events.clone()) => result?,
     };
-    let mut tasks = spawn_client_tasks(config, &client);
+    let mut tasks = spawn_client_tasks(config, &client, packets);
     let result = tokio::select! {
         () = &mut shutdown => Ok(()),
         task = tasks.join_next() => match task {
@@ -1651,6 +1670,7 @@ fn send_fd_to_control_socket(socket: &Socket, path: &str) -> Result<()> {
 fn spawn_client_tasks(
     config: ClientConfig,
     client: &Arc<ClientHandle>,
+    packets: Option<crate::packet_tunnel::PacketEndpoint>,
 ) -> tokio::task::JoinSet<Result<()>> {
     let mut tasks = tokio::task::JoinSet::new();
     for forwarding in config.tcp_forwarding {
@@ -1681,7 +1701,11 @@ fn spawn_client_tasks(
         ));
     }
     if let Some(tun) = config.tun {
-        tasks.spawn(crate::tun::serve(tun, Arc::clone(client)));
+        if let Some(packets) = packets {
+            tasks.spawn(crate::tun::serve_packets(tun, Arc::clone(client), packets));
+        } else {
+            tasks.spawn(crate::tun::serve(tun, Arc::clone(client)));
+        }
     }
     tasks
 }
