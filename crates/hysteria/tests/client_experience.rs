@@ -316,7 +316,7 @@ async fn embedded_control_observes_real_server_authentication() {
     use hysteria_cli::client_control::{ClientRuntime, ConnectionState, Lifecycle};
     tokio::time::timeout(Duration::from_secs(10), async {
         let directory = tempfile::tempdir().unwrap();
-        let server = server(directory.path()).await;
+        let mut server = server(directory.path()).await;
         let mut config = server.config;
         config.as_object_mut().unwrap().remove("routing");
         let (control, runtime) =
@@ -343,7 +343,7 @@ async fn embedded_control_observes_real_server_authentication() {
         assert!(observed.contains(&"connecting"));
         assert!(observed.contains(&"connected"));
         assert_eq!(observed.last(), Some(&"stopped"));
-        terminate(&server.child).await;
+        server.child.kill().await.unwrap();
     })
     .await
     .unwrap();
@@ -355,7 +355,7 @@ async fn proxy_traffic_counts_payload_for_routed_and_legacy_udp() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     tokio::time::timeout(Duration::from_secs(15), async {
         let directory = tempfile::tempdir().unwrap();
-        let server = server(directory.path()).await;
+        let mut server = server(directory.path()).await;
         for routed in [false, true] {
             let remote = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let target = remote.local_addr().unwrap();
@@ -408,7 +408,7 @@ async fn proxy_traffic_counts_payload_for_routed_and_legacy_udp() {
             control.shutdown();
             task.await.unwrap().unwrap();
         }
-        terminate(&server.child).await;
+        server.child.kill().await.unwrap();
     })
     .await
     .unwrap();
