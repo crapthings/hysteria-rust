@@ -1291,7 +1291,9 @@ mod tests {
                 Some(Arc::new(TcpPrefixHook { reject })),
             )
             .await;
-            tokio::time::timeout(Duration::from_secs(2), async {
+            // Windows can take several seconds to reject a closed loopback port.
+            // This test checks response framing, not OS connect latency.
+            tokio::time::timeout(Duration::from_secs(15), async {
                 let mut tunnel = client.tcp(&address).await.unwrap();
                 let _ = tunnel.write_all(b"head").await;
                 let mut response = Vec::new();
