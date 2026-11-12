@@ -64,6 +64,12 @@ jobs:
       - name: Test Linux workspace
         run: cargo test --locked --workspace
 
+      - name: Test protected Linux egress with socket privileges
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: "sudo -E"
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: "sudo -E"
+        run: cargo test --locked --package hysteria-cli --lib protected_dns_ -- --ignored
+
       - name: Test vendored HTTP/3
         run: cargo test --manifest-path vendor/h3/Cargo.toml --locked --lib --features i-implement-a-third-party-backend-and-opt-into-breaking-changes
 
@@ -121,6 +127,13 @@ jobs:
       - name: Test
         if: github.event_name == 'workflow_dispatch' || matrix.label != 'linux-x64'
         run: cargo test --locked --workspace
+
+      - name: Test protected Linux egress with socket privileges
+        if: runner.os == 'Linux'
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: "sudo -E"
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: "sudo -E"
+        run: cargo test --locked --package hysteria-cli --lib protected_dns_ -- --ignored
 
       - name: Lint Windows WFP wrapper
         if: runner.os == 'Windows'

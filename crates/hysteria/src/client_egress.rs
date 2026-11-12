@@ -265,6 +265,7 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     #[tokio::test]
+    #[ignore = "requires Linux socket mark/device privileges; run explicitly in CI"]
     async fn protected_dns_and_socket_mark_use_loopback_fixture() {
         use hickory_resolver::proto::{
             op::OpCode,
@@ -313,6 +314,7 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     #[tokio::test]
+    #[ignore = "requires Linux socket mark/device privileges; run explicitly in CI"]
     async fn protected_dns_follows_aliases_and_rejects_cycles() {
         use hickory_resolver::proto::{
             op::OpCode,
