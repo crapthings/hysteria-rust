@@ -1489,6 +1489,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hysteria-packet-bridge"
+version = "0.1.0-rc.7"
+dependencies = [
+ "hysteria-cli",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "hysteria-protocol"
 version = "0.1.0-rc.7"
 

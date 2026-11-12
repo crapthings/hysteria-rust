@@ -2,6 +2,7 @@
 members = [
     "crates/hysteria",
     "crates/hysteria-obfs",
+    "crates/hysteria-packet-bridge",
     "crates/hysteria-protocol",
     "crates/hysteria-realm",
     "crates/hysteria-transport",

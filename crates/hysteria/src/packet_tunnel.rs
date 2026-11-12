@@ -26,6 +26,21 @@ pub enum PacketSendError {
     Full,
     Closed,
 }
+/// Nonblocking output distinguishes an idle queue from a closed tunnel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PacketReceiveError {
+    Empty,
+    Closed,
+}
+impl std::fmt::Display for PacketReceiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Empty => "packet tunnel output is empty",
+            Self::Closed => "packet tunnel output is closed",
+        })
+    }
+}
+impl std::error::Error for PacketReceiveError {}
 impl std::fmt::Display for PacketSendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -52,6 +67,16 @@ impl PacketInput {
     }
 }
 impl PacketOutput {
+    /// Return one packet without waiting; buffered packets are returned before closure.
+    /// # Errors
+    /// Returns `Empty` when no packet is ready or `Closed` after the output closes.
+    pub fn try_recv(&mut self) -> std::result::Result<Vec<u8>, PacketReceiveError> {
+        self.0.try_recv().map_err(|error| match error {
+            mpsc::error::TryRecvError::Empty => PacketReceiveError::Empty,
+            mpsc::error::TryRecvError::Disconnected => PacketReceiveError::Closed,
+        })
+    }
+
     /// Cancellation-safe. None means the runtime's output has closed.
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
         self.0.recv().await
@@ -161,6 +186,15 @@ mod tests {
         io.input.try_send(&packet()).unwrap();
         drop(endpoint);
         assert_eq!(io.input.try_send(&packet()), Err(PacketSendError::Closed));
+    }
+    #[tokio::test]
+    async fn nonblocking_output_distinguishes_empty_buffered_and_closed() {
+        let (mut io, endpoint) = channel();
+        assert_eq!(io.output.try_recv(), Err(PacketReceiveError::Empty));
+        endpoint.output.send(packet()).await.unwrap();
+        drop(endpoint);
+        assert_eq!(io.output.try_recv(), Ok(packet()));
+        assert_eq!(io.output.try_recv(), Err(PacketReceiveError::Closed));
     }
     #[test]
     fn rejects_truncated_framed_and_oversized_packets() {

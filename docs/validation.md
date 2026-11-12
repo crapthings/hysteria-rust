@@ -10,6 +10,12 @@ Protected Linux socket tests run separately with privileges. See
 
 ## Development source after rc.7
 
+The experimental [C packet bridge](../crates/hysteria-packet-bridge/README.md)
+adds ABI argument/lifecycle tests and a macOS Swift loopback harness. The harness
+covers raw TCP/UDP packets, short output buffers, startup authentication failure
+and cleanup without creating an OS tunnel. It is run separately from Cargo's
+workspace suite and is not evidence of Network Extension deployment readiness.
+
 The GUI/control and traffic-history changes have passed local macOS workspace
 tests, Clippy and formatting checks. Tests cover:
 

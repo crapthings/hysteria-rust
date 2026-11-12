@@ -553,9 +553,12 @@ normal completion. `ready_components` reports `tun` when the core stack is ready
 this does not prove that the host's network settings have been applied.
 
 The host remains responsible for packet-flow ownership, route/DNS settings,
-server bypass, network-change handling and restore/cleanup. No Swift/C ABI,
-signed app, Network Extension entitlement or privileged helper is provided by
-this interface. Those belong to the future macOS app integration. In particular,
+server bypass, network-change handling and restore/cleanup. An experimental C
+ABI around this interface is available in
+[`hysteria-packet-bridge`](../crates/hysteria-packet-bridge/README.md); it is
+not yet a released library or a Network Extension integration. No signed app,
+Network Extension entitlement or privileged helper is provided by the packet
+interface. Those belong to the future macOS app integration. In particular,
 do not turn on full capture until the host can keep the Hysteria connection out
 of its own packet input. These unit/integration tests do not establish whole-host
 macOS network takeover or leak prevention.
