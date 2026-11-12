@@ -57,7 +57,7 @@ fair cross-stream scheduling policy; no scheduler change is included.
 Historical 0.11.16 validation: `cargo test --manifest-path vendor/quinn-proto/Cargo.toml --locked --lib`
 passed 294 tests with one ignored, including handshake retransmission cases.
 Ordinary and Chrome runtime interoperability were also exercised; see
-[the upstream review](../../docs/upstream-hardening.md).
+[the upstream review](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/upstream-hardening.md).
 
 ## Upgrade to 0.11.19 (2026-11-11)
 

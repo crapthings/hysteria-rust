@@ -12,7 +12,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Keep Brutal's congestion window at least two current MTUs so Quinn can send
   at low RTT/bandwidth instead of stalling at the one-packet boundary. Cover MTU
-  changes and bidirectional datagram progress; see [the regression note](docs/brutal-minimum-window.md).
+  changes and bidirectional datagram progress; see [the regression note](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/brutal-minimum-window.md).
 
 - Refresh README and current capability/validation documentation; distinguish
   completed routing v1 acceptance from remaining platform and long-running checks.
@@ -202,7 +202,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Update rustls to 0.23.46, rustls-acme to 0.15.4, certificate libraries,
   reqwest to 0.13.5, hyper to 1.12.0, Hickory to 0.26.3 and route_manager to
   0.2.17. HTTP clients now use platform certificate verification; see
-  [dependency migration](docs/tls-http-dependency-upgrade.md).
+  [dependency migration](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/tls-http-dependency-upgrade.md).
 
 - Upgrade tun-rs from 2.7.6 to 2.8.18 with its compatible dependency updates,
   including Tokio 1.54.1. Retain the existing async feature and TUN adapter.

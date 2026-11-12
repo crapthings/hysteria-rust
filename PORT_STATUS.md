@@ -1,6 +1,6 @@
 # Port status
 
-Runtime interoperability reference: upstream Go Hysteria 2 `app/v2.13.0` at commit `ca8fbd874fd6ca82413948de6dc5924405e103e1`, built with Go 1.26.5. This describes the current source tree, not an update to existing release artifacts. See [the v2.13.0 review](docs/upstream-v2.13.0.md) for current validation and gaps, and [the earlier hardening review](docs/upstream-hardening.md) for historical context.
+Runtime interoperability reference: upstream Go Hysteria 2 `app/v2.13.0` at commit `ca8fbd874fd6ca82413948de6dc5924405e103e1`, built with Go 1.26.5. This describes the current source tree, not an update to existing release artifacts. See [the v2.13.0 review](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/upstream-v2.13.0.md) for current validation and gaps, and [the earlier hardening review](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/upstream-hardening.md) for historical context.
 
 This repository is a standalone Rust workspace. The upstream Go binary is used only as an executable interoperability reference: GitHub CI builds the pinned commit and supplies it through `HYSTERIA_GO_BIN`; normal Rust builds and runtime deployments do not require Go or the upstream repository.
 
@@ -65,10 +65,10 @@ These additions are included in rc.7:
 - Read-only server status/statistics and named Linux systemd service instances.
 - Client routing v1 for domain/suffix/IP/CIDR/private-network and protocol/port
   rules, local rule sets, proxy/direct/reject, explain/trace and conservative lint.
-  Ordinary SOCKS5/HTTP/TCP/UDP use has passed [jp1 acceptance](docs/client-routing-jp1-2026-11-12.md).
+  Ordinary SOCKS5/HTTP/TCP/UDP use has passed [jp1 acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/client-routing-jp1-2026-11-12.md).
 - Protected Linux routed TUN, persistent bounded/batched Fake-IP mappings,
   read-only preflight and opt-in system-resolver DNS capture diagnosis.
-  [Isolated TUN/DNS/application acceptance](docs/linux-dns-probe-jp1-2026-11-12.md)
+  [Isolated TUN/DNS/application acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-dns-probe-jp1-2026-11-12.md)
   passed; whole-host integration, interface handover and long-running use remain
   platform checks. Other-platform routed TUN, process matching, remote rule
   subscriptions, proxy groups and live configuration reload are not implemented.
@@ -100,6 +100,6 @@ Known differences from v2.13.0:
 - TUN uses a different stack; Rust's `route.strict` still performs Linux/Windows
   actions and is retained even though upstream removed its option.
 - Brutal uses a two-MTU minimum window to preserve progress with Quinn's send
-  gating; see the [minimum-window fix](docs/brutal-minimum-window.md).
+  gating; see the [minimum-window fix](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/brutal-minimum-window.md).
 - Interoperability tests do not establish feature parity, Chrome fingerprint
   equivalence, real-network performance or privileged platform behavior.

@@ -165,7 +165,7 @@ Repeated set references share compiled storage but each counts toward the runtim
 matcher limit. Sets with at least 256 expanded matchers now use shared membership
 indexes; smaller lists retain scans. Outer rules are still evaluated in order, so
 these bounds do not promise constant-time routing. See the
-[index design and measurements](client-routing-performance.md). Whole-country/ad-block subscriptions
+[index design and measurements](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/client-routing-performance.md). Whole-country/ad-block subscriptions
 larger than these bounds are not a supported use case for this first increment.
 
 `check`, startup, `route lint` and `route explain` use the same snapshot/compiler.
@@ -184,7 +184,7 @@ connection credentials. `lint` remains conservative single-rule coverage analysi
 now including sets. Large-set proofs reuse the membership index, but each target
 member must still be covered by one source member: adjacent CIDRs are not combined.
 It does not prove coverage by a union of earlier outer rules. See
-[loading and lint measurements](client-routing-lint-performance.md).
+[loading and lint measurements](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/client-routing-lint-performance.md).
 
 ## Templates, rule review and explanation
 
@@ -408,8 +408,8 @@ of unsupported TUN/transparent combinations. Loopback integration covers SOCKS5 
 mixed direct/proxy/reject behavior, HTTP CONNECT and explicit forwarding, direct
 traffic with an unavailable proxy, and embedded-runtime shutdown closing a direct
 TCP connection. Existing proxy-only and Go interoperability tests remain regression
-coverage. [jp1 ordinary-use acceptance](client-routing-jp1-2026-11-12.md) covers
+coverage. [jp1 ordinary-use acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/client-routing-jp1-2026-11-12.md) covers
 the real Linux CLI, forwarding, profile-relative files, outage recovery and explicit
-restart. [Isolated TUN/resolved acceptance](linux-dns-probe-jp1-2026-11-12.md) covers
+restart. [Isolated TUN/resolved acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-dns-probe-jp1-2026-11-12.md) covers
 DNS capture and dual-stack forwarding. Whole-host resolver combinations, real
 network handover and sustained UDP pressure still need operational testing.

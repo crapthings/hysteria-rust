@@ -7,8 +7,8 @@ process matching and privileged helpers are not implemented.
 
 The implementation has automated socket, DNS and routing tests, plus real Linux
 TUN installation/forwarding/cleanup validation in isolated network namespaces on
-jp1. See the [acceptance report](linux-tun-jp1-2026-11-11.md). Isolated [systemd-resolved integration](linux-resolved-jp1-2026-11-12.md) has also
-passed. Subsequent [real curl application acceptance](linux-app-jp1-2026-11-12.md)
+jp1. See the [acceptance report](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-tun-jp1-2026-11-11.md). Isolated [systemd-resolved integration](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-resolved-jp1-2026-11-12.md) has also
+passed. Subsequent [real curl application acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-app-jp1-2026-11-12.md)
 verified route provenance, capacity expansion, outages and retained Fake-IP use
 after restart. Whole-host integration, public-network performance and long-running operation
 remain unverified;
@@ -196,6 +196,6 @@ Validate recovery from a local console or disposable network namespace before
 using this mode remotely. Automatic crash recovery and helper-managed networking
 remain future work.
 
-See the [Linux validation checklist](linux-validation-2026-11-11.md) for acceptance
+See the [Linux validation checklist](validation.md) for acceptance
 checks. Real TUN devices and routes were exercised only inside disposable network
 namespaces; the host routing policy and DNS configuration were preserved.

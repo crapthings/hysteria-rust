@@ -37,7 +37,7 @@ HYSTERIA_GO_BIN=/path/to/go/hysteria \
 
 Workspace tests do not run dependency unit suites. Keep runtime compatibility
 separate from the historical Chrome wire-reference fixture; see
-[the upstream review](docs/upstream-hardening.md) and
+[the upstream review](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/upstream-hardening.md) and
 [Chrome port status](docs/chrome-quic-port.md).
 
 Follow the [error reporting contract](docs/errors.md) when adding or migrating
@@ -45,7 +45,7 @@ errors: classify at operation boundaries, preserve approved sources, and test
 user guidance and sensitive-data handling.
 
 For reproducible local performance comparisons, see the
-[loopback benchmark method and results](docs/performance-loopback.md). Functional
+[loopback benchmark method and results](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/performance-loopback.md). Functional
 test success alone is not evidence of unchanged throughput or latency.
 
 ## CI and releases

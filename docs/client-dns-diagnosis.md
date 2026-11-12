@@ -103,4 +103,4 @@ Automated tests cover bounded names/output, strict address-to-cache matching,
 real/mixed/unknown synthetic answers, missing/full caches, family skips, CLI
 conflicts, error privacy, worker timeout and cancellation/reaping. The Linux
 namespace fixture additionally exercises real system resolution before and after
-per-link DNS configuration; see the [acceptance report](linux-dns-probe-jp1-2026-11-12.md).
+per-link DNS configuration; see the [acceptance report](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-dns-probe-jp1-2026-11-12.md).
