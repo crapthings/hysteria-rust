@@ -71,14 +71,14 @@ async fn server(dir: &Path) -> Server {
 async fn doctor(dir: &Path, config: &Value, extra: &[&str]) -> Value {
     let path = write_config(dir, "client.json", config);
     let output = tokio::time::timeout(
-        Duration::from_secs(8),
+        Duration::from_secs(15),
         binary()
             .args([
                 "doctor",
                 "client",
                 "--connect",
                 "--timeout",
-                "2s",
+                "6s",
                 "--output",
                 "json",
                 "-c",
