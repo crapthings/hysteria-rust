@@ -183,7 +183,7 @@ pub struct Router {
     default: Action,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Decision {
     pub schema_version: u8,
     pub routing_version: u8,
@@ -197,7 +197,7 @@ pub struct Decision {
     pub dns_performed: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct RuleSetMatch {
     pub name: String,
     pub file: String,

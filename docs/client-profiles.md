@@ -74,7 +74,9 @@ mutation has taken effect, so inspect the result before retrying an operation.
 `remove` deletes only the named saved configuration. It does not stop a running
 client or remove referenced certificates, caches or routes. There is no undo or
 trash facility. Replacing or deleting a profile does not hot-reload an active
-process; explicitly restart it to apply changes.
+process. Restart to load the saved profile. Development control interfaces can
+explicitly apply only routing changes without restart; applying does not update
+the profile file. See [routing updates](client-observability.md#atomic-routing-updates).
 
 ## Storage and permissions
 

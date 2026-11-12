@@ -1,5 +1,8 @@
 # Documentation
 
+rc.7 is the published baseline. Features marked development describe newer source
+and require a development build; see [validation status](validation.md).
+
 ## Install and operate
 
 - [Installation and upgrades](installation.md)
@@ -12,6 +15,8 @@
 
 - [Profiles and sharing-link import](client-profiles.md)
 - [Diagnosis and lifecycle events](client-observability.md)
+- [GUI control and embedded API (development)](client-observability.md#gui-child-process-control-development-after-rc7)
+- [Traffic sampling and daily JSON (development)](client-observability.md#traffic-sampling-and-daily-json-history-development)
 - [Connection recovery](client-recovery.md)
 - [Routing and local rule sets](client-routing.md)
 - [Linux routed TUN](client-tun-routing.md)

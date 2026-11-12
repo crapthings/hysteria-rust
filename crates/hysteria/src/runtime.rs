@@ -486,7 +486,7 @@ impl ClientHandle {
         )
         .await
     }
-    async fn new_observed(
+    pub(crate) async fn new_observed(
         config: ClientConfig,
         update_checks: bool,
         events: crate::client_events::ClientEvents,
@@ -613,7 +613,9 @@ impl ClientHandle {
     > {
         use hysteria_transport::ServerOutbound as _;
         let address = self.destination(address)?;
-        let decision = self.route(&address, crate::routing::Protocol::Tcp)?;
+        let selection = self.route_selection(&address, crate::routing::Protocol::Tcp)?;
+        selection.record();
+        let decision = selection.decision;
         match decision.outbound {
             crate::routing::Action::Reject => {
                 return Err(hysteria_transport::TransportError::Protocol(
@@ -634,6 +636,10 @@ impl ClientHandle {
                     } else {
                         hysteria_transport::DirectOutbound.tcp(&target).await?
                     };
+                let stream = crate::client_stream::MeteredStream::wrap(
+                    stream,
+                    self.telemetry().map(|t| Arc::clone(&t.traffic.direct)),
+                );
                 return Ok(Box::new(crate::client_stream::DirectStream::new(
                     stream,
                     self.stop_signal.subscribe(),
@@ -649,7 +655,12 @@ impl ClientHandle {
         if result.is_err() && client.is_closed() {
             self.invalidate(&client).await;
         }
-        result.map(|stream| Box::new(stream) as Box<dyn hysteria_transport::ProxyStream>)
+        result.map(|stream| {
+            crate::client_stream::MeteredStream::wrap(
+                Box::new(stream),
+                self.telemetry().map(|t| Arc::clone(&t.traffic.proxy)),
+            )
+        })
     }
 
     pub(crate) async fn proxy_udp(
@@ -667,31 +678,56 @@ impl ClientHandle {
         result
     }
 
+    pub(crate) fn telemetry(&self) -> Option<&Arc<crate::client_control::Telemetry>> {
+        self.events.telemetry.as_ref()
+    }
     pub(crate) fn route(
         &self,
         address: &str,
         protocol: crate::routing::Protocol,
     ) -> std::result::Result<crate::routing::Decision, hysteria_transport::TransportError> {
+        self.route_selection(address, protocol)
+            .map(|selection| selection.decision)
+    }
+    pub(crate) fn route_selection(
+        &self,
+        address: &str,
+        protocol: crate::routing::Protocol,
+    ) -> std::result::Result<
+        crate::client_routing::RouteSelection,
+        hysteria_transport::TransportError,
+    > {
         if *self.stop_signal.borrow() {
             return Err(hysteria_transport::TransportError::Closed);
         }
-        if let Some(router) = &self.routing {
-            return router.decide(address, protocol).map_err(|error| {
-                hysteria_transport::TransportError::Configuration(error.to_string())
-            });
+        if let Some(telemetry) = self.telemetry() {
+            if let Some(selection) = telemetry
+                .routing
+                .decide(address, protocol)
+                .map_err(|e| hysteria_transport::TransportError::Configuration(e.to_string()))?
+            {
+                return Ok(selection);
+            }
+        } else if let Some(router) = &self.routing {
+            return router
+                .decide(address, protocol)
+                .map(crate::client_routing::RouteSelection::uncounted)
+                .map_err(|e| hysteria_transport::TransportError::Configuration(e.to_string()));
         }
         // Legacy mode preserves the original destination without new validation.
-        Ok(crate::routing::Decision {
-            schema_version: 1,
-            routing_version: 1,
-            host: address.into(),
-            port: 0,
-            protocol,
-            outbound: crate::routing::Action::Proxy,
-            matched_rule: None,
-            reason: "routing_disabled",
-            dns_performed: false,
-        })
+        Ok(crate::client_routing::RouteSelection::uncounted(
+            crate::routing::Decision {
+                schema_version: 1,
+                routing_version: 1,
+                host: address.into(),
+                port: 0,
+                protocol,
+                outbound: crate::routing::Action::Proxy,
+                matched_rule: None,
+                reason: "routing_disabled",
+                dns_performed: false,
+            },
+        ))
     }
     pub(crate) async fn udp(
         self: &Arc<Self>,
@@ -702,9 +738,12 @@ impl ClientHandle {
                 self,
             )))
         } else {
-            self.proxy_udp()
-                .await
-                .map(crate::client_udp::ClientUdpSession::Proxy)
+            self.proxy_udp().await.map(|session| {
+                crate::client_udp::ClientUdpSession::Proxy(
+                    session,
+                    self.telemetry().map(|t| Arc::clone(&t.traffic.proxy)),
+                )
+            })
         }
     }
 

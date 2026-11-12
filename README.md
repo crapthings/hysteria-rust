@@ -79,7 +79,7 @@ More modes and options are in the [configuration examples](examples).
 
 ## CLI tools
 
-These tools are included in rc.7. Run `hysteria help`,
+These tools are included in rc.7 unless marked development. Run `hysteria help`,
 `hysteria help server` or `hysteria help client` for usage.
 
 | Task | Command / guide |
@@ -88,6 +88,7 @@ These tools are included in rc.7. Run `hysteria help`,
 | Save / use a client profile | [`profile import`, `profile list`, `client --profile`](docs/client-profiles.md) |
 | Validate offline | `hysteria check client -c client.yaml --output json` (also supports `server`) |
 | Diagnose / observe a client | [`doctor client --connect` / `client --events json`](docs/client-observability.md) |
+| Integrate a GUI (development) | [`client --control stdio`](docs/client-observability.md#gui-child-process-control-development-after-rc7), versioned status/events and routing updates |
 | Monitor a server | [`server status` / `server stats --watch`](docs/cli.md#live-server-status-and-statistics) |
 | Install a Linux service | [`service install`](docs/cli.md#linux-system-services), with named instances |
 | Share connection settings | [`server share`](docs/cli.md#export-a-client-link-from-the-server), including Realm URIs |

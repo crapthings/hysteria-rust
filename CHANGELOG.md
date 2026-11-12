@@ -6,6 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Embedded client control with owned status snapshots, bounded lifecycle event
+  subscriptions, graceful shutdown and per-rule TCP/UDP decision statistics.
+  Count routed UDP queue drops, direct flow-limit hits and worker failures without
+  retaining destinations. Existing CLI output and wire behavior are unchanged;
+  attachable daemon IPC remains future work.
+- Add embedded revision-checked atomic routing updates, prepared immutable rule
+  sets, active-revision explanation and bounded retired-revision counters. Keep
+  existing TCP/UDP flows on their original decisions; apply new rules to new or
+  expired targets. Server switching and whole-client reload are not included.
+- Add opt-in `client --control stdio` with versioned requests/responses, lifecycle
+  events, prepared routing-update tokens and bounded pipes/queues. EOF, output
+  failure and signals request graceful cleanup; existing CLI modes remain intact.
+- Add client payload-byte samples with restart-safe session identities and
+  monotonic rate calculation. Provide opt-in GUI-owned daily JSON history with
+  atomic totals/checkpoints, private storage, writer locking, strict validation
+  and explicit 90-day pruning; the core does not automatically persist history.
+
 ## [0.1.0-rc.7] - 2026-11-12
 
 ### Fixed

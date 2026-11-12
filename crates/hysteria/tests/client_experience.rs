@@ -310,3 +310,106 @@ async fn terminate(child: &Child) {
             .success()
     );
 }
+
+#[tokio::test]
+async fn embedded_control_observes_real_server_authentication() {
+    use hysteria_cli::client_control::{ClientRuntime, ConnectionState, Lifecycle};
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let directory = tempfile::tempdir().unwrap();
+        let server = server(directory.path()).await;
+        let mut config = server.config;
+        config.as_object_mut().unwrap().remove("routing");
+        let (control, runtime) =
+            ClientRuntime::prepare(serde_json::from_value(config).unwrap(), false).unwrap();
+        let mut status = control.subscribe_status();
+        let mut events = control.subscribe_events();
+        let run = tokio::spawn(runtime.run());
+        loop {
+            let snapshot = status.snapshot();
+            if snapshot.lifecycle == Lifecycle::Running {
+                assert_eq!(snapshot.connection, ConnectionState::Connected);
+                assert_eq!(snapshot.routing_revision, None);
+                break;
+            }
+            status.changed().await.unwrap();
+        }
+        assert_eq!(control.routing_stats().default.tcp_attempts, 0);
+        control.shutdown();
+        run.await.unwrap().unwrap();
+        let mut observed = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            observed.push(event.event);
+        }
+        assert!(observed.contains(&"connecting"));
+        assert!(observed.contains(&"connected"));
+        assert_eq!(observed.last(), Some(&"stopped"));
+        terminate(&server.child).await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn proxy_traffic_counts_payload_for_routed_and_legacy_udp() {
+    use hysteria_cli::client_control::ClientRuntime;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let directory = tempfile::tempdir().unwrap();
+        let server = server(directory.path()).await;
+        for routed in [false, true] {
+            let remote = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let target = remote.local_addr().unwrap();
+            let udp = UdpSocket::bind(target).await.unwrap();
+            let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let local = reserved.local_addr().unwrap();
+            drop(reserved);
+            let mut config = server.config.clone();
+            if routed {
+                config["routing"] = json!({"version":1,"default":"proxy"});
+            } else {
+                config.as_object_mut().unwrap().remove("routing");
+            }
+            config["tcpForwarding"] =
+                json!([{"listen":local.to_string(),"remote":target.to_string()}]);
+            config["udpForwarding"] = config["tcpForwarding"].clone();
+            let (control, runtime) =
+                ClientRuntime::prepare(serde_json::from_value(config).unwrap(), false).unwrap();
+            assert_eq!(control.traffic_sample().traffic.proxy.upload_bytes, 0);
+            let mut state = control.subscribe_status();
+            let task = tokio::spawn(runtime.run());
+            while state.snapshot().ready_components.len() != 3 {
+                state.changed().await.unwrap();
+            }
+            let mut stream = TcpStream::connect(local).await.unwrap();
+            stream.write_all(b"hello").await.unwrap();
+            let (mut remote_stream, _) = remote.accept().await.unwrap();
+            let mut data = [0; 5];
+            remote_stream.read_exact(&mut data).await.unwrap();
+            remote_stream.write_all(&data).await.unwrap();
+            stream.read_exact(&mut data).await.unwrap();
+            let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            sender.send_to(b"udp", local).await.unwrap();
+            let mut packet = [0; 16];
+            let (n, peer) = udp.recv_from(&mut packet).await.unwrap();
+            udp.send_to(&packet[..n], peer).await.unwrap();
+            sender.recv_from(&mut packet).await.unwrap();
+            let traffic = control.traffic_sample();
+            assert_eq!(
+                (
+                    traffic.traffic.proxy.upload_bytes,
+                    traffic.traffic.proxy.download_bytes
+                ),
+                (8, 8)
+            );
+            assert_eq!(
+                traffic.traffic.direct,
+                hysteria_cli::client_traffic::ByteTotals::default()
+            );
+            control.shutdown();
+            task.await.unwrap().unwrap();
+        }
+        terminate(&server.child).await;
+    })
+    .await
+    .unwrap();
+}

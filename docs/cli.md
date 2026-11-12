@@ -2,9 +2,15 @@
 
 The Rust CLI is an independent Hysteria 2 server and client. Its public interface is designed for terminal users, service managers, scripts and third-party integrations. No GUI-specific configuration or process protocol is required.
 
-This document describes the development source tree. Setup/check/doctor commands,
-stdin configuration and the revised help/error contract are unreleased changes
-after rc.6; consult release notes for an installed binary.
+This document describes the current source tree. Setup/check/doctor commands,
+stdin configuration and the revised help/error contract are available in rc.7.
+GUI control and traffic-history APIs marked development are newer than rc.7;
+consult release notes and `capabilities` for an installed binary.
+
+For GUI-owned client processes, development builds after rc.7 provide
+[`client --control stdio`](client-observability.md#gui-child-process-control-development-after-rc7):
+versioned JSON status, events, routing statistics and prepared routing updates.
+This mode owns stdin/stdout and stops on EOF; it cannot use `-c -` or `--events`.
 
 ## Commands and compatibility
 
@@ -242,7 +248,7 @@ disable automatic checks. No command installs or replaces binaries.
 
 ## Live server status and statistics
 
-The development CLI can query an already running server through its existing
+The CLI can query an already running server through its existing
 `trafficStats` HTTP interface. It does not start another server, load TLS keys,
 change configuration, clear counters, kick users or change network settings.
 Enable monitoring explicitly in the server configuration and restart that server:
@@ -350,7 +356,7 @@ HTTP/HTTPS listeners. A reverse proxy accepts HTTP/2 on the HTTPS frontend even
 when its upstream serves HTTP/1.1. Upstream request versions are independent of
 the frontend connection; HTTP/1.1 Upgrade remains supported.
 
-In the development version, file mode serves `index.html` when present; otherwise
+File mode serves `index.html` when present; otherwise
 it lists directory entries. Publish only a directory intended for public access,
 or provide an index page if a directory listing is unwanted. Listings are capped
 at 10,000 entries; larger directories return HTTP 503. This is not a filesystem
@@ -359,7 +365,7 @@ replacement still requires a restart; this differs from managed ACME renewal.
 
 ## Generate and rotate ECH keys
 
-The development CLI supports offline key generation:
+The CLI supports offline key generation:
 
 ```shell
 hysteria ech --public-name public.example.com

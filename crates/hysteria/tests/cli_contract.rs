@@ -1333,6 +1333,9 @@ fn gui_capabilities_and_route_explanation_are_versioned_and_offline() {
     assert_eq!(caps["routing"]["process_matching"], false);
     assert_eq!(caps["tun"]["routing_supported"], cfg!(target_os = "linux"));
     assert_eq!(caps["control"]["persistent_ipc"], false);
+    assert_eq!(caps["control"]["stdio"]["transport"], "stdio-ndjson");
+    assert_eq!(caps["control"]["stdio"]["schema_version"], 1);
+    assert_eq!(caps["routing"]["live_reload"], true);
     let config = b"server: unreachable.invalid:443\nauth: private-sentinel\nsocks5: {listen: '127.0.0.1:1080'}\nrouting:\n  version: 1\n  default: proxy\n  rules: ['direct(lan)', 'reject(suffix:blocked.invalid)']\n";
     for (destination, action, rule) in [
         ("192.168.1.2:80", "direct", Some(1)),

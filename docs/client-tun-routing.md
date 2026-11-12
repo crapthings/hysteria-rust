@@ -196,6 +196,6 @@ Validate recovery from a local console or disposable network namespace before
 using this mode remotely. Automatic crash recovery and helper-managed networking
 remain future work.
 
-See the [Linux validation checklist](validation.md) for acceptance
+See the [validation status](validation.md) for acceptance
 checks. Real TUN devices and routes were exercised only inside disposable network
 namespaces; the host routing policy and DNS configuration were preserved.

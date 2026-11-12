@@ -15,12 +15,26 @@ GUIs should consume the same configuration and lifecycle contracts.
 - Protected Linux routed TUN, persistent bounded Fake-IP mappings and opt-in DNS
   capture diagnosis. See [TUN](client-tun-routing.md) and [DNS diagnosis](client-dns-diagnosis.md).
 
+## GUI integration in development
+
+After rc.7, the library adds a single-use client runtime, a cloneable observation
+and shutdown handle, bounded event subscriptions, owned status snapshots and
+routing decision/UDP-pressure counters. See the
+[embedded API contract](client-observability.md#embedded-rust-control-development-after-rc7).
+Revision-checked atomic routing replacement and bounded retired-revision statistics
+are also implemented. Existing flows retain their original action; new flows use
+the latest rules. `client --control stdio` exposes versioned JSON requests,
+automatic events and prepared routing updates to an owning GUI process.
+Payload-byte samples support monotonic speed calculations; an optional GUI-owned
+JSON store provides daily totals with atomic checkpoints and explicit retention.
+These features are not included in the published rc.7 binaries.
+
 ## Next priorities
 
 1. Validate whole-host DNS integration, interface handover, sleep/wake and long
    running client use. Preserve protected egress and explicit cleanup boundaries.
-2. Define a versioned client status/control interface and configuration replacement
-   semantics before implementing persistent IPC or live reload.
+2. Validate real GUI integrations and platform pipe/shutdown behavior against the
+   documented control contract. Add attachable daemon IPC only for a concrete need.
 3. Improve server observability with certificate renewal state, QUIC quality
    metrics and detailed error categories.
 4. Add service adapters and privileged lifecycle support for other operating

@@ -5,9 +5,13 @@ claim that the original Go client accepts this configuration. Server ACLs keep
 their existing behavior. Sharing URIs contain connection credentials/settings,
 not client routing rules.
 
+After rc.7, embedded Rust callers and `client --control stdio` can explicitly replace routing snapshots with
+revision checks; see [atomic routing updates](client-observability.md#atomic-routing-updates).
+Ordinary CLI/file workflows below still require restart and do not watch files.
+
 ## Implemented scope
 
-The first routing increment provides one immutable rule snapshot per client
+The rc.7 CLI provides one immutable rule snapshot per client
 runtime, used by SOCKS5 TCP/UDP, HTTP proxy requests and explicit TCP/UDP
 forwarding. Outbounds are the configured Hysteria server (`proxy`), the local
 machine (`direct`), or rejection (`reject`). Realm is supported as the configured
@@ -18,7 +22,7 @@ Linux TUN supports an opt-in protected mode with persistent Fake-IP DNS; see
 Other-platform TUN and transparent proxy combinations with routing are rejected.
 Existing TUN/transparent operation without client routing remains available.
 Local host-matcher rule sets are supported. Process matching, GeoIP/GeoSite, wildcard
-rules, remote rule subscriptions, multiple proxy groups and live rule reload are
+rules, remote rule subscriptions and multiple proxy groups are
 not implemented in v1. Unsupported
 matchers/fields fail configuration validation rather than being ignored.
 
@@ -140,7 +144,7 @@ unused ones, once. Compilation, validation and runtime reuse that immutable data
 matching never reads a file or queries DNS. Changing/removing a file does not alter
 a running client. Run `check`, then explicitly restart to apply edits. Separate
 commands load separate snapshots: a successful earlier check cannot guarantee a
-file was not changed before startup. There is no hot reload. For predictable updates, replace each file atomically and
+file was not changed before startup. There is no automatic file reload. For predictable CLI updates, replace each file atomically and
 avoid editing the file collection during configuration loading; loading several
 files is not a filesystem-wide transaction.
 
@@ -294,11 +298,12 @@ and ends routed UDP associations/workers. The TCP wrapper adds cancellation
 checks without another forwarding buffer. Throughput still requires real-network
 measurement; the functional tests are not a performance claim.
 
-## GUI contract: available now
+## GUI integration
 
-The supported integration transport is **CLI JSON subprocess calls**, not a
-persistent control socket. The GUI owns launching/reaping the client process and
-managing its configuration file. It must not parse colored terminal output.
+rc.7 supports offline CLI JSON calls and lifecycle events. Development builds
+also provide `client --control stdio` and an embedded Rust API for live status,
+statistics and prepared routing updates. The GUI owns the client process and
+configuration persistence. Use the versioned protocol, not terminal text.
 
 ```shell
 hysteria capabilities --output json
@@ -313,12 +318,15 @@ create devices or check privileges. It reports:
 - `configuration_check`, `route_explain`, `route_trace`, `route_lint` and `routing_templates`;
 - supported routing version/actions/matchers/protocols/inbounds, including `set`;
 - `routing.local_rule_sets: true` and `routing.remote_rule_sets: false`;
-- explicit false values for process/GeoIP/GeoSite/live-reload capabilities;
+- explicit false values for process/GeoIP/GeoSite capabilities, with live routing
+  replacement advertised separately;
 - whether TUN is compiled in, separately from platform-dependent `routing_supported` / `fake_dns` and
   `permission_check: "not_performed"`;
-- `control.transport: "cli-json"` with lifecycle events on stdout NDJSON; persistent IPC, configuration
-  application and privileged-helper support remain false. See
-  [client observability](client-observability.md).
+- offline `control.transport: "cli-json"` and lifecycle NDJSON; development builds
+  additionally advertise `control.stdio`, `control.embedded`, `control.routing_apply`
+  and `routing.live_reload`;
+- attachable daemon IPC, whole-client configuration replacement and privileged
+  helpers remain unsupported. See the [control contract](client-observability.md).
 
 Use the capability fields, not assumptions based on the operating system or
 package version. A compiled feature is not proof of permissions or readiness.
@@ -356,7 +364,8 @@ no proxy credential or full configuration.
 process's effective configuration.** It shares the exact rule algorithm with
 execution, but editing the file does not reload an existing client. The GUI must
 keep track of which configuration it started and restart explicitly when applying
-changes in this version.
+changes through the CLI. Embedded callers can instead query the active revision
+and explicitly apply prepared routing updates through the control handle.
 
 Diagnostic/configuration failures exit 3; JSON mode returns:
 
@@ -370,7 +379,7 @@ Successful commands exit 0. Unexpected I/O/runtime errors can exit 1 through the
 normal error reporter; consumers must handle that separately. Both `check` and
 `route explain` accept `-c -`. Redirected stdout has no ANSI formatting.
 
-## Boundaries and next increments
+## Responsibilities and boundaries
 
 | Component | Responsibility |
 | --- | --- |
@@ -379,14 +388,15 @@ normal error reporter; consumers must handle that separately. Both `check` and
 | Platform adapter | Protected Linux TUN today; future process attribution and other-platform protection |
 | Privileged service/helper | Future restricted interface/route/DNS operations and recovery |
 
-The CLI JSON inspection commands do not change system networking. Starting TUN
-explicitly does create a device and install routes; no helper is installed.
-Lifecycle events are available through stdout NDJSON. Persistent Unix-socket/
-Windows-named-pipe control, authenticated status/event subscriptions,
-configuration application and atomic replacement of the active rule snapshot need
-an additional control-plane increment. They must reuse these routing semantics,
-not create a second rule engine in the GUI. Unsupported capabilities stay false
-until implementation and platform validation are complete.
+Offline inspection does not change system networking. Starting TUN creates its
+configured device and routes; no helper is installed. In development builds, the
+embedded and stdio control interfaces reuse the same routing engine for atomic
+rule replacement. Existing TCP/UDP flows retain their original action; new or
+expired flows use the new revision. Applying rules does not save files or change
+servers, listeners, TUN, DNS or egress configuration.
+
+Attachable Unix-socket/Windows-named-pipe control, whole-client reconfiguration
+and dynamic server switching remain outside the implemented scope.
 
 ## Implementation boundaries
 
@@ -408,7 +418,10 @@ of unsupported TUN/transparent combinations. Loopback integration covers SOCKS5 
 mixed direct/proxy/reject behavior, HTTP CONNECT and explicit forwarding, direct
 traffic with an unavailable proxy, and embedded-runtime shutdown closing a direct
 TCP connection. Existing proxy-only and Go interoperability tests remain regression
-coverage. [jp1 ordinary-use acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/client-routing-jp1-2026-11-12.md) covers
+coverage. Development tests additionally cover revision conflicts, immutable
+prepared files, old-flow preservation, UDP binding expiry, bounded history and
+real stdio control sessions; see [validation status](validation.md).
+[jp1 ordinary-use acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/client-routing-jp1-2026-11-12.md) covers
 the real Linux CLI, forwarding, profile-relative files, outage recovery and explicit
 restart. [Isolated TUN/resolved acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-dns-probe-jp1-2026-11-12.md) covers
 DNS capture and dual-stack forwarding. Whole-host resolver combinations, real

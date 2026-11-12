@@ -71,11 +71,21 @@ These additions are included in rc.7:
   [Isolated TUN/DNS/application acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-dns-probe-jp1-2026-11-12.md)
   passed; whole-host integration, interface handover and long-running use remain
   platform checks. Other-platform routed TUN, process matching, remote rule
-  subscriptions, proxy groups and live configuration reload are not implemented.
+  subscriptions, proxy groups and whole-client configuration reload are not implemented.
 
 See the [CLI reference](docs/cli.md), [routing contract](docs/client-routing.md)
 and [current roadmap](docs/cli-roadmap.md). Client routing extends this Rust CLI;
 it does not add routing rules to the sharing URI or Hysteria wire protocol.
+
+### GUI integration after rc.7 (development)
+
+The current source adds embedded control and `client --control stdio`, with status,
+events, per-rule statistics and revision-checked routing-only replacement. Existing
+flows retain their original decisions. Payload-byte samples and a GUI-owned daily
+JSON storage helper are also available; the core does not automatically save history.
+These additions are not in rc.7 and have local macOS validation only; cross-platform
+CI and real GUI acceptance remain pending. See the [control contract](docs/client-observability.md)
+and [validation status](docs/validation.md).
 
 ### Other capabilities and compatibility gaps
 
@@ -96,7 +106,7 @@ Known differences from v2.13.0:
 - QUIC domain sniffing now reassembles up to eight Initial-bearing datagrams
   within a fixed 200 ms collection window. This is bounded fallback behavior,
   not unlimited capture; see [sniffing behavior](docs/quic-sniffing.md).
-- The development CLI implements `ech` key generation and explicit overlapping-key rotation; live key reload and automatic client configuration distribution are not implemented.
+- The CLI implements `ech` key generation and explicit overlapping-key rotation; live key reload and automatic client configuration distribution are not implemented.
 - TUN uses a different stack; Rust's `route.strict` still performs Linux/Windows
   actions and is retained even though upstream removed its option.
 - Brutal uses a two-MTU minimum window to preserve progress with Quinn's send

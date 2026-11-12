@@ -47,6 +47,9 @@ pub(crate) struct Cli {
     /// Client lifecycle format; JSON writes NDJSON to stdout, diagnostics stay on stderr.
     #[arg(long, global = true, value_enum)]
     pub(crate) events: Option<crate::check::OutputFormat>,
+    /// Own the client through versioned JSON on stdin/stdout; EOF stops the client.
+    #[arg(long, global = true, value_enum, conflicts_with = "events")]
+    pub(crate) control: Option<crate::client_stdio::ControlMode>,
 }
 
 /// Separates long-running roles from bounded diagnostic and administrative commands.
@@ -91,6 +94,7 @@ Share:
   hysteria share -c client.yaml              Export a link / optional QR
 
 Advanced input:
+  hysteria client --control stdio            GUI control protocol on stdin/stdout
   hysteria client --events json              Lifecycle events on stdout (NDJSON)
   hysteria client --config -                 Read configuration from stdin
 

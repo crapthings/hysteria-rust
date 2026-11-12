@@ -8,6 +8,24 @@ Linux x64/ARM64, macOS x64/ARM64 and Windows x64/ARM64; Linux ARMv7 is cross-bui
 Protected Linux socket tests run separately with privileges. See
 [contributing](../CONTRIBUTING.md) for commands and release gates.
 
+## Development source after rc.7
+
+The GUI/control and traffic-history changes have passed local macOS workspace
+tests, Clippy and formatting checks. Tests cover:
+
+- Embedded status/events, slow consumers, real TCP/UDP payload counts and cleanup.
+- Prepared routing snapshots, revision conflicts, old-flow preservation and UDP
+  expiry/limits, with bounded retired-revision statistics.
+- Real stdio child processes: requests/events, malformed input, pipe failures,
+  idle heartbeat, signals and forwarding while the GUI stops reading output.
+- Daily JSON locking, private permissions, schema/type validation, duplicate
+  samples, reopening, uncertain post-rename failures, rollover and retention.
+
+These local results do not replace cross-platform CI. Linux/Windows control-pipe
+acceptance, Windows storage ACL/durability behavior and real GUI integration for
+these new features remain unverified. The rc.7 release results above apply to
+that release, not automatically to later source changes.
+
 ## Recorded Linux acceptance
 
 Before rc.7, isolated jp1 checks covered ordinary SOCKS5/HTTP/TCP/UDP routing,

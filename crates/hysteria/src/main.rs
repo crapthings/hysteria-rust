@@ -3,6 +3,7 @@ mod check;
 /// Defines command syntax independently of execution.
 mod cli;
 mod client_setup;
+mod client_stdio;
 /// Formats offline deployment diagnostics.
 mod doctor_cli;
 mod ech_cli;
@@ -46,6 +47,18 @@ async fn main() -> ExitCode {
 
 /// Dispatches one command while keeping runtime failures distinct from validation failures.
 async fn run(mut cli: Cli) -> Result<ExitCode> {
+    if cli.control.is_some() {
+        if !matches!(cli.command, None | Some(Command::Client)) {
+            return Err(hysteria_cli::CliError::new(
+                "--control is supported only by client",
+            ));
+        }
+        if cli.config == std::path::Path::new("-") {
+            return Err(hysteria_cli::CliError::new(
+                "--control stdio cannot read configuration from stdin; use a file or profile",
+            ));
+        }
+    }
     select_profile(&mut cli)?;
     let update_checks = !cli.disable_update_check;
     if cli.events.is_some() && !matches!(cli.command, None | Some(Command::Client)) {
@@ -59,20 +72,7 @@ async fn run(mut cli: Cli) -> Result<ExitCode> {
         Command::Doctor(options) => return options.run(&cli.config).await,
         Command::Init(options) => options.run(&cli.config, false),
         Command::Guide(options) => options.run(&cli.config, true),
-        Command::Client => {
-            serve_client_observed(
-                ClientConfig::load(&cli.config)?,
-                shutdown::signal()?,
-                update_checks,
-                match cli.events {
-                    Some(check::OutputFormat::Json) => {
-                        hysteria_cli::client_events::ClientEvents::json()
-                    }
-                    _ => hysteria_cli::client_events::ClientEvents::text(),
-                },
-            )
-            .await
-        }
+        Command::Client => run_client(&cli.config, update_checks, cli.events, cli.control).await,
         Command::Server(options) => {
             if let Some(command) = options.command {
                 return command.run(&cli.config).await.map(|()| ExitCode::SUCCESS);
@@ -142,6 +142,24 @@ async fn run(mut cli: Cli) -> Result<ExitCode> {
         }
     };
     result.map(|()| ExitCode::SUCCESS)
+}
+
+async fn run_client(
+    path: &std::path::Path,
+    update_checks: bool,
+    events: Option<check::OutputFormat>,
+    control: Option<client_stdio::ControlMode>,
+) -> Result<()> {
+    let config = ClientConfig::load(path)?;
+    let signal = shutdown::signal()?;
+    if control.is_some() {
+        return client_stdio::run(config, update_checks, signal).await;
+    }
+    let events = match events {
+        Some(check::OutputFormat::Json) => hysteria_cli::client_events::ClientEvents::json(),
+        _ => hysteria_cli::client_events::ClientEvents::text(),
+    };
+    serve_client_observed(config, signal, update_checks, events).await
 }
 
 /// Resolves an explicit profile only for supported client commands.
