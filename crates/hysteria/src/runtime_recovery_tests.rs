@@ -273,6 +273,7 @@ async fn loss_round_trip() {
     config.quic.max_idle_timeout = "4s".into();
     config.quic.keep_alive_period = "1s".into();
     config.routing = Some(crate::routing::RoutingConfig {
+        rule_sets: std::collections::BTreeMap::new(),
         version: 1,
         default: crate::routing::Action::Proxy,
         rules: vec![

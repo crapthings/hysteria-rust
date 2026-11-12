@@ -80,13 +80,13 @@ cat client.yaml | hysteria check client --config - --output json
 cat client.yaml | hysteria client --config -
 ```
 
-Configuration input is limited to 16 MiB, for both files and stdin. This is an intentional input limit; larger configurations are rejected instead of read into unbounded memory. No temporary configuration file is created by the stdin loader. Paths referenced inside a configuration retain their existing working-directory semantics; stdin does not provide a configuration-file directory.
+Configuration input is limited to 16 MiB, for both files and stdin. This is an intentional input limit; larger configurations are rejected instead of read into unbounded memory. No temporary configuration file is created by the stdin loader. Existing paths referenced inside a configuration retain their working-directory semantics. Client `routing.ruleSets.*.file` is an explicit exception: relative paths use the selected configuration file directory, and stdin requires absolute rule-set paths. See [local rule sets](client-routing.md#local-rule-sets).
 
 Deserializer failures report the source and available line/column location, but omit the original error rendering because it can echo credential values. Semantic validators still report their existing field-specific errors. Diagnostic output should be treated as potentially sensitive, particularly when custom names, paths or URLs contain private information.
 
 ## Offline configuration checks
 
-`check` loads the selected schema and runs the same semantic configuration validators used by that role. It does not start a runtime, bind proxy listeners, create a TUN interface, change routes or DNS, issue update requests, or obtain ACME certificates. Referenced local inputs such as an ACL file or an ECH configuration may be read during validation.
+`check` loads the selected schema and runs the same semantic configuration validators used by that role. It does not start a runtime, bind proxy listeners, create a TUN interface, change routes or DNS, issue update requests, or obtain ACME certificates. Referenced local inputs such as client rule-set files, an ACL file or an ECH configuration may be read during validation.
 
 A successful check means the current schema and semantic validators accepted the configuration. It does not prove that credentials authenticate, a server is reachable, a port is available, certificate/key files are usable, or the process has the permissions needed for its selected runtime mode. Additional startup-only checks still occur when running the server or client. This command is not a connection diagnostic or a deployment readiness check.
 
@@ -133,6 +133,24 @@ Treat semantic diagnostics and paths as potentially sensitive, as with `check`.
 readiness. Exit status is 0 without failures, 3 with diagnostic failures, 2 for
 argument errors, and 1 for execution/report-writing errors. Parse failure prevents
 further checks; readable configurations can produce multiple independent failures.
+
+## Live client DNS capture diagnosis
+
+```shell
+hysteria doctor client --dns example.com --timeout 5s -c client.yaml
+hysteria doctor client --dns example.com --profile laptop-tun --output json
+```
+
+This explicit Linux-only mode queries a fresh random subdomain using the system
+resolver, then compares returned addresses with that name in the configured
+Fake-IP disk cache. It diagnoses an already running client and is separate from
+startup-only TUN checks; it does not require NET_ADMIN, but needs cache read access.
+It cannot be combined with `--connect`, `--tcp` or `--udp-echo`.
+
+A captured probe may cause the running client to persist **one additional mapping**.
+No system DNS, routes, interfaces or configuration files are changed by doctor.
+The resolver worker is terminated/reaped on timeout or cancellation. Local file
+reads are outside the network deadline. See [results and limitations](client-dns-diagnosis.md).
 
 ## Error guidance and diagnostics
 
@@ -185,7 +203,8 @@ sniffing delays.
 
 `crates/hysteria/tests/cli_contract.rs` covers offline client/server checks, text/JSON output, portable stdin, error privacy, missing files, help/version, exit codes and a Unix SIGTERM regression using a lazy loopback-only client. Parser unit tests protect existing command invocation forms, and configuration unit tests cover input bounds and safe parse locations.
 
-Run compilation and subprocess tests when requested. Static formatting can be checked independently:
+Run the relevant compilation and subprocess checks when changing these contracts.
+Formatting can be checked independently:
 
 ```shell
 cargo fmt --all -- --check
@@ -199,6 +218,11 @@ cargo test --locked --package hysteria-cli --test cli_contract
 cargo test --locked --package hysteria-cli --lib configuration_
 cargo clippy --locked --package hysteria-cli --all-targets -- -D warnings
 ```
+
+The [ordinary-use Linux acceptance](client-routing-jp1-2026-11-12.md) covers profiles,
+small local rule sets, actual forwarding, recovery and shutdown. Protected TUN/DNS
+has separate [isolated acceptance](linux-dns-probe-jp1-2026-11-12.md); remaining
+platform checks are tracked in the [Linux checklist](linux-validation-2026-11-11.md).
 
 ## Update checks
 

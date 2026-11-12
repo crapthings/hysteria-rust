@@ -1,4 +1,5 @@
 //! Real loopback routing through SOCKS5/HTTP/forwarding; no routes, TUN or external DNS.
+use std::fmt::Write as _;
 use std::{fs, net::SocketAddr, path::Path, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -275,4 +276,45 @@ async fn direct_connections_close_when_embedded_runtime_stops() {
         if let Ok(n) = stream.read(&mut bytes).await { assert_eq!(n,0); }
         echo.abort();
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn local_rule_set_is_loaded_once_and_new_snapshot_requires_restart() {
+    tokio::time::timeout(Duration::from_secs(15), local_rule_set_snapshot())
+        .await
+        .unwrap();
+}
+async fn local_rule_set_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let (target, task) = tcp_echo().await;
+    let socks = free_tcp();
+    let file = directory.path().join("local.txt");
+    let mut indexed_rules = String::new();
+    for i in 0..256 {
+        writeln!(indexed_rules, "padding-{i}.invalid").unwrap();
+    }
+    indexed_rules.push_str("127.0.0.1\n");
+    fs::write(&file, indexed_rules).unwrap();
+    let config = serde_json::json!({"server":blackhole.local_addr().unwrap().to_string(),"auth":"secret",
+        "socks5":{"listen":socks.to_string()},"routing":{"version":1,"default":"reject",
+        "ruleSets":{"local":{"file":"local.txt"}},"rules":["direct(set:local)"]}});
+    let mut client = spawn(
+        directory.path(),
+        "client",
+        config.clone(),
+        "SOCKS5 proxy listening",
+    )
+    .await;
+    fs::remove_file(&file).unwrap();
+    let (stream, reply) = socks_command(socks, target, 1).await;
+    assert_eq!(reply[1], 0);
+    echo_stream(stream).await;
+    client.kill().await.unwrap();
+    fs::write(&file, "192.0.2.1\n").unwrap();
+    let mut client = spawn(directory.path(), "client", config, "SOCKS5 proxy listening").await;
+    let (_stream, reply) = socks_command(socks, target, 1).await;
+    assert_ne!(reply[1], 0);
+    client.kill().await.unwrap();
+    task.abort();
 }

@@ -8,6 +8,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Keep Brutal's congestion window at least two current MTUs so Quinn can send
+  at low RTT/bandwidth instead of stalling at the one-packet boundary. Cover MTU
+  changes and bidirectional datagram progress; see [the regression note](docs/brutal-minimum-window.md).
+
+- Refresh README and current capability/validation documentation; distinguish
+  completed routing v1 acceptance from remaining platform and long-running checks.
+
+- Reuse large routing-set indexes for conservative lint coverage proofs, with a
+  single-matcher fast path. Preserve warning order and require one source member
+  to cover each target; adjacent networks are not combined into broader coverage.
+
+- Index membership inside large client routing sets (256+ expanded matchers),
+  sharing immutable domain/suffix/IP/CIDR indexes while retaining first-match
+  outer-rule order and original diagnostic source lines. Keep scans for small lists.
+
+- Validate domain suffixes before CIDR dispatch, rejecting malformed suffixes
+  containing `/`. Refactor client rule parsing and early mismatch exits, share
+  compiled rule sets, and remove temporary suffix/IP allocations during matching.
+
+- Reject incomplete client routing filters such as `direct(example.com,)` instead
+  of treating them as all protocols/ports; attach configuration and displayed rule
+  locations to matcher/protocol validation errors.
+
+- Coalesce client Fake-IP cold bursts into bounded durable batches (up to 64
+  names, 128 pending reservations, nominal 1 ms collection). Preserve v1 caches
+  and acknowledge only after persistence; cancel queued allocations on shutdown.
+
+- Buffer Fake-IP snapshot writes and avoid full-table cloning; keep existing-name
+  lookups and reverse mapping available while disk persistence runs. Stop new
+  allocation after uncertain persistence errors until restart, without ID reuse.
+
 - Coalesce failed/cancelled client connection attempts with a one-second cooldown,
   preventing queued requests from each starting another failed handshake. Preserve
   demand-driven retry and independent direct routes.
@@ -54,6 +85,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add repeatable Linux acceptance runners and jp1 results for ordinary CLI
+  routing and isolated TUN/resolved integration, including outage recovery,
+  immutable local rule sets, DNS capture and cleanup audits.
+
+- Add opt-in Linux `doctor client --dns DOMAIN` system-resolver probes against an
+  existing Fake-IP cache, with fresh names, per-family results and bounded worker
+  timeout/cancellation. No DNS/route changes; successful capture may persist one
+  new mapping in the running client.
+
+- Client local routing rule sets (`ruleSets` / `set:name`) with config-relative
+  paths, bounded immutable file snapshots, validation and matched file/line output.
+  Stdin requires absolute rule-set paths; nested/remote sets and hot reload are not supported.
+
+- Add opt-in Linux release Fake-IP pressure measurements and isolated real-write
+  failure recovery tests. Record cold-query tail latency and snapshot write volume
+  separately from network performance; no server or protocol behavior changes.
+
+- Add explicit Fake-IP capacity configuration (4096 default, up to 65536), 90%
+  warnings and structured cache occupancy in doctor reports; preserve existing IDs
+  and refuse limits below the stored mapping count.
+
 - Document isolated jp1 systemd-resolved acceptance: explicit per-link DNS enables
   Fake-IP and dual-stack forwarding, with normal-stop DNS restoration. Record that
   starting TUN alone did not guarantee DNS capture; host networking was preserved.
@@ -83,8 +135,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   marked/interface-bound egress sockets, bounded DNS forwarding and conservative
   policy preflight. Isolated real Linux TUN installation and cleanup tests pass;
   other-platform routed TUN and Realm in this mode are rejected.
-- Add `capabilities` JSON and offline `route explain` JSON/text as the first
-  GUI integration contract; persistent IPC and live apply/events remain pending.
+- Add `capabilities` JSON and offline `route explain` JSON/text for scripts and
+  third-party integrations. Lifecycle events use stdout NDJSON; persistent IPC
+  and live configuration application remain future work.
 
 - Add combined Realm sharing URI import/export, guided setup and opt-in staged
   STUN/rendezvous/punch diagnosis without enabling router mappings. Verify

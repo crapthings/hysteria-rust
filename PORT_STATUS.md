@@ -56,6 +56,29 @@ The native executable is `target/release/hysteria`. Cross-release artifacts and 
 
 ## Completion status
 
+### Development CLI and client routing
+
+These additions are in development source, beyond the published rc.6 binaries:
+
+- Offline checks, guided/template setup, standard sharing links, private client
+  profiles, phased connection diagnosis and versioned lifecycle events.
+- Read-only server status/statistics and named Linux systemd service instances.
+- Client routing v1 for domain/suffix/IP/CIDR/private-network and protocol/port
+  rules, local rule sets, proxy/direct/reject, explain/trace and conservative lint.
+  Ordinary SOCKS5/HTTP/TCP/UDP use has passed [jp1 acceptance](docs/client-routing-jp1-2026-11-12.md).
+- Protected Linux routed TUN, persistent bounded/batched Fake-IP mappings,
+  read-only preflight and opt-in system-resolver DNS capture diagnosis.
+  [Isolated TUN/DNS/application acceptance](docs/linux-dns-probe-jp1-2026-11-12.md)
+  passed; whole-host integration, interface handover and long-running use remain
+  platform checks. Other-platform routed TUN, process matching, remote rule
+  subscriptions, proxy groups and live configuration reload are not implemented.
+
+See the [CLI reference](docs/cli.md), [routing contract](docs/client-routing.md)
+and [current roadmap](docs/cli-roadmap.md). Client routing extends this Rust CLI;
+it does not add routing rules to the sharing URI or Hysteria wire protocol.
+
+### Other capabilities and compatibility gaps
+
 Additional implemented capabilities and current CI policy:
 
 - Unix socket masquerade proxy backends, accepting absolute paths or `unix:///...` URLs.
@@ -76,5 +99,7 @@ Known differences from v2.13.0:
 - The development CLI implements `ech` key generation and explicit overlapping-key rotation; live key reload and automatic client configuration distribution are not implemented.
 - TUN uses a different stack; Rust's `route.strict` still performs Linux/Windows
   actions and is retained even though upstream removed its option.
+- Brutal uses a two-MTU minimum window to preserve progress with Quinn's send
+  gating; see the [minimum-window fix](docs/brutal-minimum-window.md).
 - Interoperability tests do not establish feature parity, Chrome fingerprint
   equivalence, real-network performance or privileged platform behavior.

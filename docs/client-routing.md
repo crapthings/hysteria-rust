@@ -17,8 +17,9 @@ Linux TUN supports an opt-in protected mode with persistent Fake-IP DNS; see
 [protected TUN routing](client-tun-routing.md) for configuration and limitations.
 Other-platform TUN and transparent proxy combinations with routing are rejected.
 Existing TUN/transparent operation without client routing remains available.
-Process matching, GeoIP/GeoSite, wildcard rules, external rule sets, multiple
-proxy groups and live rule reload are not implemented in v1. Unsupported
+Local host-matcher rule sets are supported. Process matching, GeoIP/GeoSite, wildcard
+rules, remote rule subscriptions, multiple proxy groups and live rule reload are
+not implemented in v1. Unsupported
 matchers/fields fail configuration validation rather than being ignored.
 
 ## Configuration
@@ -69,6 +70,7 @@ lines are not separate rules in this schema. Hijack/rewrite syntax is rejected.
 | `lan` | Fixed private ranges: 10/8, 172.16/12, 192.168/16, fc00::/7 |
 | `loopback` | 127/8 and ::1 |
 | `all` or `*` | Any target |
+| `set:work` | Any entry in the declared local `work` rule set |
 
 `lan` is a private-address preset, not discovery of the currently attached LAN.
 It does not include link-local, multicast, unspecified addresses or loopback.
@@ -78,7 +80,111 @@ Domain matching normalizes case, the final dot and IDNA representation; decision
 return ASCII IDNA hostnames for portable direct dialing. Protocols
 are `tcp`, `udp` or `*`; ports can be `*`, one nonzero port or an inclusive range,
 for example `tcp/22`, `udp/10000-20000`, `*/443`. An omitted protocol/port matches
-both protocols on all ports.
+both protocols on all ports. A present but empty second field, such as
+`direct(example.com,)`, is invalid: remove the comma to explicitly omit the filter,
+or supply a protocol/port. Compilation errors identify the zero-based configuration
+path `routing.rules[index]` and the one-based rule number used by explain/lint.
+
+## Local rule sets
+
+A rule set contains host matchers, not actions. Keep the action, protocol/port and
+priority at its reference in `rules`:
+
+```yaml
+routing:
+  version: 1
+  default: proxy
+  ruleSets:
+    work:
+      file: rules/work.txt
+  rules:
+    - reject(private.example.com)
+    - direct(set:work, tcp/443)
+    - direct(lan)
+```
+
+`rules/work.txt` is UTF-8 text, one matcher per line:
+
+```text
+# Work destinations
+suffix:example.com
+internal.example.org
+10.20.0.0/16
+fd42:1234::/32
+```
+
+Exact domains, `suffix:`, literal IPv4/IPv6, CIDR, `lan`, `loopback`, `all` and `*`
+use the same semantics as inline matchers. Blank lines and whole-line `#` comments
+are ignored; an initial UTF-8 BOM and CRLF are accepted. Inline comments, actions,
+protocol/port filters, nested `set:` references and file includes are rejected.
+There are no implicit downloads, environment-variable expansion or `~` expansion.
+Use plain paths, not `file://`/HTTP URLs. Final-path symlinks and special files are
+rejected; a rule set must be a regular, nonempty file. Empty/comment-only sets fail
+validation rather than silently changing which outer rule wins.
+
+The outer rule matches if **any entry** matches, together with its protocol/port
+filter. All entries share that outer action; later outer rules are not considered
+after a match. Set declaration order has no priority. Names are case-sensitive,
+1–64 ASCII letters/digits/underscores/hyphens; duplicate names and unknown references
+are errors. A matching entry's first source line is used only for explanation.
+
+**Paths:** relative rule-set paths resolve against the directory of the selected
+configuration file (including a saved profile), not the process working directory.
+`-c -` has no file directory and requires absolute rule-set paths. Other existing
+configuration paths retain their previous working-directory behavior. Moving a
+configuration/profile requires keeping its relative rule-set files alongside it
+or updating their paths; sharing URIs do not include these files.
+
+**Snapshot:** `ClientConfig::load` reads and validates all declared sets, including
+unused ones, once. Compilation, validation and runtime reuse that immutable data;
+matching never reads a file or queries DNS. Changing/removing a file does not alter
+a running client. Run `check`, then explicitly restart to apply edits. Separate
+commands load separate snapshots: a successful earlier check cannot guarantee a
+file was not changed before startup. There is no hot reload. For predictable updates, replace each file atomically and
+avoid editing the file collection during configuration loading; loading several
+files is not a filesystem-wide transaction.
+
+Embedded Rust callers that construct/deserialize `RoutingConfig` themselves must
+call `load_rule_sets(Some(config_directory))`, or `load_rule_sets(None)` with
+absolute paths, before `Router::compile`. Compilation never implicitly loads a
+file. An explicit load replaces snapshots only if every file succeeds; callers must
+handle the error, while an already running router keeps its prior snapshot.
+
+Initial resource limits:
+
+| Limit | Value |
+| --- | --- |
+| Declared sets | 64 |
+| One file / combined files | 1 MiB / 4 MiB |
+| Non-comment matcher line / file path | 4096 bytes |
+| Combined matchers from all declared files | 4096 after `lan`/`loopback` expansion |
+| Outer rules | 4096 |
+| Runtime matcher count | 16384 after all set references and presets are expanded |
+
+Repeated set references share compiled storage but each counts toward the runtime
+matcher limit. Sets with at least 256 expanded matchers now use shared membership
+indexes; smaller lists retain scans. Outer rules are still evaluated in order, so
+these bounds do not promise constant-time routing. See the
+[index design and measurements](client-routing-performance.md). Whole-country/ad-block subscriptions
+larger than these bounds are not a supported use case for this first increment.
+
+`check`, startup, `route lint` and `route explain` use the same snapshot/compiler.
+Invalid file entries report set name, file and line without echoing the file text.
+A set hit adds an optional field to explanation JSON (absent for inline/default):
+
+```json
+{"matched_rule_set": {"name": "work", "file": "/path/rules/work.txt", "line": 2}}
+```
+
+The existing `matched_rule`, `matched_rule_text` and trace entries still identify
+the **outer rule**, so rule numbering remains stable. Text output shows the file
+and line as well. This metadata is computed only for offline explanation, not for
+every forwarded connection. Explanation may reveal local paths; it still omits
+connection credentials. `lint` remains conservative single-rule coverage analysis,
+now including sets. Large-set proofs reuse the membership index, but each target
+member must still be covered by one source member: adjacent CIDRs are not combined.
+It does not prove coverage by a union of earlier outer rules. See
+[loading and lint measurements](client-routing-lint-performance.md).
 
 ## Templates, rule review and explanation
 
@@ -163,6 +269,13 @@ an unknown domain from an IP, inspect TLS to discover names, identify a process,
 or prevent all alternate names/IPs from reaching the same endpoint. Do not treat
 these input-based rules as a complete destination-IP firewall.
 
+In protected TUN mode, `reject` is a connection/datagram routing decision, not a
+promise of DNS NXDOMAIN. Captured A/AAAA queries may still receive and persist a
+Fake-IP; the actual connection is rejected using its destination port and protocol.
+Non-address DNS queries follow the separate behavior documented in
+[TUN DNS handling](client-tun-routing.md#traffic-and-dns-behavior). A rule such as
+`reject(all, udp/443)` does not mean “reject DNS queries made over UDP.”
+
 UDP routing is per destination within an association. A rejected datagram is
 silently dropped without closing unrelated flows. A slow direct lookup or proxy
 handshake runs in its own worker, not the association receive loop. A proxy UDP
@@ -198,7 +311,8 @@ create devices or check privileges. It reports:
 
 - `schema_version: 1`, `core_version` and `platform`;
 - `configuration_check`, `route_explain`, `route_trace`, `route_lint` and `routing_templates`;
-- supported routing version/actions/matchers/protocols/inbounds;
+- supported routing version/actions/matchers/protocols/inbounds, including `set`;
+- `routing.local_rule_sets: true` and `routing.remote_rule_sets: false`;
 - explicit false values for process/GeoIP/GeoSite/live-reload capabilities;
 - whether TUN is compiled in, separately from platform-dependent `routing_supported` / `fake_dns` and
   `permission_check: "not_performed"`;
@@ -267,19 +381,35 @@ normal error reporter; consumers must handle that separately. Both `check` and
 
 The CLI JSON inspection commands do not change system networking. Starting TUN
 explicitly does create a device and install routes; no helper is installed.
-Persistent Unix-socket/Windows-named-pipe control, authenticated access, status and
-event subscriptions, configuration application and immutable live snapshots need
+Lifecycle events are available through stdout NDJSON. Persistent Unix-socket/
+Windows-named-pipe control, authenticated status/event subscriptions,
+configuration application and atomic replacement of the active rule snapshot need
 an additional control-plane increment. They must reuse these routing semantics,
 not create a second rule engine in the GUI. Unsupported capabilities stay false
 until implementation and platform validation are complete.
 
+## Implementation boundaries
+
+Rule parsing, compilation and matching are separate steps. Parser guards return
+before handling invalid fields; protocol and port mismatches return before any
+host search. A shared rule-set snapshot avoids re-reading/recompiling the file for
+each reference. Suffix matching tests label boundaries without building a temporary
+string, and an optional literal IP is passed as a slice without allocating a Vec.
+Large sets additionally use membership indexes while preserving the original
+member order for diagnostics. These changes reduce unnecessary work; they do not
+change first-match order or establish an end-to-end throughput improvement.
+
 ## Validation
 
 Tests cover first-match order, suffix boundaries, IDNA, IPv4/IPv6 CIDR/presets,
-no implicit DNS, invalid/unsupported rules, JSON contracts and pre-start rejection
+no implicit DNS, invalid/unsupported rules, local set file limits/path bases,
+snapshot isolation, source locations, JSON contracts and pre-start rejection
 of unsupported TUN/transparent combinations. Loopback integration covers SOCKS5 TCP/UDP
 mixed direct/proxy/reject behavior, HTTP CONNECT and explicit forwarding, direct
 traffic with an unavailable proxy, and embedded-runtime shutdown closing a direct
 TCP connection. Existing proxy-only and Go interoperability tests remain regression
-coverage. Real Linux direct DNS behavior, IPv6 routes and sustained UDP pressure
-still need operational testing.
+coverage. [jp1 ordinary-use acceptance](client-routing-jp1-2026-11-12.md) covers
+the real Linux CLI, forwarding, profile-relative files, outage recovery and explicit
+restart. [Isolated TUN/resolved acceptance](linux-dns-probe-jp1-2026-11-12.md) covers
+DNS capture and dual-stack forwarding. Whole-host resolver combinations, real
+network handover and sustained UDP pressure still need operational testing.

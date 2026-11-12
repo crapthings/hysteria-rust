@@ -35,13 +35,10 @@ async fn server(dir: &Path) -> Server {
         overwrite: false,
     })
     .unwrap();
-    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let address = socket.local_addr().unwrap();
-    drop(socket);
     let path = write_config(
         dir,
         "server.json",
-        &json!({"listen":address.to_string(),"tls":{"cert":cert,"key":key},"auth":{"type":"password","password":"sentinel-private"}}),
+        &json!({"listen":"127.0.0.1:0","tls":{"cert":cert,"key":key},"auth":{"type":"password","password":"sentinel-private"}}),
     );
     let mut child = binary()
         .args(["server", "--disable-update-check", "-c"])
@@ -52,14 +49,16 @@ async fn server(dir: &Path) -> Server {
         .spawn()
         .unwrap();
     let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !lines
-            .next_line()
-            .await
-            .unwrap()
-            .unwrap()
-            .contains("Hysteria server listening")
-        {}
+    let address = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut diagnostics = String::new();
+        while let Some(line) = lines.next_line().await.unwrap() {
+            if let Some(address) = line.strip_prefix("Hysteria server listening on ") {
+                return address.parse::<std::net::SocketAddr>().unwrap();
+            }
+            diagnostics.push_str(&line);
+            diagnostics.push('\n');
+        }
+        panic!("fixture server exited before binding: {diagnostics}");
     })
     .await
     .unwrap();

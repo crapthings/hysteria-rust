@@ -7,6 +7,8 @@ use serde::Serialize;
 use std::{fs::File, path::Path};
 use x509_parser::prelude::FromDer;
 
+pub mod dns;
+
 /// A versioned diagnostic report. Passing checks does not establish full runtime readiness.
 #[derive(Serialize)]
 pub struct Report {
@@ -23,6 +25,8 @@ pub struct Check {
     pub status: &'static str,
     pub message: String,
     pub hint: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl Report {
@@ -39,7 +43,14 @@ impl Report {
             status,
             message: message.into(),
             hint,
+            details: None,
         });
+    }
+
+    pub(crate) fn details(&mut self, id: &str, details: serde_json::Value) {
+        if let Some(check) = self.checks.iter_mut().rev().find(|check| check.id == id) {
+            check.details = Some(details);
+        }
     }
 
     fn result(

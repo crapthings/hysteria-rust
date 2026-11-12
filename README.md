@@ -3,43 +3,27 @@
 [![CI](https://github.com/crapthings/hysteria-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/crapthings/hysteria-rust/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/crapthings/hysteria-rust?include_prereleases)](https://github.com/crapthings/hysteria-rust/releases)
 [![License](https://img.shields.io/badge/license-MIT-024ad8.svg)](LICENSE)
-[![Rust 1.91+](https://img.shields.io/badge/rust-1.91%2B-024ad8.svg)](rust-toolchain.toml)
 
 An independent Rust implementation of [Hysteria 2](https://v2.hysteria.network/)
-for TCP and UDP proxying over QUIC. One executable includes both the CLI server
-and client.
+for TCP and UDP proxying over QUIC. One standalone executable provides:
+
+- **Server:** TLS/ACME, authentication, ACLs, masquerade and traffic statistics.
+- **Client:** SOCKS5, HTTP proxy, TCP/UDP forwarding and platform-specific TUN modes.
 
 [Downloads](https://github.com/crapthings/hysteria-rust/releases) ·
 [Quick start](#quick-start) · [Documentation](#documentation) ·
 [Website](https://crapthings.github.io/hysteria-rust/)
 
-Releases are currently release candidates. The quick start below works with
-[rc.6](docs/releases/v0.1.0-rc.6.md); features marked **dev** require a source build.
-See [compatibility status](PORT_STATUS.md) for supported features and limitations.
-
-## Features
-
-- **Server:** TLS/ACME, authentication, ACLs, masquerade and traffic statistics.
-- **Client:** SOCKS5, HTTP proxy, TCP/UDP forwarding and platform-specific TUN/transparent modes.
-- **Transport:** obfuscation, port hopping, congestion control and Realm connectivity.
+The quick start works with [rc.6](docs/releases/v0.1.0-rc.6.md).
+Features marked **dev** require a development source build; pushing `dev` does
+not update release binaries. See [compatibility and limitations](PORT_STATUS.md).
 
 ## Install
 
-Download the binary and matching `.sha256` file for your platform from
-[Releases](https://github.com/crapthings/hysteria-rust/releases).
-Linux, macOS and Windows builds are available; Linux requires glibc.
-No Rust or Go installation is needed.
-
-For Linux x64:
-
-```shell
-sha256sum --check hysteria-rust-linux-x64.sha256
-sudo install -m 755 hysteria-rust-linux-x64 /usr/local/bin/hysteria
-hysteria version
-```
-
-See [installation and upgrades](docs/installation.md) for all platforms,
-checksum commands and rollback steps. Examples below use the name `hysteria`.
+Download a binary and matching checksum from [Releases](https://github.com/crapthings/hysteria-rust/releases).
+Follow [installation and upgrades](docs/installation.md) to verify and install it
+on Linux, macOS or Windows. Rust and Go are not needed to run it.
+Examples below use the executable name `hysteria`.
 
 ## Quick start
 
@@ -91,7 +75,7 @@ curl --proxy socks5h://127.0.0.1:1080 https://example.com/
 
 `tls.sni` must match the certificate. For a private CA or self-signed certificate,
 set `tls.ca` to its public certificate file; keep private keys on the server.
-For more modes and options, see the [configuration examples](examples).
+More modes and options are in the [configuration examples](examples).
 
 ## CLI tools — dev
 
@@ -101,28 +85,30 @@ These additions are not included in rc.6. Run `hysteria help`,
 | Task | Command / guide |
 | --- | --- |
 | Create a configuration | `hysteria guide server -c server.yaml` or `guide client`; use `init` for an editable template |
-| Save / select a server | [`profile import`, `profile list`, `client --profile`](docs/client-profiles.md) |
+| Save / use a client profile | [`profile import`, `profile list`, `client --profile`](docs/client-profiles.md) |
 | Validate offline | `hysteria check client -c client.yaml --output json` (also supports `server`) |
 | Diagnose / observe a client | [`doctor client --connect` / `client --events json`](docs/client-observability.md) |
 | Monitor a server | [`server status` / `server stats --watch`](docs/cli.md#live-server-status-and-statistics) |
 | Install a Linux service | [`service install`](docs/cli.md#linux-system-services), with named instances |
 | Share connection settings | [`server share`](docs/cli.md#export-a-client-link-from-the-server), including Realm URIs |
-| Route client traffic | [Templates, rule checks and `route explain --trace`](docs/client-routing.md) |
-| Use routed TUN | [Protected Linux TUN and Fake-IP DNS](docs/client-tun-routing.md) |
+| Route client traffic | [Domain/IP rules, local rule sets, `route lint` and `route explain --trace`](docs/client-routing.md) |
+| Use Linux routed TUN | [Protected egress and Fake-IP DNS](docs/client-tun-routing.md); [verify DNS capture](docs/client-dns-diagnosis.md) |
 
-Routed TUN is Linux-only and has passed isolated acceptance tests. Whole-host
-DNS integration and public-network performance still need validation.
+Client routing v1 has passed [ordinary-use Linux acceptance](docs/client-routing-jp1-2026-11-12.md),
+including direct/proxy/reject and server-outage recovery. Protected routed TUN is
+Linux-only and has passed isolated tests; whole-host DNS integration, network
+handover and long-running use still need platform validation.
 
 ## Documentation
 
 - [CLI reference](docs/cli.md): setup, diagnostics, services, monitoring, ECH and JSON output.
 - [Compatibility](PORT_STATUS.md) · [Changelog](CHANGELOG.md) · [Roadmap](docs/cli-roadmap.md).
 - [ACME DNS providers](docs/acme-dns-providers.md) · [Experimental Chrome QUIC profile](docs/chrome-quic-port.md).
-- [Linux validation checklist](docs/linux-validation-2026-11-11.md) · [jp1 TUN test results](docs/linux-tun-jp1-2026-11-11.md).
+- [Linux validation checklist](docs/linux-validation-2026-11-11.md): completed acceptance and remaining platform checks.
 
 ## Build and contribute
 
-Use the pinned [Rust toolchain](rust-toolchain.toml):
+Use the pinned [Rust 1.91.1 toolchain](rust-toolchain.toml):
 
 ```shell
 cargo build --locked --release --package hysteria-cli

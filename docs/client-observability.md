@@ -12,7 +12,9 @@ hysteria doctor client --connect --tcp example.com:443 -c client.yaml
 hysteria doctor client --connect --udp-echo YOUR_ECHO_HOST:PORT -c client.yaml
 ```
 
-Without `--connect`, diagnosis remains offline. Configured TUN also receives
+Without `--connect` or `--dns`, diagnosis remains offline. The independent Linux
+[`--dns DOMAIN` mode](client-dns-diagnosis.md) probes the system resolver against an
+already running Fake-IP client; it cannot be combined with `--connect`. Configured TUN also receives
 [read-only startup checks](client-tun-routing.md#read-only-startup-diagnosis); these
 inspect local files/kernel state without changing routes or taking cache ownership. Active diagnosis checks these
 phases in order and reports later unattempted phases as `skip`:

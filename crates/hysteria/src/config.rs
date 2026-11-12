@@ -981,13 +981,24 @@ impl MasqueradeConfig {
 }
 
 impl ClientConfig {
-    /// Loads a client YAML file.
+    /// Loads client YAML/JSON and immutable local routing rule-set snapshots.
     ///
     /// # Errors
     ///
-    /// Returns an error when the file cannot be read or parsed.
+    /// Returns an error when the configuration or its declared local rule sets cannot be loaded.
     pub fn load(path: &Path) -> Result<Self> {
-        load_yaml(path)
+        let mut config: Self = load_yaml(path)?;
+        if let Some(routing) = &mut config.routing {
+            let base = if path == Path::new("-") {
+                None
+            } else {
+                path.parent()
+            };
+            routing
+                .load_rule_sets(base)
+                .map_err(CliError::configuration)?;
+        }
+        Ok(config)
     }
 
     /// Builds a Go-compatible `hysteria2://` sharing URI.
@@ -1338,6 +1349,9 @@ impl TunConfig {
     ///
     /// Returns an error for an empty device name or malformed address, prefix, or timeout.
     pub fn validate(&self) -> Result<()> {
+        if let Some(dns) = &self.dns {
+            dns.validate()?;
+        }
         if self.name.is_empty() {
             return Err(CliError::new("tun.name is required"));
         }

@@ -21,9 +21,9 @@ impl CapabilitiesOptions {
     pub(crate) fn run(&self) -> Result<()> {
         let report = serde_json::json!({
             "schema_version":1, "core_version":env!("CARGO_PKG_VERSION"), "platform":std::env::consts::OS,
-            "configuration_check":true, "route_explain":true, "route_trace":true, "route_lint":true, "routing_templates":["proxy-all","lan-bypass","block-udp443"],
+            "dns_capture_probe":cfg!(target_os="linux"), "configuration_check":true, "route_explain":true, "route_trace":true, "route_lint":true, "routing_templates":["proxy-all","lan-bypass","block-udp443"],
             "profiles":{"schema_version":1,"scope":"user","implicit_default":false,"import_source":"stdin-uri"},
-            "routing":{"version":1,"actions":["proxy","direct","reject"],"matchers":["domain","suffix","ip","cidr","lan","loopback","all"],"protocols":["tcp","udp"],"inbounds":if cfg!(target_os="linux") { vec!["socks5","http","tcpForwarding","udpForwarding","tun"] } else { vec!["socks5","http","tcpForwarding","udpForwarding"] },"dns_for_matching":false,"process_matching":false,"geoip":false,"geosite":false,"live_reload":false},
+            "routing":{"version":1,"actions":["proxy","direct","reject"],"matchers":["domain","suffix","ip","cidr","lan","loopback","all","set"],"protocols":["tcp","udp"],"inbounds":if cfg!(target_os="linux") { vec!["socks5","http","tcpForwarding","udpForwarding","tun"] } else { vec!["socks5","http","tcpForwarding","udpForwarding"] },"local_rule_sets":true,"remote_rule_sets":false,"dns_for_matching":false,"process_matching":false,"geoip":false,"geosite":false,"live_reload":false},
             "tun":{"compiled":cfg!(any(target_os="linux", target_os="macos", target_os="windows")),"routing_supported":cfg!(target_os="linux"),"fake_dns":cfg!(target_os="linux"),"system_dns_configuration":false,"read_only_preflight":cfg!(target_os="linux"),"permission_check":"not_performed"},
             "control":{"transport":"cli-json","persistent_ipc":false,"events":true,"event_transport":"stdout-ndjson","event_schema_version":1,"configuration_apply":false,"privileged_helper":false}
         });
@@ -98,6 +98,8 @@ struct Explanation {
     rules_total: usize,
     matched_rule_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    matched_rule_set: Option<hysteria_cli::routing::RuleSetMatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     trace: Option<Vec<TraceLine>>,
 }
 #[derive(serde::Serialize)]
@@ -140,6 +142,7 @@ impl RouteOptions {
 }
 fn routing(config: &ClientConfig) -> RoutingConfig {
     config.routing.clone().unwrap_or(RoutingConfig {
+        rule_sets: std::collections::BTreeMap::new(),
         version: 1,
         default: Action::Proxy,
         rules: vec![],
@@ -161,6 +164,7 @@ fn template(preset: Preset, output: TemplateFormat) -> Result<()> {
         ),
     };
     let config = RoutingConfig {
+        rule_sets: std::collections::BTreeMap::new(),
         version: 1,
         default: Action::Proxy,
         rules: rules.into_iter().map(str::to_owned).collect(),
@@ -263,6 +267,7 @@ fn explain(path: &Path, destination: &str, protocol: Protocol, trace: bool) -> R
     if config.routing.is_none() {
         decision.reason = "routing_disabled";
     }
+    let matched_rule_set = router.matched_rule_set(&decision);
     let matched_rule_text = decision
         .matched_rule
         .map(|index| settings.rules[index - 1].clone());
@@ -285,6 +290,7 @@ fn explain(path: &Path, destination: &str, protocol: Protocol, trace: bool) -> R
         routing_enabled: config.routing.is_some(),
         rules_total: settings.rules.len(),
         matched_rule_text,
+        matched_rule_set,
         trace,
     })
 }
@@ -326,6 +332,15 @@ fn print_explanation(report: &Explanation) -> Result<()> {
             } else {
                 "Client routing is disabled; using proxy"
             }
+        )?;
+    }
+    if let Some(source) = &report.matched_rule_set {
+        writeln!(out, "  Rule set     {}", one_line(&source.name))?;
+        writeln!(
+            out,
+            "  Source       {}:{}",
+            one_line(&source.file),
+            source.line
         )?;
     }
     writeln!(

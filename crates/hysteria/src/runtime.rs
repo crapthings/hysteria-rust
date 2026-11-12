@@ -807,10 +807,13 @@ impl ClientHandle {
 
     async fn close(&self) {
         self.stop_signal.send_replace(true);
-        if let Some(dns) = &self.fake_dns
-            && let Err(error) = dns.close()
-        {
-            eprintln!("failed to release Fake-IP cache: {error}");
+        if let Some(dns) = &self.fake_dns {
+            let dns = Arc::clone(dns);
+            match tokio::task::spawn_blocking(move || dns.close()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("failed to release Fake-IP cache: {error}"),
+                Err(_) => eprintln!("Fake-IP shutdown worker failed"),
+            }
         }
         let mut state = self.state.lock().await;
         state.closed = true;
@@ -2174,6 +2177,7 @@ mod fake_ip_routing_tests {
         let dns = Arc::new(
             crate::fake_dns::FakeDns::open(&crate::fake_dns::FakeDnsConfig {
                 cache: directory.path().join("fake.json"),
+                ..Default::default()
             })
             .unwrap(),
         );

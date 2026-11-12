@@ -19,7 +19,7 @@ fn preflight_reports_observations_without_creating_cache_interfaces_or_dns_chang
         .iter()
         .find(|name| name.to_str() != Some("lo"))
         .map_or("missing0", |name| name.to_str().unwrap());
-    let config = serde_json::json!({"server":"private-server-sentinel.invalid:443","auth":"private-auth-sentinel","routing":{"version":1},"tun":{"name":"hydoctor-test","route":{"strict":true},"egress":{"interface":egress,"mark":4_741_426,"resolver":"1.1.1.1:53"},"dns":{"cache":directory.path().join("fake.json")}}});
+    let config = serde_json::json!({"server":"private-server-sentinel.invalid:443","auth":"private-auth-sentinel","routing":{"version":1},"tun":{"name":"hydoctor-test","route":{"strict":true},"egress":{"interface":egress,"mark":4_741_426,"resolver":"1.1.1.1:53"},"dns":{"cache":directory.path().join("fake.json"),"maxEntries":16_384}}});
     fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_hysteria"))
         .args(["doctor", "client", "--output", "json", "-c"])
@@ -28,6 +28,16 @@ fn preflight_reports_observations_without_creating_cache_interfaces_or_dns_chang
         .unwrap();
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(output.status.success(), report["passed"] == true);
+    let cache = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "tun_cache")
+        .unwrap();
+    assert_eq!(cache["details"]["capacity"], 16_384);
+    assert_eq!(cache["details"]["entries"], 0);
+    assert_eq!(cache["details"]["remaining"], 16_384);
+
     let checks = report["checks"].as_array().unwrap();
     for id in [
         "tun_device",

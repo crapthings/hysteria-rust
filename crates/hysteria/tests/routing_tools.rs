@@ -216,3 +216,114 @@ fn explanations_keep_existing_fields_and_trace_only_when_requested() {
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(report(&output)["error"]["code"], "configuration_invalid");
 }
+
+#[test]
+fn incomplete_protocol_filters_fail_consistently_in_all_offline_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(&["proxy(example.org)", "direct(example.com,)"]);
+    for command in [
+        &["check", "client"][..],
+        &["route", "lint"],
+        &["route", "explain", "example.com:443"],
+    ] {
+        let mut args = command.to_vec();
+        args.extend(["-c", "-", "--output", "json"]);
+        let output = execute(dir.path(), &args, &config);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        let report = report(&output).to_string();
+        assert!(report.contains("routing.rules[1]"), "{report}");
+        assert!(report.contains("rule 2"), "{report}");
+    }
+}
+
+#[test]
+fn rule_sets_resolve_from_config_directory_and_explain_file_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("config");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(
+        source.join("work.txt"),
+        "# rules\nsuffix:example.com\n10.0.0.0/8\n",
+    )
+    .unwrap();
+    let mut value = config(&["direct(set:work)", "reject(set:work)"]);
+    value["routing"]["ruleSets"] = json!({"work":{"file":"work.txt"}});
+    let path = source.join("client.json");
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let output = execute(
+        dir.path(),
+        &[
+            "route",
+            "explain",
+            "www.example.com:443",
+            "--trace",
+            "-c",
+            path.to_str().unwrap(),
+            "--output",
+            "json",
+        ],
+        &json!({}),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let result = report(&output);
+    assert_eq!(result["matched_rule"], 1);
+    assert_eq!(result["matched_rule_text"], "direct(set:work)");
+    assert_eq!(result["matched_rule_set"]["name"], "work");
+    assert_eq!(result["matched_rule_set"]["line"], 2);
+    assert!(
+        Path::new(result["matched_rule_set"]["file"].as_str().unwrap())
+            .ends_with(Path::new("config").join("work.txt"))
+    );
+    assert_eq!(result["trace"][1]["outcome"], "not_evaluated");
+    let output = execute(
+        dir.path(),
+        &[
+            "route",
+            "lint",
+            "-c",
+            path.to_str().unwrap(),
+            "--output",
+            "json",
+        ],
+        &json!({}),
+    );
+    assert!(output.status.success());
+    assert_eq!(report(&output)["warnings"][0]["covered_by"], 1);
+    let args = [
+        "route",
+        "explain",
+        "www.example.com:443",
+        "-c",
+        "-",
+        "--output",
+        "json",
+    ];
+    let output = execute(dir.path(), &args, &value);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        report(&output)
+            .to_string()
+            .contains("absolute paths with stdin")
+    );
+    value["routing"]["ruleSets"]["work"]["file"] = json!(source.join("work.txt"));
+    assert!(execute(dir.path(), &args, &value).status.success());
+    std::fs::write(source.join("work.txt"), "# header\nset:work\n").unwrap();
+    for command in [
+        &["check", "client"][..],
+        &["route", "lint"],
+        &["route", "explain", "www.example.com:443"],
+    ] {
+        let mut args = command.to_vec();
+        args.extend(["-c", "-", "--output", "json"]);
+        let output = execute(dir.path(), &args, &value);
+        assert_eq!(output.status.code(), Some(3));
+        assert!(report(&output).to_string().contains("line 2"));
+    }
+    let output = execute(
+        dir.path(),
+        &["capabilities", "--output", "json"],
+        &json!({}),
+    );
+    assert_eq!(report(&output)["routing"]["local_rule_sets"], true);
+    assert_eq!(report(&output)["routing"]["remote_rule_sets"], false);
+}

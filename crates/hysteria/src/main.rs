@@ -34,7 +34,8 @@ async fn main() -> ExitCode {
     }
     let cli = Cli::parse_from(args);
     let diagnostic = cli.diagnostic;
-    match run(cli).await {
+    // Command dispatch holds large role configurations; allocate its future once at startup.
+    match Box::pin(run(cli)).await {
         Ok(status) => status,
         Err(error) => {
             eprintln!("{}", error.report(diagnostic));
@@ -53,6 +54,7 @@ async fn run(mut cli: Cli) -> Result<ExitCode> {
         ));
     }
     let result = match cli.command.unwrap_or(Command::Client) {
+        Command::DnsLookup { name } => doctor_cli::dns_lookup_worker(&name),
         Command::Check(options) => return options.run(&cli.config, cli.diagnostic),
         Command::Doctor(options) => return options.run(&cli.config).await,
         Command::Init(options) => options.run(&cli.config, false),

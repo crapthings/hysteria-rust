@@ -226,7 +226,8 @@ ordinary non-ALPS settings. Its standalone unit suite is now part of CI's
 quality job, in addition to the root loopback tests. Local validation passed
 the standalone suite and the pinned Go/Rust TCP/UDP, Salamander and ECH
 interoperability test in both directions (Go commit
-`62d1016707af21b91e5fb6070311d9f016ff2754`, matching CI). This verifies ordinary
+`62d1016707af21b91e5fb6070311d9f016ff2754`, the CI reference at that time). Current
+CI uses the [v2.13.0 reference](upstream-v2.13.0.md). This verifies ordinary
 connections, not negotiated Chrome/ALPS interoperability, which remains disabled.
 
 1. Complete TLS/application integration: define and apply HTTP/3 ALPS settings,

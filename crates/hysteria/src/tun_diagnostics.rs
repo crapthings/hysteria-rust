@@ -6,7 +6,7 @@ use std::{fs, path::Path};
 
 pub(crate) fn inspect(report: &mut Report, tun: &TunConfig) {
     if let Some(dns) = &tun.dns {
-        cache(report, &dns.cache);
+        cache(report, &dns.cache, dns.max_entries);
     }
     #[cfg(target_os = "linux")]
     linux::inspect(report, tun);
@@ -30,7 +30,7 @@ fn read_bounded(path: &Path, limit: u64) -> std::io::Result<String> {
     }
     Ok(bytes)
 }
-fn cache(report: &mut Report, path: &Path) {
+fn cache(report: &mut Report, path: &Path, capacity: usize) {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -40,9 +40,19 @@ fn cache(report: &mut Report, path: &Path) {
         _ => report.add("tun_cache_directory", "fail", "Cache parent directory is missing, inaccessible or not a directory", "Create a private persistent directory for the service account before startup; doctor does not create it."),
     }
     match crate::fake_dns::inspect_cache(path) {
-        Ok(count) => report.add("tun_cache", if count == crate::fake_dns::LIMIT {"warn"} else {"pass"},
-            if path.exists() {format!("Cache schema and mappings are valid ({count}/{} entries)", crate::fake_dns::LIMIT)} else {"Cache does not exist; runtime will create it after taking ownership".into()},
-            if count == crate::fake_dns::LIMIT {"New domains will receive SERVFAIL. Do not reset mappings while applications retain synthetic IPs."} else {"No cache contents or mappings were changed."}),
+        Ok(count) => {
+            let near = count * 10 >= capacity * 9;
+            let status = if count > capacity {"fail"} else if near {"warn"} else {"pass"};
+            let hint = if count > capacity {"Raise tun.dns.maxEntries to fit existing mappings; lowering a limit never truncates the cache."}
+                else if count == capacity {"New domains will receive SERVFAIL. Increase maxEntries within the supported range and restart; do not reset mappings while applications retain synthetic IPs."}
+                else if near {"Cache is at least 90% full. Review maxEntries and storage before adding domains; no addresses are recycled."}
+                else {"No cache contents or mappings were changed."};
+            report.add("tun_cache", status,
+                if path.exists() {format!("Cache contains {count}/{capacity} mappings")} else {"Cache does not exist; runtime will create it after taking ownership".into()}, hint);
+            report.details("tun_cache", serde_json::json!({"source":"disk_snapshot","entries":count,"capacity":capacity,
+                "remaining":capacity.saturating_sub(count),"warning_threshold_percent":90,
+                "max_supported_entries":crate::fake_dns::MAX_CAPACITY,"file_format_version":1}));
+        }
         Err(_) => report.add("tun_cache", "fail", "Cache is unreadable, not a regular file, corrupt or incompatible", "Preserve the cache and inspect its format/permissions; do not delete or reset mappings while applications retain synthetic IPs."),
     }
     #[cfg(unix)]
@@ -214,17 +224,48 @@ mod tests {
             .status
     }
     #[test]
+    fn capacity_reporting_is_structured_and_never_resizes_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake.json");
+        let names: Vec<_> = (0..9).map(|i| format!("private{i}.example")).collect();
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"version":1,"names":names})).unwrap(),
+        )
+        .unwrap();
+        let before = fs::read(&path).unwrap();
+        for (limit, expected) in [(20, "pass"), (10, "warn"), (9, "warn"), (8, "fail")] {
+            let mut report = report();
+            cache(&mut report, &path, limit);
+            let check = report
+                .checks
+                .iter()
+                .find(|check| check.id == "tun_cache")
+                .unwrap();
+            assert_eq!(check.status, expected);
+            let data = check.details.as_ref().unwrap();
+            assert_eq!(data["entries"], 9);
+            assert_eq!(data["capacity"], limit);
+            assert!(
+                !serde_json::to_string(&report)
+                    .unwrap()
+                    .contains("private0.example")
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+    }
+    #[test]
     fn missing_and_corrupt_cache_are_observed_without_creating_or_resetting_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fake.json");
         let mut missing = report();
-        cache(&mut missing, &path);
+        cache(&mut missing, &path, crate::fake_dns::DEFAULT_CAPACITY);
         assert_eq!(status(&missing, "tun_cache"), "pass");
         assert_eq!(status(&missing, "tun_cache_lock"), "skip");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         fs::write(&path, b"private-invalid-cache-sentinel").unwrap();
         let mut corrupt = report();
-        cache(&mut corrupt, &path);
+        cache(&mut corrupt, &path, crate::fake_dns::DEFAULT_CAPACITY);
         assert_eq!(status(&corrupt, "tun_cache"), "fail");
         assert_eq!(fs::read(&path).unwrap(), b"private-invalid-cache-sentinel");
         assert!(
@@ -234,7 +275,11 @@ mod tests {
         );
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
         let mut absent_parent = report();
-        cache(&mut absent_parent, &dir.path().join("missing/fake.json"));
+        cache(
+            &mut absent_parent,
+            &dir.path().join("missing/fake.json"),
+            crate::fake_dns::DEFAULT_CAPACITY,
+        );
         assert_eq!(status(&absent_parent, "tun_cache_directory"), "fail");
         assert!(!dir.path().join("missing").exists());
     }
@@ -249,11 +294,12 @@ mod tests {
         .unwrap();
         let config = crate::fake_dns::FakeDnsConfig {
             cache: path.clone(),
+            ..Default::default()
         };
         let owner = crate::fake_dns::FakeDns::open(&config).unwrap();
         let before = fs::read(&path).unwrap();
         let mut result = report();
-        cache(&mut result, &path);
+        cache(&mut result, &path, crate::fake_dns::DEFAULT_CAPACITY);
         assert_eq!(status(&result, "tun_cache"), "pass");
         assert_eq!(status(&result, "tun_cache_lock"), "skip");
         assert!(crate::fake_dns::FakeDns::open(&config).is_err());
@@ -277,7 +323,7 @@ mod tests {
         symlink(&target, &path).unwrap();
         symlink(&target, dir.path().join("cache.lock")).unwrap();
         let mut result = report();
-        cache(&mut result, &path);
+        cache(&mut result, &path, crate::fake_dns::DEFAULT_CAPACITY);
         assert_eq!(status(&result, "tun_cache"), "fail");
         assert_eq!(status(&result, "tun_cache_lock"), "fail");
         assert_eq!(fs::read_to_string(target).unwrap(), "private-target");

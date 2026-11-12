@@ -8,7 +8,9 @@ process matching and privileged helpers are not implemented.
 The implementation has automated socket, DNS and routing tests, plus real Linux
 TUN installation/forwarding/cleanup validation in isolated network namespaces on
 jp1. See the [acceptance report](linux-tun-jp1-2026-11-11.md). Isolated [systemd-resolved integration](linux-resolved-jp1-2026-11-12.md) has also
-passed; whole-host integration, public-network performance and long-running operation
+passed. Subsequent [real curl application acceptance](linux-app-jp1-2026-11-12.md)
+verified route provenance, capacity expansion, outages and retained Fake-IP use
+after restart. Whole-host integration, public-network performance and long-running operation
 remain unverified;
 this is not a production-readiness or performance claim.
 
@@ -99,11 +101,21 @@ identify the owning process before any targeted manual cleanup; do not flush all
 rules or delete a lock file in use.
 
 Missing cache directories fail; absent cache files are normal before first start.
-Corrupt/unsupported mappings fail without reset. A full valid cache warns because
-existing mappings remain usable but new domains receive SERVFAIL. Write access,
+Corrupt/unsupported mappings fail without reset. A near-full/full valid cache warns; existing mappings remain usable at the limit,
+but new domains receive SERVFAIL. The `tun_cache` check includes structured
+`details` for entries, configured capacity and remaining slots. A limit below the
+stored count fails rather than truncating mappings. Write access,
 space, atomic replacement and exclusive ownership are intentionally untested.
 Passing checks do not guarantee startup. Local failures prevent a subsequent
 `--connect` network probe; all results retain the existing doctor JSON/exit contract.
+
+## Verify an already running client's DNS path
+
+Use `doctor client --dns DOMAIN` to explicitly probe system resolution and compare
+a fresh name's answers with this configuration's Fake-IP cache. This avoids applying
+pre-start policy/CAP_NET_ADMIN checks to an active TUN instance. It may consume one
+cache entry but never changes system networking. See
+[DNS capture diagnosis](client-dns-diagnosis.md) for usage, statuses and scope.
 
 ## Traffic and DNS behavior
 
@@ -159,7 +171,8 @@ a complete DNS-leak prevention or destination firewall guarantee.
 
 ## Mapping persistence and lifecycle
 
-Pools are `198.18.0.0/15` and `fd00:198:18::/96`, with up to 4096 domain mappings.
+Pools are `198.18.0.0/15` and `fd00:198:18::/96`, with a default of 4096 domain mappings. `tun.dns.maxEntries` can explicitly raise
+the limit up to 65536 without renumbering existing mappings.
 Existing non-default routes overlapping these pools are rejected. Real networks
 using these addresses are incompatible with this mode.
 
@@ -167,7 +180,9 @@ Mappings are persisted before DNS replies, using atomic replacement, file and
 Unix directory synchronization, 0600 permissions and an exclusive sidecar lock.
 A/AAAA share a domain identity. The file contains domain history and must remain
 private. IDs are never reused or silently evicted; a full cache returns SERVFAIL
-for new domains. Corrupt/unsupported caches fail startup, rather than reset.
+for new domains. At 90%, runtime and doctor warn about capacity. See
+[capacity, persistence and maintenance](fake-ip-capacity.md) for structured counts,
+expansion, I/O behavior and recovery after persistence errors. Corrupt/unsupported caches fail startup, rather than reset.
 Only one live client may own a cache. Graceful client shutdown releases ownership.
 
 Do not delete/reset a cache while applications retain synthetic addresses. Stop

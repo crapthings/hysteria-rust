@@ -40,10 +40,12 @@ because they contain rendezvous tokens. `list` displays sorted names. Both suppo
 
 Each profile has independent configuration. Edit the file shown by `profile show`
 to change its local proxy port, routing rules or other settings, then run
-`check client --profile NAME`. Relative paths still resolve from the invocation's
-working directory, just as with `-c`; use absolute paths for portable certificates
-and rule files. Running multiple default profiles simultaneously will conflict on
-port 1080 unless you edit their listeners.
+`check client --profile NAME`. Relative `routing.ruleSets.*.file` paths resolve
+from the saved profile's directory, just as they resolve from the configuration
+directory with `-c`. Other paths, including certificates and the Fake-IP cache,
+retain invocation working-directory semantics; use absolute paths for portability.
+See [local rule sets](client-routing.md#local-rule-sets). Running multiple default
+profiles simultaneously will conflict on port 1080 unless you edit their listeners.
 
 ## Selection and replacement
 

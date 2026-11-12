@@ -59,7 +59,7 @@ pub(crate) enum Command {
     #[command(
         long_about = "Run the local Hysteria 2 proxy client in the foreground.
 
-Reads YAML/JSON configuration (default: config.yaml). Configure a server, authentication and at least one local proxy/forwarding mode. Relative file paths use the working directory.",
+Reads YAML/JSON configuration (default: config.yaml). Configure a server, authentication and at least one local proxy/forwarding mode. Rule-set paths use the configuration file directory; other relative paths use the working directory.",
         after_help = "Setup:
   hysteria guide client -c client.yaml       Guided setup / link import
   hysteria profile import --name jp1         Save a sharing link from stdin/prompt
@@ -79,6 +79,8 @@ Check and diagnose:
   hysteria route lint --profile jp1           Review rule order
   hysteria route explain example.com:443 --trace -c client.yaml
                                              Explain routing without DNS
+  hysteria doctor client --dns example.com -c client.yaml
+                                             Verify active Fake-IP DNS capture
   hysteria doctor client --connect -c client.yaml
                                              Test server authentication
   hysteria ping example.com:443 -c client.yaml
@@ -92,8 +94,9 @@ Advanced input:
   hysteria client --events json              Lifecycle events on stdout (NDJSON)
   hysteria client --config -                 Read configuration from stdin
 
-Stop with Ctrl+C or Unix SIGTERM. Relative paths use the working directory.
-Connection diagnosis requires --connect; throughput tests transfer traffic.
+Stop with Ctrl+C or Unix SIGTERM.
+Server diagnosis requires --connect; --dns probes existing TUN DNS. Both may send network traffic.
+A captured --dns probe can consume one persistent Fake-IP entry; throughput tests transfer traffic.
 Proxy, TLS, authentication and routing settings belong in the configuration file."
     )]
     #[command(display_order = 40)]
@@ -221,6 +224,9 @@ Realm setup is offline and never enables router port mapping."
     /// Generate private ECH keys and public client configuration offline.
     #[command(display_order = 120)]
     Ech(crate::ech_cli::EchOptions),
+    /// Internal bounded resolver worker; not a public command contract.
+    #[command(name = "__dns-lookup", hide = true)]
+    DnsLookup { name: String },
     /// Generate a self-signed certificate and key.
     #[command(display_order = 110)]
     Cert {

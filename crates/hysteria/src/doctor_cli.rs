@@ -21,6 +21,10 @@ pub(crate) struct DoctorOptions {
     /// Attempt an authenticated server connection (client only; no proxy listeners).
     #[arg(long)]
     connect: bool,
+    /// Resolve a fresh subdomain through system DNS and verify the active Linux Fake-IP cache.
+    /// May consume one cache entry; does not start TUN or change DNS/routes.
+    #[arg(long, value_name = "DOMAIN", conflicts_with_all = ["connect", "tcp", "udp_echo"], value_parser = probe_domain)]
+    dns: Option<String>,
     /// Shared network deadline, 1s to 60s, including optional forwarding probes.
     #[arg(long, default_value = "10s", value_parser = probe_timeout)]
     timeout: std::time::Duration,
@@ -40,13 +44,24 @@ impl DoctorOptions {
         matches!(self.mode, Mode::Client)
     }
     pub(crate) async fn run(&self, path: &Path) -> Result<ExitCode> {
-        if self.connect && matches!(self.mode, Mode::Server) {
+        if (self.connect || self.dns.is_some()) && matches!(self.mode, Mode::Server) {
             return Err(CliError::new(
-                "--connect is supported only by doctor client",
+                "--connect and --dns are supported only by doctor client",
             ));
         }
         let report = match self.mode {
             Mode::Server => hysteria_cli::doctor::server(path),
+            Mode::Client if self.dns.is_some() => {
+                let domain = self.dns.as_deref().unwrap_or_default();
+                hysteria_cli::doctor::dns::client(
+                    path,
+                    domain,
+                    self.timeout,
+                    &std::env::current_exe()?,
+                    crate::shutdown::signal()?,
+                )
+                .await
+            }
             Mode::Client => {
                 hysteria_cli::doctor::client_with_probes(
                     path,
@@ -99,7 +114,7 @@ impl DoctorOptions {
                 writeln!(
                     stdout,
                     "{} checks {}. Skipped checks remain unverified.",
-                    if self.connect {
+                    if self.connect || self.dns.is_some() {
                         "Diagnostic"
                     } else {
                         "Offline"
@@ -128,6 +143,7 @@ fn probe_timeout(value: &str) -> std::result::Result<std::time::Duration, String
 
 fn probe_target(value: &str) -> std::result::Result<String, String> {
     let config = hysteria_cli::routing::RoutingConfig {
+        rule_sets: std::collections::BTreeMap::new(),
         version: 1,
         default: hysteria_cli::routing::Action::Proxy,
         rules: vec![],
@@ -138,4 +154,14 @@ fn probe_target(value: &str) -> std::result::Result<String, String> {
             "expected a hostname/IP and nonzero port; bracket IPv6 addresses".to_owned()
         })?;
     Ok(value.to_owned())
+}
+
+fn probe_domain(value: &str) -> std::result::Result<String, String> {
+    hysteria_cli::doctor::dns::domain(value).map_err(|error| error.to_string())
+}
+
+pub(crate) fn dns_lookup_worker(name: &str) -> Result<()> {
+    let reply = hysteria_cli::doctor::dns::lookup_worker(name);
+    serde_json::to_writer(io::stdout().lock(), &reply)
+        .map_err(|_| CliError::new("could not write DNS worker reply"))
 }

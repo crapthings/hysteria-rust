@@ -1,0 +1,68 @@
+{
+  "date": "2026-11-12",
+  "platform": "macOS arm64",
+  "cpu": "Apple M1 Max",
+  "rustc": "1.91.1",
+  "profile": "test (unoptimized, debug assertions enabled)",
+  "baseline_commit": "5e1fb6abfcdc0346b81395ace44d48294906fcc9",
+  "candidate": "working tree: buffered atomic persistence and borrowed names snapshot",
+  "method": "one warm-up then 16 full-file durable replacements per size; temporary files; no DNS or forwarding traffic",
+  "limitations": [
+    "single baseline/candidate sequence; uncontrolled host background activity",
+    "not release-binary or end-to-end DNS latency",
+    "maximum sample of 16 reported as p95; limited sample size",
+    "baseline persistence function exercised beyond its runtime 4096-entry load limit"
+  ],
+  "before": [
+    {
+      "bytes_per_write": 125889,
+      "debug_assertions": true,
+      "entries": 4096,
+      "median_us": 45026,
+      "p95_us": 47961,
+      "writes": 16
+    },
+    {
+      "bytes_per_write": 513201,
+      "debug_assertions": true,
+      "entries": 16384,
+      "median_us": 121528,
+      "p95_us": 153856,
+      "writes": 16
+    },
+    {
+      "bytes_per_write": 2086065,
+      "debug_assertions": true,
+      "entries": 65536,
+      "median_us": 456179,
+      "p95_us": 460135,
+      "writes": 16
+    }
+  ],
+  "after": [
+    {
+      "bytes_per_write": 125889,
+      "debug_assertions": true,
+      "entries": 4096,
+      "median_us": 11992,
+      "p95_us": 13094,
+      "writes": 16
+    },
+    {
+      "bytes_per_write": 513201,
+      "debug_assertions": true,
+      "entries": 16384,
+      "median_us": 23067,
+      "p95_us": 24034,
+      "writes": 16
+    },
+    {
+      "bytes_per_write": 2086065,
+      "debug_assertions": true,
+      "entries": 65536,
+      "median_us": 66701,
+      "p95_us": 69052,
+      "writes": 16
+    }
+  ]
+}

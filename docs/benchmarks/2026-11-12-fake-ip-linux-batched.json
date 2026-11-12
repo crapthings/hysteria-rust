@@ -1,0 +1,212 @@
+{
+  "date": "2026-11-12",
+  "platform": "Linux aarch64 container on Docker Linux VM / Apple M1 Max host",
+  "kernel": "7.0.14-linuxkit",
+  "rustc": "1.91.1",
+  "profile": {
+    "name": "release",
+    "codegen_units": 1,
+    "lto": "thin",
+    "strip": "symbols",
+    "overrides": false
+  },
+  "test_binary_sha256": "d6041ad5df68df628e1abf08bfd0700704daedb0cd14a45437513c4322b12461",
+  "base_commit": "5e1fb6abfcdc0346b81395ace44d48294906fcc9",
+  "candidate": "uncommitted bounded Fake-IP group commit; subsequent lint-only branch/ref/cast cleanup",
+  "storage": "private temporary directories on a Docker named volume; statfs reports ext2/ext3 magic; not tmpfs",
+  "workload": {
+    "capacity": 65536,
+    "serial_new_domains": 64,
+    "burst_threads": 16,
+    "burst_new_domains_per_thread": 8,
+    "warm_queries": 2048,
+    "warm_target": "one repeated seeded domain",
+    "query_type": "A",
+    "driver": "direct calls to FakeDns::answer; no UDP/TCP DNS listener or network path"
+  },
+  "cpu_clock_ticks_per_second": 100,
+  "limits": [
+    "one run per case, not sustained operation or a service-level guarantee",
+    "latency excludes query construction, response verification, async task queue and all networking",
+    "CPU includes driver/validation and has 10 ms granularity",
+    "RSS is whole child-process high-water mark including seeding, loader and threads",
+    "logical_snapshot_bytes are successful snapshot file bytes; not physical device writes",
+    "warm measurements occur after the cold burst, not concurrently",
+    "EFBIG and directory EACCES are tested; ENOSPC, read-only mount, power loss and real post-rename sync failure are not"
+  ],
+  "cases": [
+    {
+      "burst": {
+        "driver_and_handler_cpu_ms": 20.0,
+        "final_cache_bytes": 141591,
+        "logical_snapshot_bytes": 1259271,
+        "name": "burst",
+        "p50_us": 2581.875,
+        "p95_us": 3280.916,
+        "p99_us": 3658.0,
+        "process_peak_rss_kib": 10716,
+        "queries": 128,
+        "snapshot_commits": 9,
+        "threads": 16,
+        "wall_ms": 24.131708000000003
+      },
+      "capacity": 65536,
+      "debug_assertions": false,
+      "final_entries": 4288,
+      "reopen_passed": true,
+      "seed_entries": 4096,
+      "serial": {
+        "driver_and_handler_cpu_ms": 10.0,
+        "final_cache_bytes": 137367,
+        "logical_snapshot_bytes": 8722944,
+        "name": "serial",
+        "p50_us": 2572.5840000000003,
+        "p95_us": 2927.875,
+        "p99_us": 11591.917,
+        "process_peak_rss_kib": 9540,
+        "queries": 64,
+        "snapshot_commits": 64,
+        "threads": 1,
+        "wall_ms": 175.781626
+      },
+      "warm": {
+        "driver_and_handler_cpu_ms": 10.0,
+        "final_cache_bytes": 141591,
+        "logical_snapshot_bytes": 0,
+        "name": "warm",
+        "p50_us": 1.166,
+        "p95_us": 1.208,
+        "p99_us": 1.209,
+        "process_peak_rss_kib": 10716,
+        "queries": 2048,
+        "snapshot_commits": 0,
+        "threads": 1,
+        "wall_ms": 5.016625
+      }
+    },
+    {
+      "burst": {
+        "driver_and_handler_cpu_ms": 20.0,
+        "final_cache_bytes": 547095,
+        "logical_snapshot_bytes": 4361976,
+        "name": "burst",
+        "p50_us": 3237.3329999999996,
+        "p95_us": 4705.834,
+        "p99_us": 4927.542,
+        "process_peak_rss_kib": 12640,
+        "queries": 128,
+        "snapshot_commits": 8,
+        "threads": 16,
+        "wall_ms": 28.042
+      },
+      "capacity": 65536,
+      "debug_assertions": false,
+      "final_entries": 16576,
+      "reopen_passed": true,
+      "seed_entries": 16384,
+      "serial": {
+        "driver_and_handler_cpu_ms": 30.0,
+        "final_cache_bytes": 542871,
+        "logical_snapshot_bytes": 34675200,
+        "name": "serial",
+        "p50_us": 3207.375,
+        "p95_us": 3937.2920000000004,
+        "p99_us": 4487.0830000000005,
+        "process_peak_rss_kib": 11596,
+        "queries": 64,
+        "snapshot_commits": 64,
+        "threads": 1,
+        "wall_ms": 208.820542
+      },
+      "warm": {
+        "driver_and_handler_cpu_ms": 10.0,
+        "final_cache_bytes": 547095,
+        "logical_snapshot_bytes": 0,
+        "name": "warm",
+        "p50_us": 1.125,
+        "p95_us": 1.167,
+        "p99_us": 1.375,
+        "process_peak_rss_kib": 12640,
+        "queries": 2048,
+        "snapshot_commits": 0,
+        "threads": 1,
+        "wall_ms": 4.9195
+      }
+    },
+    {
+      "burst": {
+        "driver_and_handler_cpu_ms": 30.0,
+        "final_cache_bytes": 2118423,
+        "logical_snapshot_bytes": 16932600,
+        "name": "burst",
+        "p50_us": 6027.292,
+        "p95_us": 8785.25,
+        "p99_us": 9177.625,
+        "process_peak_rss_kib": 22872,
+        "queries": 128,
+        "snapshot_commits": 8,
+        "threads": 16,
+        "wall_ms": 52.766209
+      },
+      "capacity": 65536,
+      "debug_assertions": false,
+      "final_entries": 64192,
+      "reopen_passed": true,
+      "seed_entries": 64000,
+      "serial": {
+        "driver_and_handler_cpu_ms": 120.0,
+        "final_cache_bytes": 2114199,
+        "logical_snapshot_bytes": 135240192,
+        "name": "serial",
+        "p50_us": 5802.542,
+        "p95_us": 8399.583,
+        "p99_us": 15660.459,
+        "process_peak_rss_kib": 21956,
+        "queries": 64,
+        "snapshot_commits": 64,
+        "threads": 1,
+        "wall_ms": 400.295709
+      },
+      "warm": {
+        "driver_and_handler_cpu_ms": 10.0,
+        "final_cache_bytes": 2118423,
+        "logical_snapshot_bytes": 0,
+        "name": "warm",
+        "p50_us": 1.166,
+        "p95_us": 1.167,
+        "p99_us": 1.209,
+        "process_peak_rss_kib": 22872,
+        "queries": 2048,
+        "snapshot_commits": 0,
+        "threads": 1,
+        "wall_ms": 4.948
+      }
+    }
+  ],
+  "storage_recovery": [
+    {
+      "known_mapping_available": true,
+      "mode": "file-size-limit",
+      "new_allocation_stopped_until_restart": true,
+      "old_file_unchanged": true,
+      "restart_preserves_ids": true
+    },
+    {
+      "known_mapping_available": true,
+      "mode": "permission-denied",
+      "new_allocation_stopped_until_restart": true,
+      "old_file_unchanged": true,
+      "restart_preserves_ids": true
+    }
+  ],
+  "batching": {
+    "max_pending_names": 128,
+    "max_batch_names": 64,
+    "collection_window_ms": 1
+  },
+  "comparison_notes": [
+    "Same bounded workload and release profile as prior run; single run per cohort, no controlled production load.",
+    "New test-only counters measure successful snapshot commits and bytes, adding a metadata syscall per commit. Baseline bytes were calculated from per-query snapshot lengths.",
+    "Not physical disk writes or end-to-end network DNS latency."
+  ]
+}
