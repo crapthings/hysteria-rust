@@ -442,8 +442,12 @@ impl Brutal {
     }
 
     fn target_window(&self) -> u64 {
+        // Quinn reserves a full datagram and blocks at >= cwnd. A one-MTU
+        // floor can therefore stall even with no bytes in flight. Keep the
+        // two-datagram minimum recommended by RFC 9002 section 7.2.
+        let minimum_window = self.mtu.saturating_mul(2);
         if self.smoothed_rtt.is_zero() {
-            return INITIAL_WINDOW;
+            return INITIAL_WINDOW.max(minimum_window);
         }
         let numerator = u128::from(self.control.bandwidth.load(Ordering::Acquire))
             .saturating_mul(self.smoothed_rtt.as_nanos())
@@ -453,7 +457,7 @@ impl Brutal {
             1_000_000_000_u128.saturating_mul(u128::from(self.ack_rate_numerator.max(1)));
         u64::try_from(numerator / denominator)
             .unwrap_or(u64::MAX)
-            .max(self.mtu)
+            .max(minimum_window)
     }
 }
 
@@ -579,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn brutal_counts_lost_packets_and_uses_one_datagram_minimum() {
+    fn brutal_counts_lost_packets_and_keeps_room_for_datagrams() {
         let origin = Instant::now();
         let control = Arc::new(BrutalControl {
             enabled: AtomicBool::new(true),
@@ -588,7 +592,13 @@ mod tests {
         });
         let mut brutal = Brutal::new(control, origin, 1200);
         brutal.smoothed_rtt = Duration::from_nanos(1);
-        assert_eq!(brutal.window(), 1200);
+        assert_eq!(brutal.window(), 2400);
+        brutal.on_mtu_update(1452);
+        assert_eq!(brutal.window(), 2904);
+        // The pre-RTT window must also allow progress after a larger MTU update.
+        brutal.smoothed_rtt = Duration::ZERO;
+        brutal.on_mtu_update(9000);
+        assert_eq!(brutal.window(), 18_000);
         brutal.on_congestion_event(
             origin + Duration::from_secs(1),
             origin,

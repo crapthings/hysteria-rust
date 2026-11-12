@@ -1384,24 +1384,34 @@ mod tests {
         assert_eq!(input, b"world");
 
         let server_connection = server_stream.await.unwrap();
-        client
-            .quinn()
-            .send_datagram(Bytes::from_static(b"ping"))
-            .unwrap();
-        assert_eq!(
-            server_connection.quinn().read_datagram().await.unwrap(),
-            Bytes::from_static(b"ping")
-        );
-        server_connection
-            .quinn()
-            .send_datagram(Bytes::from_static(b"pong"))
-            .unwrap();
-        assert_eq!(
-            client.quinn().read_datagram().await.unwrap(),
-            Bytes::from_static(b"pong")
-        );
+        assert_minimum_window_datagrams(&client, &server_connection).await;
         client.close(b"done");
         client_endpoint.wait_idle().await;
+    }
+
+    async fn assert_minimum_window_datagrams(
+        client: &AuthenticatedConnection,
+        server: &AuthenticatedConnection,
+    ) {
+        // Exercise the floor after TCP has supplied RTT samples. A one-MTU
+        // window can block Quinn's next datagram indefinitely on a fast path.
+        crate::set_brutal_bandwidth(client.quinn(), 1).unwrap();
+        crate::set_brutal_bandwidth(server.quinn(), 1).unwrap();
+        for (sender, receiver, payload) in [
+            (client, server, b"ping".as_slice()),
+            (server, client, b"pong".as_slice()),
+        ] {
+            let payload = Bytes::from_static(payload);
+            sender.quinn().send_datagram(payload.clone()).unwrap();
+            let received = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                receiver.quinn().read_datagram(),
+            )
+            .await
+            .expect("datagram stalled at the minimum congestion window")
+            .unwrap();
+            assert_eq!(received, payload);
+        }
     }
 
     #[tokio::test]
