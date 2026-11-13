@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Bounded loopback comparison; no host networking changes or external targets.
 
-Build all compared binaries with identical optimized compiler settings first.
+For implementation comparisons use identical optimized compiler settings.
+Different build profiles can also be compared explicitly.
 This Python-driven smoke benchmark is not a line-rate or Internet performance test.
 """
 import argparse
@@ -44,6 +45,7 @@ class Echo:
 
     def stream(self, conn):
         with conn:
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             conn.settimeout(0.1)
             while not self.stopped.is_set():
                 try:
@@ -177,7 +179,7 @@ def first_flight(port, payload):
     return {"samples_ms": samples, "p50_ms": statistics.median(samples)}
 
 
-def measure(binary, sniff, seconds, fixture, fast_open=False):
+def measure(binary, sniff, seconds, fixture, fast_open=False, server_binary=None, client_binary=None):
     tcp = Echo(socket.SOCK_STREAM)
     udp = Echo(socket.SOCK_DGRAM)
     processes = []
@@ -205,7 +207,8 @@ def measure(binary, sniff, seconds, fixture, fast_open=False):
                 config_path.write_text(json.dumps(config))
                 log = root / f"{role}.log"
                 with log.open("wb") as output:
-                    child = subprocess.Popen([binary, role, "--disable-update-check", "-c", str(config_path)],
+                    executable = (server_binary if role == "server" else client_binary) or binary
+                    child = subprocess.Popen([executable, role, "--disable-update-check", "-c", str(config_path)],
                                              stdin=subprocess.DEVNULL, stdout=output, stderr=output)
                 processes.append((role, child))
                 ready(log, marker)
@@ -231,7 +234,10 @@ def measure(binary, sniff, seconds, fixture, fast_open=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", action="append", required=True, help="label=/absolute/path")
+    parser.add_argument("--client-binary", help="Fixed client executable for comparing only server builds")
+    parser.add_argument("--server-binary", help="Fixed server executable for comparing only client builds")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--sniff", choices=("both", "off", "on"), default="both")
     parser.add_argument("--seconds", type=float, default=2)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--fast-open", action="store_true", help="Enable client fastOpen for an explicit comparison")
@@ -241,15 +247,17 @@ def main():
     if not hasattr(os, "wait4"):
         parser.error("resource measurement currently requires Unix wait4")
     binaries = [(label, str(Path(path).resolve())) for label, path in (value.split("=", 1) for value in args.binary)]
+    client_binary = str(Path(args.client_binary).resolve()) if args.client_binary else None
+    server_binary = str(Path(args.server_binary).resolve()) if args.server_binary else None
     fixture = (Path(__file__).resolve().parents[1] / "crates/hysteria/tests/fixtures/quic-sniff/quic-chrome153-0.bin").read_bytes()
-    report = {"platform": platform.platform(), "seconds_per_workload": args.seconds, "fast_open": args.fast_open,
+    report = {"platform": platform.platform(), "seconds_per_workload": args.seconds, "fast_open": args.fast_open, "fixed_server_binary": server_binary, "fixed_client_binary": client_binary,
               "method": "single outstanding echo request; not maximum throughput; resource usage includes process startup and all workloads",
               "runs": []}
     for repeat in range(args.repeats):
-        for sniff in (False, True):
+        for sniff in ((False, True) if args.sniff == "both" else (args.sniff == "on",)):
             for label, binary in (binaries if repeat % 2 == 0 else reversed(binaries)):
                 print(f"{label}: repeat={repeat + 1} sniff={sniff}", flush=True)
-                report["runs"].append({"label": label, "repeat": repeat + 1, **measure(binary, sniff, args.seconds, fixture, args.fast_open)})
+                report["runs"].append({"label": label, "repeat": repeat + 1, **measure(binary, sniff, args.seconds, fixture, args.fast_open, server_binary, client_binary)})
                 Path(args.output).write_text(json.dumps(report, indent=2) + "\n")
 
 

@@ -20,6 +20,8 @@ pub(crate) async fn serve(config: HttpProxyConfig, client: Arc<ClientHandle>) ->
     client.local_ready("http");
     loop {
         let (stream, _) = listener.accept().await?;
+        // Proxy replies and payload must not wait for a delayed ACK of an earlier small write.
+        stream.set_nodelay(true)?;
         let config = config.clone();
         let client = Arc::clone(&client);
         tokio::spawn(async move {
@@ -67,7 +69,11 @@ async fn handle_connect(
 ) -> Result<()> {
     let target = normalize_authority(&request.target, 80)?;
     let mut tunnel = match client
-        .tcp_named(&target, crate::client_connections::TcpInbound::HttpConnect)
+        .tcp_local(
+            &target,
+            crate::client_connections::TcpInbound::HttpConnect,
+            &stream,
+        )
         .await
     {
         Ok(tunnel) => tunnel,
@@ -93,9 +99,10 @@ async fn handle_plain_http(
 ) -> Result<()> {
     let (target, origin_form) = parse_absolute_http_target(&request.target)?;
     let mut tunnel = match client
-        .tcp_named(
+        .tcp_local(
             &target,
             crate::client_connections::TcpInbound::HttpForwarding,
+            &stream,
         )
         .await
     {

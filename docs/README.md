@@ -20,6 +20,9 @@ and require a development build; see [validation status](validation.md).
 - [Connection recovery](client-recovery.md)
 - [Routing and local rule sets](client-routing.md)
 - [Linux routed TUN](client-tun-routing.md)
+- [macOS protected egress and limits (development)](client-macos-egress.md)
+- [macOS route receipts and recovery (development)](client-route-journal.md)
+- [Managed native TUN sessions (development)](client-tun-session.md)
 - [DNS capture diagnosis](client-dns-diagnosis.md)
 - [Fake-IP capacity and persistence](fake-ip-capacity.md)
 
@@ -27,7 +30,6 @@ and require a development build; see [validation status](validation.md).
 
 - [Compatibility](../PORT_STATUS.md)
 - [Validation status](validation.md)
-- [Roadmap](cli-roadmap.md)
 - [QUIC sniffing](quic-sniffing.md)
 - [Experimental Chrome QUIC profile](chrome-quic-port.md)
 - [Contributing](../CONTRIBUTING.md)

@@ -25,3 +25,7 @@ which documents the licenses and provenance of its generated datasets.
 
 Dependencies resolved from crates.io are recorded exactly in `Cargo.lock` and
 retain the licenses declared by their upstream packages.
+
+The macOS local TCP process adapter uses crates.io `netstat2` 0.11.2 and
+`libproc` 0.14.11 through their safe APIs. They are pinned in the macOS target
+dependencies; exact transitive versions and package checksums are in `Cargo.lock`.

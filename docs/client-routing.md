@@ -269,7 +269,7 @@ Happy Eyeballs implementation for UDP. A `proxy` request retains its target name
 for the existing Hysteria remote forwarding path.
 
 Rules see the destination actually supplied by the inbound. They do not recover
-an unknown domain from an IP, inspect TLS to discover names, identify a process,
+an unknown domain from an IP, inspect TLS to discover names, identify a process outside the opt-in macOS local TCP adapter,
 or prevent all alternate names/IPs from reaching the same endpoint. Do not treat
 these input-based rules as a complete destination-IP firewall.
 
@@ -318,7 +318,7 @@ create devices or check privileges. It reports:
 - `configuration_check`, `route_explain`, `route_trace`, `route_lint` and `routing_templates`;
 - supported routing version/actions/matchers/protocols/inbounds, including `set`;
 - `routing.local_rule_sets: true` and `routing.remote_rule_sets: false`;
-- explicit false values for process/GeoIP/GeoSite capabilities, with live routing
+- platform-specific process capabilities and explicit false GeoIP/GeoSite capabilities, with live routing
   replacement advertised separately;
 - whether TUN is compiled in, separately from platform-dependent `routing_supported` / `fake_dns` and
   `permission_check: "not_performed"`;
@@ -385,7 +385,7 @@ normal error reporter; consumers must handle that separately. Both `check` and
 | --- | --- |
 | Rust routing core | Validate/compile rules, explain decisions, select/execute outbounds |
 | GUI | Edit profiles/rules, display capabilities/results, launch/reap the core |
-| Platform adapter | Protected Linux TUN today; future process attribution and other-platform protection |
+| Platform adapter | Protected Linux TUN today; macOS loopback TCP process attribution; future other-platform protection |
 | Privileged service/helper | Future restricted interface/route/DNS operations and recovery |
 
 Offline inspection does not change system networking. Starting TUN creates its
@@ -426,3 +426,34 @@ the real Linux CLI, forwarding, profile-relative files, outage recovery and expl
 restart. [Isolated TUN/resolved acceptance](https://github.com/crapthings/hysteria-rust/blob/v0.1.0-rc.7/docs/linux-dns-probe-jp1-2026-11-12.md) covers
 DNS capture and dual-stack forwarding. Whole-host resolver combinations, real
 network handover and sustained UDP pressure still need operational testing.
+
+## macOS local TCP process rules (unreleased)
+
+`direct(process-name:Browser)` and
+`reject(process-path:/Applications/Browser.app/Contents/MacOS/Browser, tcp/443)`
+match the exact, case-sensitive executable basename or absolute executable path.
+No wildcard, bundle-directory prefix, signature or bundle-ID matching is implied.
+Process rules default to TCP; UDP and wildcard protocol filters are rejected.
+UDP traffic continues through ordinary rules and the default outbound.
+
+This opt-in adapter requires numeric loopback HTTP/SOCKS listeners on macOS and
+rejects configurations with TUN, forwarding or transparent inbounds. Live updates
+apply the same runtime restriction. It obtains ownership from the local socket's
+exact four-tuple, rechecks ownership and process birth time, and never accepts a
+client-provided PID. When any process rule is configured, TCP requests with
+missing/ambiguous attribution are rejected, including remote clients, permission
+failures, scan overload and timeouts. Offline explain/trace without process context
+also errors for TCP instead of claiming a default decision.
+
+Attribution is best-effort, not a security boundary: helpers and shared sockets may
+not identify the application the user expects. There is no attribution cache. OS
+scans run off the async executor, with at most two workers and a 500 ms request
+budget; timed-out workers retain their slots until finished. This adds connection
+setup work only when process rules are present; the data relay is unchanged.
+TUN and UDP process attribution are not implemented. Opt-in connection tracking
+includes `process: {pid, name, path}` when attribution succeeded; these paths may be
+private and are kept in memory, not automatically logged.
+
+For macOS socket-binding progress and the remaining dual-capture requirements, see
+[macOS egress groundwork](client-macos-egress.md). Interface binding alone does not
+enable macOS TUN routing.

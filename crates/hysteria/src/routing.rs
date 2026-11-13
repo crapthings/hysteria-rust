@@ -61,7 +61,14 @@ impl Default for RoutingConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProcessMatcher {
+    Name(String),
+    Path(String),
+}
+
 struct Rule {
+    process: Option<ProcessMatcher>,
     action: Action,
     matchers: Arc<[HostMatcher]>,
     set: Option<Arc<LoadedSet>>,
@@ -104,7 +111,40 @@ impl Rule {
 
     fn compile(text: &str, line: usize, config: &RoutingConfig) -> Result<Self> {
         let parsed = ParsedRule::parse(text)?;
-        let (protocol, first, last) = parse_proto_port(parsed.filter, line)?;
+        let (mut protocol, first, last) = parse_proto_port(parsed.filter, line)?;
+        let process = if let Some(name) = parsed.matcher.strip_prefix("process-name:") {
+            if name.is_empty()
+                || name.contains('/')
+                || name.contains(['*', '?'])
+                || name.chars().any(char::is_control)
+            {
+                return Err(CliError::new(
+                    "process-name requires an exact executable basename",
+                ));
+            }
+            Some(ProcessMatcher::Name(name.into()))
+        } else if let Some(path) = parsed.matcher.strip_prefix("process-path:") {
+            if !path.starts_with('/')
+                || path.ends_with('/')
+                || path.contains(['*', '?'])
+                || path.chars().any(char::is_control)
+            {
+                return Err(CliError::new(
+                    "process-path requires an exact absolute executable path",
+                ));
+            }
+            Some(ProcessMatcher::Path(path.into()))
+        } else {
+            None
+        };
+        if process.is_some() {
+            if parsed.filter.is_empty() {
+                protocol = AclProtocol::Tcp;
+            }
+            if protocol != AclProtocol::Tcp {
+                return Err(CliError::new("process rules support only TCP"));
+            }
+        }
         if first == 0
             && parsed
                 .filter
@@ -113,7 +153,9 @@ impl Rule {
         {
             return Err(CliError::new("routing ports must be between 1 and 65535"));
         }
-        let (matchers, set) = if let Some(name) = parsed.matcher.strip_prefix("set:") {
+        let (matchers, set) = if process.is_some() {
+            (vec![HostMatcher::All].into(), None)
+        } else if let Some(name) = parsed.matcher.strip_prefix("set:") {
             let set = config
                 .rule_sets
                 .get(name)
@@ -124,6 +166,7 @@ impl Rule {
             (compile_matchers(parsed.matcher, line)?.into(), None)
         };
         Ok(Self {
+            process,
             action: parsed.action,
             protocol,
             first,
@@ -266,6 +309,29 @@ impl Router {
     /// # Errors
     /// Rejects destinations without a valid host and nonzero port.
     pub fn decide(&self, address: &str, protocol: Protocol) -> Result<Decision> {
+        self.decide_with_process(address, protocol, None)
+    }
+
+    /// Whether TCP routing needs trusted local process context.
+    #[must_use]
+    pub fn requires_process(&self, protocol: Protocol) -> bool {
+        matches!(protocol, Protocol::Tcp) && self.rules.iter().any(|rule| rule.process.is_some())
+    }
+
+    /// Evaluate with an OS-attributed process; missing context never silently bypasses process rules.
+    /// # Errors
+    /// Rejects missing required process identity or invalid destination syntax.
+    pub fn decide_with_process(
+        &self,
+        address: &str,
+        protocol: Protocol,
+        process: Option<&crate::client_process::ProcessIdentity>,
+    ) -> Result<Decision> {
+        if self.requires_process(protocol) && process.is_none() {
+            return Err(CliError::new(
+                "process attribution is unavailable for this TCP request",
+            ));
+        }
         let (host, port) = parse_host_port(address)
             .map_err(|_| CliError::new("destination must be host:port or [IPv6]:port"))?;
         if port == 0 {
@@ -278,11 +344,14 @@ impl Router {
             Protocol::Tcp => AclProtocol::Tcp,
             Protocol::Udp => AclProtocol::Udp,
         };
-        let found = self
-            .rules
-            .iter()
-            .enumerate()
-            .find(|(_, rule)| rule.mismatch(&host, ips, protocol_match, port).is_none());
+        let found = self.rules.iter().enumerate().find(|(_, rule)| {
+            rule.mismatch(&host, ips, protocol_match, port).is_none()
+                && match &rule.process {
+                    None => true,
+                    Some(ProcessMatcher::Name(name)) => process.is_some_and(|p| p.name == *name),
+                    Some(ProcessMatcher::Path(path)) => process.is_some_and(|p| p.path == *path),
+                }
+        });
         // Match using the same Unicode normalization as server ACL matchers,
         // but dial an ASCII IDNA name so system resolvers receive a portable host.
         let host = if ips.is_empty() {
@@ -374,7 +443,7 @@ fn normalize_matcher(value: &str) -> Result<String> {
     }
     if value.contains(':') || value.contains('*') {
         return Err(CliError::new(
-            "unsupported routing matcher; v1 supports domains, suffix:, IP/CIDR, lan, loopback and all; process/GeoIP/GeoSite/wildcards are not available yet",
+            "unsupported routing matcher; v1 supports domains, suffix:, IP/CIDR, lan, loopback and all; exact process-name:/process-path: are TCP-only; GeoIP/GeoSite/wildcards are not available",
         ));
     }
     normalize_host(value)
@@ -439,6 +508,54 @@ mod tests {
                 .unwrap()
                 .dns_performed
         );
+    }
+    #[test]
+    fn process_rules_are_exact_ordered_tcp_only_and_require_identity() {
+        let identity = crate::client_process::ProcessIdentity {
+            pid: 42,
+            name: "Browser".into(),
+            path: "/Applications/Browser".into(),
+        };
+        let r = router(&[
+            "reject(process-name:Other)",
+            "direct(process-path:/Applications/Browser, tcp/443)",
+            "reject(process-name:Browser)",
+        ]);
+        assert!(r.decide("example.com:443", Protocol::Tcp).is_err());
+        assert_eq!(
+            r.decide_with_process("example.com:443", Protocol::Tcp, Some(&identity))
+                .unwrap()
+                .outbound,
+            Action::Direct
+        );
+        assert_eq!(
+            r.decide_with_process("example.com:80", Protocol::Tcp, Some(&identity))
+                .unwrap()
+                .outbound,
+            Action::Reject
+        );
+        assert_eq!(
+            r.decide("example.com:443", Protocol::Udp).unwrap().outbound,
+            Action::Proxy
+        );
+        for text in [
+            "direct(process-name:Bro*)",
+            "direct(process-name:/Browser)",
+            "direct(process-path:Browser)",
+            "direct(process-path:/Applications/)",
+            "direct(process-name:Browser,udp)",
+        ] {
+            assert!(
+                Router::compile(&RoutingConfig {
+                    version: 1,
+                    default: Action::Proxy,
+                    rules: vec![text.into()],
+                    rule_sets: BTreeMap::new()
+                })
+                .is_err(),
+                "{text}"
+            );
+        }
     }
     #[test]
     fn malformed_rules_report_their_location_and_never_expand_empty_filters() {

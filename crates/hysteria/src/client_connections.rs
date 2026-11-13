@@ -38,6 +38,8 @@ pub enum TcpState {
 pub struct TcpConnection {
     pub id: String,
     pub inbound: TcpInbound,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process: Option<crate::client_process::ProcessIdentity>,
     pub target: String,
     pub outbound: Action,
     pub routing_revision: Option<u64>,
@@ -193,11 +195,21 @@ impl Connections {
             socket.close();
         }
     }
+    #[cfg(test)]
     pub(crate) fn register(
         self: &Arc<Self>,
         inbound: TcpInbound,
         target: &str,
         selection: &crate::client_routing::RouteSelection,
+    ) -> Option<Registration> {
+        self.register_with_process(inbound, target, selection, None)
+    }
+    pub(crate) fn register_with_process(
+        self: &Arc<Self>,
+        inbound: TcpInbound,
+        target: &str,
+        selection: &crate::client_routing::RouteSelection,
+        process: Option<crate::client_process::ProcessIdentity>,
     ) -> Option<Registration> {
         let mut s = self
             .state
@@ -220,6 +232,7 @@ impl Connections {
                 info: TcpConnection {
                     id: self.id(key),
                     inbound,
+                    process,
                     target: target.into(),
                     outbound: selection.decision.outbound,
                     routing_revision: selection.revision,

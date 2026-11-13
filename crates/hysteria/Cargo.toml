@@ -79,3 +79,8 @@ wfp.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { workspace = true, features = ["user"] }
+netstat2 = "=0.11.2"
+libproc = "=0.14.11"

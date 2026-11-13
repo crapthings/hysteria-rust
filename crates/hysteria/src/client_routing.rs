@@ -22,6 +22,9 @@ pub struct PreparedRouting {
     warnings: Vec<ShadowWarning>,
 }
 impl PreparedRouting {
+    pub(crate) fn requires_process(&self) -> bool {
+        self.router.requires_process(Protocol::Tcp)
+    }
     /// Load files and compile off the async executor. A relative rule-set path
     /// requires an explicit absolute base directory; None permits absolute files only.
     /// # Errors
@@ -56,6 +59,7 @@ impl PreparedRouting {
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum RoutingUpdateError {
     NotRunning,
+    UnsupportedProcessRouting,
     RoutingDisabled,
     RevisionConflict { expected: u64, actual: u64 },
     RevisionExhausted,
@@ -189,15 +193,30 @@ impl LiveRouting {
             .current
             .clone()
     }
+    #[cfg(test)]
     pub(crate) fn decide(
         &self,
         address: &str,
         protocol: Protocol,
     ) -> Result<Option<RouteSelection>> {
+        self.decide_with_process(address, protocol, None)
+    }
+    pub(crate) fn requires_process(&self) -> bool {
+        self.current()
+            .is_some_and(|r| r.router.requires_process(Protocol::Tcp))
+    }
+    pub(crate) fn decide_with_process(
+        &self,
+        address: &str,
+        protocol: Protocol,
+        process: Option<&crate::client_process::ProcessIdentity>,
+    ) -> Result<Option<RouteSelection>> {
         let Some(revision) = self.current() else {
             return Ok(None);
         };
-        let decision = revision.router.decide(address, protocol)?;
+        let decision = revision
+            .router
+            .decide_with_process(address, protocol, process)?;
         let counter = decision
             .matched_rule
             .and_then(|i| revision.counters.rules.get(i - 1))

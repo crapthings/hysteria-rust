@@ -1330,8 +1330,28 @@ fn gui_capabilities_and_route_explanation_are_versioned_and_offline() {
     assert!(output.status.success());
     let caps: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(caps["schema_version"], 1);
-    assert_eq!(caps["routing"]["process_matching"], false);
+    assert_eq!(
+        caps["routing"]["process_matching"],
+        cfg!(target_os = "macos")
+    );
     assert_eq!(caps["tun"]["routing_supported"], cfg!(target_os = "linux"));
+    assert_eq!(caps["tun"]["route_journal"], cfg!(target_os = "macos"));
+    assert_eq!(caps["tun"]["session_tracking"], cfg!(target_os = "macos"));
+    assert_eq!(
+        caps["tun"]["parent_loss_shutdown"],
+        cfg!(target_os = "macos")
+    );
+    assert_eq!(caps["tun"]["route_recovery"], cfg!(target_os = "macos"));
+    assert_eq!(
+        caps["socket_options"]["bind_interface"],
+        cfg!(any(target_os = "linux", target_os = "macos"))
+    );
+    assert_eq!(caps["socket_options"]["fwmark"], cfg!(target_os = "linux"));
+    assert_eq!(caps["socket_options"]["protects_system_dns"], false);
+    assert_eq!(
+        caps["socket_options"]["interface_loss_stops_client"],
+        cfg!(target_os = "macos")
+    );
     assert_eq!(caps["control"]["persistent_ipc"], false);
     assert_eq!(caps["control"]["stdio"]["transport"], "stdio-ndjson");
     assert_eq!(caps["control"]["stdio"]["schema_version"], 1);
@@ -1426,4 +1446,30 @@ fn forwarding_diagnosis_requires_explicit_network_opt_in_and_valid_target() {
     ] {
         assert_eq!(execute(&arguments, b"").status.code(), Some(2));
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn route_recovery_inspection_never_creates_or_rewrites_a_journal() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().canonicalize().unwrap().join("routes.json");
+    let output = execute(
+        &["recover-tun-routes", "--journal", path.to_str().unwrap()],
+        b"",
+    );
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["journal_present"], false);
+    assert!(!path.exists());
+    assert!(!path.with_file_name("routes.json.lock").exists());
+    std::fs::write(&path, b"corrupt").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let output = execute(
+        &["recover-tun-routes", "--journal", path.to_str().unwrap()],
+        b"",
+    );
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), b"corrupt");
+    assert!(!path.with_file_name("routes.json.lock").exists());
 }

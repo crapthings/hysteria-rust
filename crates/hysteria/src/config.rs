@@ -520,6 +520,8 @@ pub struct TransparentUdpConfig {
 #[serde(deny_unknown_fields)]
 pub struct TunConfig {
     #[serde(default)]
+    pub session: Option<crate::tun_session::SessionConfig>,
+    #[serde(default)]
     pub egress: Option<crate::client_egress::EgressConfig>,
     #[serde(default)]
     pub dns: Option<crate::fake_dns::FakeDnsConfig>,
@@ -546,6 +548,8 @@ pub struct TunAddressConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TunRouteConfig {
+    #[serde(default)]
+    pub journal: Option<std::path::PathBuf>,
     #[serde(default)]
     pub strict: bool,
     #[serde(default)]
@@ -1103,7 +1107,14 @@ impl ClientConfig {
     pub fn validate(&self) -> Result<()> {
         self.validate_connection()?;
         if let Some(routing) = &self.routing {
-            crate::routing::Router::compile(routing)?;
+            let router = crate::routing::Router::compile(routing)?;
+            if router.requires_process(crate::routing::Protocol::Tcp)
+                && !self.supports_process_routing()
+            {
+                return Err(CliError::new(
+                    "process routing requires macOS numeric loopback HTTP/SOCKS listeners without TUN or forwarding",
+                ));
+            }
             if self.tcp_redirect.is_some() || self.tcp_tproxy.is_some() || self.udp_tproxy.is_some()
             {
                 return Err(CliError::new(
@@ -1155,9 +1166,33 @@ impl ClientConfig {
         Ok(())
     }
 
+    pub(crate) fn supports_process_routing(&self) -> bool {
+        let loopback = |address: &str| {
+            address
+                .parse::<std::net::SocketAddr>()
+                .is_ok_and(|a| a.ip().is_loopback())
+        };
+        cfg!(target_os = "macos")
+            && self.tun.is_none()
+            && self.tcp_forwarding.is_empty()
+            && self.udp_forwarding.is_empty()
+            && self.tcp_redirect.is_none()
+            && self.tcp_tproxy.is_none()
+            && self.udp_tproxy.is_none()
+            && (self.socks5.is_some() || self.http.is_some())
+            && self.socks5.as_ref().is_none_or(|s| loopback(&s.listen))
+            && self.http.as_ref().is_none_or(|s| loopback(&s.listen))
+    }
+
     fn validate_tun_routing(&self) -> Result<()> {
         if let Some(tun) = &self.tun {
             if self.routing.is_some() {
+                // Protected macOS sockets are tested independently; full route admission stays closed.
+                if !cfg!(target_os = "linux") {
+                    return Err(CliError::new(
+                        "protected TUN routing currently requires Linux",
+                    ));
+                }
                 let egress = tun
                     .egress
                     .as_ref()
@@ -1245,13 +1280,15 @@ impl ClientConfig {
                 "quic.sockopts.fdControlUnixSocket is only supported on Linux",
             ));
         }
-        if !cfg!(target_os = "linux")
-            && (!self.quic.sockopts.bind_interface.is_empty()
-                || self.quic.sockopts.firewall_mark.is_some())
+        if !cfg!(any(target_os = "linux", target_os = "macos"))
+            && !self.quic.sockopts.bind_interface.is_empty()
         {
             return Err(CliError::new(
-                "quic.sockopts.bindInterface and fwmark are only supported on Linux",
+                "quic.sockopts.bindInterface requires Linux or macOS",
             ));
+        }
+        if !cfg!(target_os = "linux") && self.quic.sockopts.firewall_mark.is_some() {
+            return Err(CliError::new("quic.sockopts.fwmark requires Linux"));
         }
         self.bandwidth.values()?;
         self.congestion
@@ -1349,6 +1386,27 @@ impl TunConfig {
     ///
     /// Returns an error for an empty device name or malformed address, prefix, or timeout.
     pub fn validate(&self) -> Result<()> {
+        if let Some(session) = &self.session {
+            session.validate()?;
+            if self
+                .route
+                .as_ref()
+                .and_then(|route| route.journal.as_ref())
+                .is_none()
+            {
+                return Err(CliError::new(
+                    "TUN session tracking requires a route journal",
+                ));
+            }
+        }
+        if let Some(path) = self.route.as_ref().and_then(|route| route.journal.as_ref())
+            && (!cfg!(target_os = "macos") || !path.is_absolute() || path.file_name().is_none())
+        {
+            return Err(CliError::new(
+                "tun.route.journal requires an absolute macOS journal path",
+            ));
+        }
+
         if let Some(dns) = &self.dns {
             dns.validate()?;
         }
@@ -1365,7 +1423,12 @@ impl TunConfig {
                     "{field} must include a prefix length"
                 )));
             }
-            parse_ip_prefix(&address, field, ipv4)?;
+            let (ip, prefix) = parse_ip_prefix(&address, field, ipv4)?;
+            if self.dns.is_some() && crate::fake_dns::overlaps_interface(ip, prefix) {
+                return Err(CliError::new(format!(
+                    "{field} overlaps a Fake-IP pool; use a separate interface subnet"
+                )));
+            }
         }
         if let Some(route) = &self.route {
             for (field, entries, ipv4) in [
@@ -1426,6 +1489,13 @@ impl TunConfig {
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 impl TunRouteConfig {
     pub(crate) fn parsed(&self) -> Result<ParsedTunRoutes> {
+        if let Some(path) = &self.journal
+            && (!cfg!(target_os = "macos") || !path.is_absolute() || path.file_name().is_none())
+        {
+            return Err(CliError::new(
+                "tun.route.journal requires an absolute macOS journal path",
+            ));
+        }
         let parse_all = |entries: &[String], field: &str, ipv4| {
             entries
                 .iter()
@@ -1793,6 +1863,60 @@ udpForwarding:
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_interface_binding_does_not_admit_marks_or_routed_tun() {
+        let mut config: ClientConfig = serde_json::from_value(serde_json::json!({
+            "server":"127.0.0.1:443","auth":"test","socks5":{"listen":"127.0.0.1:1080"},
+            "quic":{"sockopts":{"bindInterface":"lo0"}}
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        config.quic.sockopts.firewall_mark = Some(0);
+        assert!(config.validate().is_err());
+        let egress = crate::client_egress::EgressConfig {
+            interface: "en0".into(),
+            mark: 0,
+            resolver: "192.0.2.1:53".parse().unwrap(),
+        };
+        egress.validate("utun5").unwrap();
+        config.quic.sockopts.firewall_mark = None;
+        config.tun = Some(
+            serde_json::from_value(serde_json::json!({
+                "name":"utun5", "egress":{"interface":"en0","mark":0,"resolver":"192.0.2.1:53"},
+                "dns":{"cache":"/tmp/hy2ui-validation-only.json"},
+                "route":{"strict":true,"ipv4":["0.0.0.0/0"],"ipv6":["::/0"]}
+            }))
+            .unwrap(),
+        );
+        config.routing = Some(
+            serde_json::from_value(serde_json::json!({"version":1,"rules":["proxy(all)"]}))
+                .unwrap(),
+        );
+        assert!(
+            config
+                .validate_tun_routing()
+                .unwrap_err()
+                .to_string()
+                .contains("requires Linux")
+        );
+    }
+    #[test]
+    fn fake_dns_rejects_conflicting_interface_prefixes_before_startup() {
+        let mut tun: TunConfig = serde_json::from_value(serde_json::json!({
+            "name":"validation-only", "dns":{"cache":"/tmp/fake-dns-validation-only.json"},
+            "address":{"ipv4":"100.100.100.101/30","ipv6":"fd72:6832::1/126"}
+        }))
+        .unwrap();
+        tun.validate().unwrap();
+        tun.address.ipv4 = "198.18.0.1/30".into();
+        assert!(tun.validate().unwrap_err().to_string().contains("overlaps"));
+        tun.address.ipv4 = "100.100.100.101/30".into();
+        tun.address.ipv6 = "fd00:198:18::1/126".into();
+        assert!(tun.validate().unwrap_err().to_string().contains("overlaps"));
+        tun.dns = None;
+        tun.validate().unwrap();
+    }
     #[test]
     fn parses_linux_quic_socket_options() {
         let config: ClientConfig = serde_yaml_ng::from_str(

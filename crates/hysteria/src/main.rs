@@ -67,6 +67,7 @@ async fn run(mut cli: Cli) -> Result<ExitCode> {
         ));
     }
     let result = match cli.command.unwrap_or(Command::Client) {
+        Command::RecoverTunRoutes { journal, apply } => recover_tun_routes(&journal, apply),
         Command::DnsLookup { name } => doctor_cli::dns_lookup_worker(&name),
         Command::Check(options) => return options.run(&cli.config, cli.diagnostic),
         Command::Doctor(options) => return options.run(&cli.config).await,
@@ -142,6 +143,13 @@ async fn run(mut cli: Cli) -> Result<ExitCode> {
         }
     };
     result.map(|()| ExitCode::SUCCESS)
+}
+
+/// Keeps journal inspection and explicit recovery separate from client startup.
+fn recover_tun_routes(path: &std::path::Path, apply: bool) -> Result<()> {
+    let report = hysteria_cli::tun_recovery::recover(path, apply)?;
+    println!("{report}");
+    Ok(())
 }
 
 async fn run_client(

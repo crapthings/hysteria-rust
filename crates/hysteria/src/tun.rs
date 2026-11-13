@@ -25,10 +25,55 @@ mod platform {
     mod windows_policy;
 
     pub(super) async fn serve(config: TunConfig, client: Arc<ClientHandle>) -> Result<()> {
-        let (device, _routes) = setup_device(&config)?;
+        let (device, mut routes) = setup_device(&config)?;
+        #[cfg(target_os = "macos")]
+        let session_release = if config.session.is_some() {
+            Some((
+                config
+                    .route
+                    .as_ref()
+                    .and_then(|route| route.journal.clone())
+                    .ok_or_else(|| CliError::new("missing TUN session journal"))?,
+                device.name()?,
+                device.if_index()?,
+            ))
+        } else {
+            None
+        };
         eprintln!("TUN proxy listening on interface {}", config.name);
-
-        serve_io(config, client, PacketDevice::Native(Arc::new(device))).await
+        // Keep the native device alive until owned routes have been cleaned explicitly.
+        let device = Arc::new(device);
+        let result = serve_io(config, client, PacketDevice::Native(Arc::clone(&device))).await;
+        #[cfg(target_os = "macos")]
+        let cleanup = tokio::task::spawn_blocking(move || {
+            // A cancelled waiter must not destroy the interface underneath cleanup.
+            let retained_device = device;
+            let result = routes.as_mut().map_or(Ok(()), RouteSet::cleanup);
+            drop(routes); // Run any fallback retry before releasing the native device.
+            drop(retained_device);
+            let release = if let Some((path, name, index)) = session_release {
+                for _ in 0..20 {
+                    if nix::net::if_::if_nametoindex(name.as_str()).ok() != Some(index) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                crate::tun_recovery::recover(&path, true).map(|_| ())
+            } else {
+                Ok(())
+            };
+            result.and(release)
+        })
+        .await
+        .map_err(|_| CliError::new("TUN route cleanup worker failed"))?;
+        #[cfg(not(target_os = "macos"))]
+        let cleanup = routes.as_mut().map_or(Ok(()), RouteSet::cleanup);
+        #[cfg(not(target_os = "macos"))]
+        drop(routes);
+        match (result, cleanup) {
+            (_, Err(error)) => Err(error),
+            (result, Ok(())) => result,
+        }
     }
 
     pub(super) async fn serve_packets(
@@ -103,17 +148,24 @@ mod platform {
         client.local_ready("tun");
         tasks.spawn(run_udp(
             udp_socket,
-            client,
+            Arc::clone(&client),
             config.timeout()?,
             errors,
             dns_limit,
         ));
 
-        match tasks.join_next().await {
-            Some(Ok(result)) => result,
-            Some(Err(error)) => Err(CliError::new(format!("TUN task failed: {error}"))),
-            None => Err(CliError::new("all TUN tasks stopped")),
-        }
+        let result = tokio::select! {
+            biased;
+            () = client.stopped() => Ok(()),
+            task = tasks.join_next() => match task {
+                Some(Ok(result)) => result,
+                Some(Err(error)) => Err(CliError::new(format!("TUN task failed: {error}"))),
+                None => Err(CliError::new("all TUN tasks stopped")),
+            },
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        result
     }
 
     fn spawn_packet_pumps(
@@ -198,6 +250,28 @@ mod platform {
             #[cfg(target_os = "linux")]
             linux_policy::PolicyRules::preflight_routed()?;
         }
+        #[cfg(target_os = "macos")]
+        {
+            let current = RouteManager::new()
+                .and_then(|mut manager| manager.list())
+                .map_err(|error| {
+                    CliError::from(error).at_stage(crate::error::ErrorCode::TunRouteInspection)
+                })?;
+            crate::macos_route_selection::preflight_interface_addresses(
+                &current,
+                &[(ipv4.into(), ipv4_prefix), (ipv6.into(), ipv6_prefix)],
+            )?;
+            if config.dns.is_some() {
+                validate_fake_routes(&current, 0, true)?;
+            }
+            if let Some(route) = &config.route {
+                crate::macos_route_selection::preflight(&current)?;
+                let parsed = route.parsed()?;
+                for (destination, _) in parsed.ipv4_exclude.into_iter().chain(parsed.ipv6_exclude) {
+                    crate::macos_route_selection::exclusion(&current, destination, 0)?;
+                }
+            }
+        }
         let device = tun_rs::DeviceBuilder::new()
             .name(&config.name)
             .mtu(config.mtu())
@@ -205,7 +279,25 @@ mod platform {
             .ipv6(ipv6, ipv6_prefix)
             .enable(true)
             .build_async()
-            .map_err(|error| CliError::new(format!("failed to create TUN interface: {error}")))?;
+            .map_err(|error| {
+                CliError::new(format!("failed to create TUN interface: {error}"))
+                    .at_stage(crate::error::ErrorCode::TunDevice)
+            })?;
+        #[cfg(target_os = "macos")]
+        let session = config
+            .session
+            .as_ref()
+            .map(|session| {
+                crate::tun_session::macos::InterfaceSession::capture(
+                    session,
+                    device.name()?,
+                    device.if_index()?,
+                )
+            })
+            .transpose()
+            .map_err(|error| {
+                CliError::from(error).at_stage(crate::error::ErrorCode::TunIdentity)
+            })?;
         let routes = config
             .route
             .as_ref()
@@ -216,9 +308,12 @@ mod platform {
                     (ipv4, ipv4_prefix),
                     (ipv6, ipv6_prefix),
                     config.egress.as_ref().map(|egress| egress.mark),
+                    #[cfg(target_os = "macos")]
+                    session.clone(),
                 )
             })
-            .transpose()?;
+            .transpose()
+            .map_err(|error: CliError| error.at_stage(crate::error::ErrorCode::TunRoutes))?;
         Ok((device, routes))
     }
 
@@ -491,6 +586,8 @@ mod platform {
     struct RouteSet {
         manager: RouteManager,
         installed: Vec<Route>,
+        #[cfg(target_os = "macos")]
+        journal: Option<crate::macos_route_journal::Journal>,
         #[cfg(target_os = "linux")]
         policy: Option<linux_policy::PolicyRules>,
         #[cfg(target_os = "windows")]
@@ -498,6 +595,38 @@ mod platform {
     }
 
     impl RouteSet {
+        fn new(
+            manager: RouteManager,
+            #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+            config: &crate::config::TunRouteConfig,
+            #[cfg(target_os = "macos")] session: Option<
+                crate::tun_session::macos::InterfaceSession,
+            >,
+        ) -> Result<Self> {
+            Ok(Self {
+                manager,
+                installed: Vec::new(),
+                #[cfg(target_os = "macos")]
+                journal: config
+                    .journal
+                    .as_deref()
+                    .map(|path| match session {
+                        Some(session) => {
+                            crate::macos_route_journal::Journal::begin_for_session(path, session)
+                        }
+                        None => crate::macos_route_journal::Journal::begin(path),
+                    })
+                    .transpose()
+                    .map_err(|error| {
+                        CliError::new(format!("cannot acquire TUN route journal: {error}"))
+                    })?,
+                #[cfg(target_os = "linux")]
+                policy: None,
+                #[cfg(target_os = "windows")]
+                policy: None,
+            })
+        }
+
         fn install(
             config: &crate::config::TunRouteConfig,
             tun_index: u32,
@@ -510,6 +639,9 @@ mod platform {
                 u8,
             ),
             bypass_mark: Option<u32>,
+            #[cfg(target_os = "macos")] session: Option<
+                crate::tun_session::macos::InterfaceSession,
+            >,
         ) -> Result<Self> {
             let parsed = config.parsed()?;
             let (mut ipv4, mut ipv6) = (parsed.ipv4, parsed.ipv6);
@@ -525,14 +657,14 @@ mod platform {
                 CliError::new(format!("failed to inspect system routes: {error}"))
             })?;
             validate_fake_routes(&original, tun_index, bypass_mark.is_some())?;
-            let mut routes = Self {
+            #[cfg(target_os = "macos")]
+            crate::macos_route_selection::preflight(&original)?;
+            let mut routes = Self::new(
                 manager,
-                installed: Vec::new(),
-                #[cfg(target_os = "linux")]
-                policy: None,
-                #[cfg(target_os = "windows")]
-                policy: None,
-            };
+                config,
+                #[cfg(target_os = "macos")]
+                session,
+            )?;
 
             #[cfg(target_os = "linux")]
             let strict_table = if config.strict {
@@ -545,6 +677,10 @@ mod platform {
 
             for (destination, prefix) in parsed.ipv4_exclude.into_iter().chain(parsed.ipv6_exclude)
             {
+                #[cfg(target_os = "macos")]
+                let base =
+                    crate::macos_route_selection::exclusion(&original, destination, tun_index)?;
+                #[cfg(not(target_os = "macos"))]
                 let base = original
                     .iter()
                     .filter(|route| route.if_index() != Some(tun_index))
@@ -563,12 +699,7 @@ mod platform {
                         CliError::new("protected routing requires a dedicated table")
                     })?);
                 }
-                routes.manager.add(&route).map_err(|error| {
-                    CliError::new(format!(
-                        "failed to add TUN exclusion route {destination}/{prefix}: {error}"
-                    ))
-                })?;
-                routes.installed.push(route);
+                routes.add_owned(&route)?;
             }
             for (destination, prefix) in ipv4.into_iter().chain(ipv6) {
                 #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
@@ -577,12 +708,7 @@ mod platform {
                 {
                     route = route.with_table(strict_table.unwrap_or(254));
                 }
-                routes.manager.add(&route).map_err(|error| {
-                    CliError::new(format!(
-                        "failed to add TUN route {destination}/{prefix}: {error}"
-                    ))
-                })?;
-                routes.installed.push(route);
+                routes.add_owned(&route)?;
             }
             #[cfg(target_os = "linux")]
             if let Some(table) = strict_table {
@@ -613,14 +739,65 @@ mod platform {
         }
     }
 
-    impl Drop for RouteSet {
-        fn drop(&mut self) {
+    impl RouteSet {
+        fn add_owned(&mut self, route: &Route) -> Result<()> {
+            #[cfg(target_os = "macos")]
+            {
+                crate::macos_route_cleanup::install(
+                    &mut self.manager,
+                    self.journal.as_mut(),
+                    &mut self.installed,
+                    route.clone(),
+                )
+                .map_err(|error| CliError::new(format!("failed to add TUN route {route}: {error}")))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                self.manager.add(route).map_err(|error| {
+                    CliError::new(format!("failed to add TUN route {route}: {error}"))
+                })?;
+                self.installed.push(route.clone());
+                Ok(())
+            }
+        }
+
+        fn cleanup(&mut self) -> Result<()> {
+            #[cfg(target_os = "macos")]
+            if let Some(journal) = &mut self.journal {
+                journal
+                    .cleanup_routes(&mut self.manager)
+                    .map_err(|error| CliError::new(format!("TUN route cleanup failed: {error}")))?;
+                self.installed.clear();
+                return Ok(());
+            }
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             drop(self.policy.take());
-            for route in self.installed.iter().rev() {
-                if let Err(error) = self.manager.delete(route) {
-                    eprintln!("failed to remove TUN route {route}: {error}");
+            #[cfg(target_os = "macos")]
+            crate::macos_route_cleanup::cleanup(&mut self.manager, &mut self.installed)
+                .map_err(|error| CliError::new(format!("TUN route cleanup failed: {error}")))?;
+            #[cfg(not(target_os = "macos"))]
+            {
+                let mut unresolved = Vec::new();
+                for route in self.installed.drain(..).rev() {
+                    if let Err(error) = self.manager.delete(&route) {
+                        eprintln!("failed to remove TUN route {route}: {error}");
+                        unresolved.push(route);
+                    }
                 }
+                unresolved.reverse();
+                self.installed = unresolved;
+                if !self.installed.is_empty() {
+                    return Err(CliError::new("TUN route cleanup failed"));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for RouteSet {
+        fn drop(&mut self) {
+            if let Err(error) = self.cleanup() {
+                eprintln!("{error}");
             }
         }
     }

@@ -783,6 +783,8 @@ impl ConfigurableDirect {
             }
             socket
         };
+        // Forward small proxy writes immediately instead of waiting for delayed TCP acknowledgments.
+        socket.set_nodelay(true).map_err(io_error)?;
         bind_tcp_device(&socket, &self.bind_device)?;
         if self.fast_open {
             dial_tfo(socket, address).await
@@ -1068,6 +1070,7 @@ impl Socks5Outbound {
 
     async fn connected(&self) -> std::result::Result<TcpStream, TransportError> {
         let mut stream = timeout(TcpStream::connect(&self.proxy), "SOCKS5 dial").await?;
+        stream.set_nodelay(true).map_err(io_error)?;
         let username = self.username.as_bytes();
         let password = self.password.as_bytes();
         timeout(
@@ -1248,6 +1251,7 @@ impl HttpConnectOutbound {
         target: &str,
     ) -> std::result::Result<Box<dyn ProxyStream>, TransportError> {
         let stream = timeout(TcpStream::connect(&self.proxy_address), "HTTP proxy dial").await?;
+        stream.set_nodelay(true).map_err(io_error)?;
         let mut stream: Box<dyn ProxyStream> = if let Some(config) = &self.tls {
             let name = ServerName::try_from(self.server_name.clone())
                 .map_err(|error| protocol_error(format!("invalid HTTP proxy TLS name: {error}")))?;

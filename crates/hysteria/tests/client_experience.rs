@@ -667,11 +667,33 @@ async fn external_packet_tunnel_relays_tcp_and_exposes_connection_control() {
             .try_send(&raw_tcp_packet(target.port(), 2, ack, 0x18, payload))
             .unwrap();
         let mut echoed = Vec::new();
+        let mut next_server_sequence = ack;
         while echoed.len() < payload.len() {
             let reply = packets.output.recv().await.unwrap();
             let ip = usize::from(reply[0] & 15) * 4;
             let tcp = usize::from(reply[ip + 12] >> 4) * 4;
-            echoed.extend_from_slice(&reply[ip + tcp..]);
+            let sequence = u32::from_be_bytes(reply[ip + 4..ip + 8].try_into().unwrap());
+            let data = &reply[ip + tcp..];
+            // This fixture is the TCP peer: acknowledge data and discard retransmitted overlap.
+            let overlap = usize::try_from(next_server_sequence.wrapping_sub(sequence)).unwrap();
+            if overlap < data.len() {
+                let fresh = &data[overlap..];
+                echoed.extend_from_slice(fresh);
+                next_server_sequence =
+                    next_server_sequence.wrapping_add(u32::try_from(fresh.len()).unwrap());
+            }
+            if !data.is_empty() {
+                packets
+                    .input
+                    .try_send(&raw_tcp_packet(
+                        target.port(),
+                        2 + u32::try_from(payload.len()).unwrap(),
+                        next_server_sequence,
+                        0x10,
+                        &[],
+                    ))
+                    .unwrap();
+            }
         }
         assert_eq!(echoed, payload);
         let page = control.connections(None, 10).unwrap();

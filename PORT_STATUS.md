@@ -74,7 +74,7 @@ These additions are included in rc.7:
   subscriptions, proxy groups and whole-client configuration reload are not implemented.
 
 See the [CLI reference](docs/cli.md), [routing contract](docs/client-routing.md)
-and [current roadmap](docs/cli-roadmap.md). Client routing extends this Rust CLI;
+and [validation and remaining work](docs/validation.md). Client routing extends this Rust CLI;
 it does not add routing rules to the sharing URI or Hysteria wire protocol.
 
 ### GUI integration after rc.7 (development)
@@ -88,6 +88,11 @@ retaining each flow's actual routing revision. These additions are not in rc.7;
 automated coverage and remaining platform/GUI checks are described in
 [validation status](docs/validation.md). See the [control contract](docs/client-observability.md)
 and [validation status](docs/validation.md).
+
+Current macOS development source additionally provides exact local HTTP/SOCKS TCP
+process rules, interface-bound sockets, owned native TUN sessions and journaled
+route recovery. macOS routed TUN, Fake DNS and TUN process attribution remain
+closed behind platform admission gates. See [macOS egress and limits](docs/client-macos-egress.md).
 
 ### Other capabilities and compatibility gaps
 

@@ -5,6 +5,13 @@ use std::{error::Error, fmt};
 #[non_exhaustive]
 pub enum ErrorCode {
     RuntimeFailure,
+    TunParent,
+    TunDevice,
+    TunIdentity,
+    TunRoutes,
+    TunRouteInspection,
+    TunAddressConflict,
+    CaptureConflict,
     ListenerBind,
     TlsRead,
     TlsInvalid,
@@ -22,6 +29,13 @@ impl ErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::RuntimeFailure => "runtime_failure",
+            Self::TunParent => "tun_parent",
+            Self::TunDevice => "tun_device",
+            Self::TunIdentity => "tun_identity",
+            Self::TunRoutes => "tun_routes",
+            Self::TunRouteInspection => "tun_route_inspection",
+            Self::TunAddressConflict => "tun_address_conflict",
+            Self::CaptureConflict => "capture_conflict",
             Self::ListenerBind => "listener_bind",
             Self::TlsRead => "tls_read",
             Self::TlsInvalid => "tls_invalid",
@@ -64,6 +78,14 @@ impl CliError {
             hint,
             source: None,
         }
+    }
+
+    /// Adds an operation boundary only when the underlying error has no specific category.
+    pub(crate) fn at_stage(mut self, code: ErrorCode) -> Self {
+        if self.code == ErrorCode::RuntimeFailure {
+            self.code = code;
+        }
+        self
     }
 
     /// Attaches a cause approved for diagnostic output. Never attach raw config parse errors.
@@ -266,5 +288,20 @@ mod runtime_tests {
                     .is_some()
             );
         }
+    }
+    #[test]
+    fn stage_classification_preserves_specific_errors() {
+        assert_eq!(
+            CliError::new("failure")
+                .at_stage(ErrorCode::TunDevice)
+                .code(),
+            ErrorCode::TunDevice
+        );
+        assert_eq!(
+            CliError::classified(ErrorCode::CaptureConflict, "conflict", None)
+                .at_stage(ErrorCode::TunRoutes)
+                .code(),
+            ErrorCode::CaptureConflict
+        );
     }
 }

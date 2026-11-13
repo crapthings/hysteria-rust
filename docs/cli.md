@@ -756,5 +756,15 @@ per-rule evaluation; `route lint` reports fully shadowed rules and `route templa
 prints a routing-only configuration fragment. Client routing v1
 supports SOCKS5, HTTP, explicit TCP/UDP forwarding and opt-in
 [protected Linux TUN with Fake-IP DNS](client-tun-routing.md). Other-platform TUN
-routing, transparent routing, process matching and persistent IPC remain unsupported. See the complete
+routing, transparent routing and persistent IPC remain unsupported. Unreleased macOS
+builds add exact process-name/path matching for numeric loopback HTTP/SOCKS TCP
+listeners; TUN and UDP process matching remain unsupported. See the complete
 [configuration and GUI integration contract](client-routing.md).
+
+Unreleased macOS builds accept `quic.sockopts.bindInterface` for the Hysteria
+transport socket. It does not protect system DNS or DIRECT sockets in proxy-only
+mode; see [macOS egress groundwork](client-macos-egress.md).
+
+Unreleased macOS builds expose read-only `recover-tun-routes --journal PATH`;
+`--apply` explicitly attempts recovery of owned routes. See
+[route receipts and recovery](client-route-journal.md) for crash-window limits.

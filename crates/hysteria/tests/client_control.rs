@@ -350,3 +350,52 @@ fn external_packet_mode_rejects_system_configuration() {
         assert!(ClientRuntime::prepare_packet_tunnel(config, false).is_err());
     }
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn missing_bound_interface_fails_before_any_inbound_is_ready() {
+    let mut cfg = config("127.0.0.1:0", "127.0.0.1:0", "127.0.0.1:9");
+    cfg.quic.sockopts.bind_interface = "hy2_missing".into();
+    let (control, runtime) = ClientRuntime::prepare(cfg, false).unwrap();
+    let mut events = control.subscribe_events();
+    let result = tokio::time::timeout(Duration::from_secs(3), runtime.run())
+        .await
+        .unwrap();
+    assert!(result.is_err());
+    let status = control.status();
+    assert_eq!(status.lifecycle, Lifecycle::Stopped);
+    assert!(status.ready_components.is_empty());
+    assert_eq!(status.error_code, Some("runtime_failure"));
+    assert_eq!(status.connection, ConnectionState::Closed);
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.event, "connecting");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn managed_tun_rejects_wrong_parent_before_network_or_interface_startup() {
+    let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let journal = directory.path().canonicalize().unwrap().join("routes.json");
+    let cfg: ClientConfig = serde_json::from_value(serde_json::json!({
+        "server":blackhole.local_addr().unwrap().to_string(),"auth":"fixture","tls":{"insecure":true},
+        "tun":{"name":"utun90000","route":{"journal":journal},
+            "session":{"id":"00000000-0000-4000-8000-000000000001","owner":"dev.hy2ui","parentPid":std::process::id()}}
+    })).unwrap();
+    let (control, runtime) = ClientRuntime::prepare(cfg, false).unwrap();
+    // Even a broken parent guard would stall at this loopback blackhole before TUN creation.
+    let error = tokio::time::timeout(Duration::from_secs(2), runtime.run())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("parent"));
+    assert_eq!(error.code().as_str(), "tun_parent");
+    assert!(control.status().ready_components.is_empty());
+    assert!(!journal.exists());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), blackhole.recv(&mut [0; 2048]))
+            .await
+            .is_err()
+    );
+}

@@ -562,3 +562,14 @@ interface. Those belong to the future macOS app integration. In particular,
 do not turn on full capture until the host can keep the Hysteria connection out
 of its own packet input. These unit/integration tests do not establish whole-host
 macOS network takeover or leak prevention.
+
+### Unreleased macOS process attribution
+
+With process rules enabled on numeric loopback HTTP/SOCKS listeners,
+`connections.list` includes optional `process: {pid, name, path}` metadata.
+Attribution runs only when rules require it; absence does not mean no process
+owns the connection. The field identifies the executable owning the local TCP
+socket, not necessarily a browser tab or the parent application. It can expose
+private paths. TUN/UDP process attribution is unavailable. Live process-rule
+updates to unsupported inbounds return `unsupported_process_routing` before
+changing the running snapshot. See [process rules](client-routing.md#macos-local-tcp-process-rules-unreleased).

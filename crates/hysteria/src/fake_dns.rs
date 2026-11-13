@@ -130,6 +130,21 @@ pub fn is_fake_address(ip: IpAddr) -> bool {
 pub(crate) fn pool_addresses() -> [IpAddr; 2] {
     [Ipv4Addr::from(V4 + 1).into(), Ipv6Addr::from(V6 + 1).into()]
 }
+/// Detects connected interface prefixes that would steal routes from either synthetic pool.
+pub(crate) fn overlaps_interface(address: IpAddr, prefix: u8) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let bits = u32::from(prefix.min(15));
+            let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+            u32::from(address) & mask == V4 & mask
+        }
+        IpAddr::V6(address) => {
+            let bits = u32::from(prefix.min(96));
+            let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
+            u128::from(address) & mask == V6 & mask
+        }
+    }
+}
 pub(crate) fn is_fake(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => u32::from(ip) & 0xfffe_0000 == V4,
@@ -413,6 +428,30 @@ fn canonical(name: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn interface_prefixes_cannot_overlap_synthetic_pools() {
+        for (address, prefix) in [
+            ("198.18.0.1", 30),
+            ("198.19.255.253", 30),
+            ("198.16.0.1", 12),
+            ("0.0.0.0", 0),
+            ("fd00:198:18::1", 126),
+            ("fd00::1", 8),
+            ("::", 0),
+        ] {
+            assert!(super::overlaps_interface(address.parse().unwrap(), prefix));
+        }
+        for (address, prefix) in [
+            ("100.100.100.101", 30),
+            ("198.17.0.1", 16),
+            ("198.20.0.1", 16),
+            ("fd72:6832::1", 126),
+            ("fd00:198:19::1", 96),
+        ] {
+            assert!(!super::overlaps_interface(address.parse().unwrap(), prefix));
+        }
+    }
+
     use super::*;
     use hickory_resolver::proto::{op::Query, rr::Name};
     fn query(name: &str, kind: RecordType) -> Vec<u8> {

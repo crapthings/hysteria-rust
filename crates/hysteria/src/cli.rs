@@ -55,6 +55,13 @@ pub(crate) struct Cli {
 /// Separates long-running roles from bounded diagnostic and administrative commands.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Inspect macOS TUN route recovery receipts; --apply explicitly removes owned routes.
+    RecoverTunRoutes {
+        #[arg(long)]
+        journal: PathBuf,
+        #[arg(long)]
+        apply: bool,
+    },
     /// Import, list, inspect or remove private client profiles.
     #[command(display_order = 30)]
     Profile(crate::profile::ProfileOptions),

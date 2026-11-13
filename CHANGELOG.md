@@ -34,6 +34,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   atomic totals/checkpoints, private storage, writer locking, strict validation
   and explicit 90-day pruning; the core does not automatically persist history.
 
+### Client and macOS development
+
+- Add exact macOS process-name/path rules for local HTTP/SOCKS TCP with fail-closed
+  attribution. Raw TUN and UDP process routing remain unsupported.
+- Add interface-bound macOS egress sockets, interface-loss monitoring, native
+  session identity and parent-loss shutdown. Keep full macOS routed-TUN/Fake-DNS
+  admission disabled while platform capture protection is unfinished.
+- Add private macOS route receipts and explicit inspection/recovery, verified
+  borrowed-route reuse, and pre-device capture/address conflict checks.
+- Reject Fake-IP interface-prefix overlaps before startup. Preserve unknown
+  synthetic-target rejection and mapping ownership rules.
+- Enable TCP_NODELAY on proxy/forwarding entrances and TCP egress. Request a
+  negotiated 1 ms maximum ACK delay with the normal ACK ratio for the ordinary
+  QUIC profile; leave the experimental Chrome-shaped profile unchanged.
+- Add stage-specific native TUN failure codes and bounded comparison tools.
+  Local benchmark results do not establish WAN or whole-host performance.
+
 ## [0.1.0-rc.7] - 2026-11-12
 
 ### Fixed

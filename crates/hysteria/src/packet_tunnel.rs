@@ -140,7 +140,11 @@ pub(crate) fn validate_config(config: &ClientConfig) -> Result<()> {
         .tun
         .as_ref()
         .ok_or_else(|| CliError::new("packet tunnel requires tun configuration"))?;
-    if tun.route.is_some() || tun.egress.is_some() || tun.dns.is_some() || config.routing.is_some()
+    if tun.session.is_some()
+        || tun.route.is_some()
+        || tun.egress.is_some()
+        || tun.dns.is_some()
+        || config.routing.is_some()
     {
         return Err(CliError::new(
             "external packet tunnels currently require proxy-only mode; routes, DNS and egress belong to the host",

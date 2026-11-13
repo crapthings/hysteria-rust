@@ -1,4 +1,4 @@
-//! Protected Linux egress: no system resolver or unmarked fallback under routed TUN.
+//! Protected egress sockets; routed TUN admission remains Linux-only until macOS route protection is verified.
 use crate::{CliError, Result};
 use hickory_resolver::proto::{
     op::Query,
@@ -24,24 +24,44 @@ pub struct EgressConfig {
 }
 impl EgressConfig {
     pub(crate) fn validate(&self, tun_name: &str) -> Result<()> {
-        if !cfg!(target_os = "linux") {
-            return Err(CliError::new(
-                "protected TUN routing currently requires Linux",
-            ));
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
+            return Err(CliError::new("protected egress requires Linux or macOS"));
         }
         if self.interface.is_empty()
             || self.interface.len() > 15
             || self.interface == tun_name
             || self.interface == "lo"
+            || (cfg!(target_os = "macos") && self.interface == "lo0")
             || !self
                 .interface
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
-            || self.mark == 0
         {
             return Err(CliError::new(
-                "tun.egress requires a non-TUN physical interface and a nonzero mark",
+                "tun.egress requires a named non-loopback, non-TUN egress interface",
             ));
+        }
+        if cfg!(target_os = "linux") && self.mark == 0 {
+            return Err(CliError::new(
+                "Linux tun.egress requires a nonzero socket mark",
+            ));
+        }
+        if cfg!(target_os = "macos") {
+            if self.mark != 0 {
+                return Err(CliError::new(
+                    "macOS egress does not support Linux socket marks",
+                ));
+            }
+            if [
+                "utun", "tun", "tap", "ipsec", "ppp", "gif", "stf", "awdl", "llw",
+            ]
+            .iter()
+            .any(|prefix| self.interface.starts_with(prefix))
+            {
+                return Err(CliError::new(
+                    "macOS protected egress cannot use a tunnel or peer-only interface",
+                ));
+            }
         }
         if self.resolver.port() == 0
             || self.resolver.ip().is_unspecified()
@@ -55,16 +75,25 @@ impl EgressConfig {
         }
         Ok(())
     }
-    fn protect(&self, socket: &socket2::SockRef<'_>) -> Result<()> {
+    fn protect(&self, socket: &socket2::SockRef<'_>, ipv6: bool) -> Result<()> {
         #[cfg(target_os = "linux")]
         {
-            socket.bind_device(Some(self.interface.as_bytes()))?;
+            crate::client_socket::bind_interface(socket, ipv6, &self.interface)?;
             socket.set_mark(self.mark)?;
             Ok(())
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
-            let _ = (self, socket);
+            if self.mark != 0 {
+                return Err(CliError::new(
+                    "macOS egress does not support Linux socket marks",
+                ));
+            }
+            crate::client_socket::bind_interface(socket, ipv6, &self.interface)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (self, socket, ipv6);
             Err(CliError::new("protected egress requires Linux"))
         }
     }
@@ -74,7 +103,7 @@ impl EgressConfig {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )?;
-        self.protect(&socket2::SockRef::from(&socket))
+        self.protect(&socket2::SockRef::from(&socket), false)
     }
     pub(crate) async fn tcp_ip(&self, address: SocketAddr) -> Result<TcpStream> {
         let socket = if address.is_ipv4() {
@@ -82,7 +111,8 @@ impl EgressConfig {
         } else {
             TcpSocket::new_v6()?
         };
-        self.protect(&socket2::SockRef::from(&socket))?;
+        socket.set_nodelay(true)?;
+        self.protect(&socket2::SockRef::from(&socket), address.is_ipv6())?;
         tokio::time::timeout(Duration::from_secs(5), socket.connect(address))
             .await
             .map_err(|_| CliError::new("protected TCP connect timed out"))?
@@ -109,7 +139,7 @@ impl EgressConfig {
             "[::]:0"
         })
         .await?;
-        self.protect(&socket2::SockRef::from(&socket))?;
+        self.protect(&socket2::SockRef::from(&socket), address.is_ipv6())?;
         socket.connect(address).await?;
         Ok(socket)
     }
@@ -247,6 +277,104 @@ pub(crate) fn validate_reply(query: &[u8], reply: &[u8]) -> Result<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_egress_config_requires_unmarked_non_capture_interface_and_real_dns() {
+        let mut config = EgressConfig {
+            interface: "en0".into(),
+            mark: 0,
+            resolver: "192.0.2.53:53".parse().unwrap(),
+        };
+        config.validate("utun100").unwrap();
+        config.mark = 1;
+        assert!(config.validate("utun100").is_err());
+        config.mark = 0;
+        for interface in [
+            "",
+            "lo0",
+            "utun100",
+            "utun101",
+            "tun0",
+            "tap0",
+            "ipsec0",
+            "ppp0",
+            "awdl0",
+            "llw0",
+            "en0/invalid",
+        ] {
+            config.interface = interface.into();
+            assert!(config.validate("utun100").is_err(), "{interface}");
+        }
+        config.interface = "en0".into();
+        for resolver in [
+            "0.0.0.0:53",
+            "127.0.0.1:53",
+            "[::1]:53",
+            "224.0.0.1:53",
+            "198.18.0.2:53",
+            "[fd00:198:18::1]:53",
+            "192.0.2.53:0",
+        ] {
+            config.resolver = resolver.parse().unwrap();
+            assert!(config.validate("utun100").is_err(), "{resolver}");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_scoped_tcp_udp_and_missing_interface_fail_closed() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let expected = std::num::NonZeroU32::new(nix::net::if_::if_nametoindex("lo0").unwrap());
+            for address in ["127.0.0.1:0", "[::1]:0"] {
+                let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+                let target = listener.local_addr().unwrap();
+                let mut egress = EgressConfig {
+                    interface: "lo0".into(),
+                    mark: 0,
+                    resolver: target,
+                };
+                let mut client = egress.tcp_ip(target).await.unwrap();
+                let (mut server, _) = listener.accept().await.unwrap();
+                let bound = socket2::SockRef::from(&client);
+                assert_eq!(
+                    if target.is_ipv6() {
+                        bound.device_index_v6()
+                    } else {
+                        bound.device_index_v4()
+                    }
+                    .unwrap(),
+                    expected
+                );
+                client.write_all(b"test").await.unwrap();
+                let mut bytes = [0; 4];
+                server.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(&bytes, b"test");
+                let server = UdpSocket::bind(address).await.unwrap();
+                let target = server.local_addr().unwrap();
+                let client = egress.udp_ip(target).await.unwrap();
+                let bound = socket2::SockRef::from(&client);
+                assert_eq!(
+                    if target.is_ipv6() {
+                        bound.device_index_v6()
+                    } else {
+                        bound.device_index_v4()
+                    }
+                    .unwrap(),
+                    expected
+                );
+                client.send(b"udp").await.unwrap();
+                assert_eq!(server.recv(&mut bytes).await.unwrap(), 3);
+                assert_eq!(&bytes[..3], b"udp");
+                egress.interface = "hy2_missing".into();
+                assert!(egress.tcp_ip(target).await.is_err());
+                assert!(egress.udp_ip(target).await.is_err());
+                egress.interface = "lo0".into();
+                egress.mark = 1;
+                assert!(egress.udp_ip(target).await.is_err());
+            }
+        })
+        .await
+        .unwrap();
+    }
     #[test]
     fn dns_reply_identity_is_checked() {
         let mut q = Message::query();
@@ -263,9 +391,12 @@ mod tests {
         r.queries.clear();
         assert!(validate_reply(&q.to_vec().unwrap(), &r.to_vec().unwrap()).is_err());
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
-    #[ignore = "requires Linux socket mark/device privileges; run explicitly in CI"]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires Linux socket mark/device privileges; run explicitly in CI"
+    )]
     async fn protected_dns_and_socket_mark_use_loopback_fixture() {
         use hickory_resolver::proto::{
             op::OpCode,
@@ -298,8 +429,17 @@ mod tests {
             }
         });
         let egress = EgressConfig {
-            interface: "lo".into(),
-            mark: 0x0048_5932,
+            interface: if cfg!(target_os = "macos") {
+                "lo0"
+            } else {
+                "lo"
+            }
+            .into(),
+            mark: if cfg!(target_os = "macos") {
+                0
+            } else {
+                0x0048_5932
+            },
             resolver: addr,
         };
         assert_eq!(
@@ -308,13 +448,24 @@ mod tests {
         );
         let socket = egress.udp_ip(addr).await.unwrap();
         let socket = socket2::SockRef::from(&socket);
-        assert_eq!(socket.mark().unwrap(), 0x0048_5932);
-        assert_eq!(socket.device().unwrap().unwrap(), b"lo");
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(socket.mark().unwrap(), 0x0048_5932);
+            assert_eq!(socket.device().unwrap().unwrap(), b"lo");
+        }
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            socket.device_index_v4().unwrap().unwrap().get(),
+            nix::net::if_::if_nametoindex("lo0").unwrap()
+        );
         server.await.unwrap();
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
-    #[ignore = "requires Linux socket mark/device privileges; run explicitly in CI"]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires Linux socket mark/device privileges; run explicitly in CI"
+    )]
     async fn protected_dns_follows_aliases_and_rejects_cycles() {
         use hickory_resolver::proto::{
             op::OpCode,
@@ -364,8 +515,17 @@ mod tests {
                     }
                 });
                 let egress = EgressConfig {
-                    interface: "lo".into(),
-                    mark: 0x0048_5932,
+                    interface: if cfg!(target_os = "macos") {
+                        "lo0"
+                    } else {
+                        "lo"
+                    }
+                    .into(),
+                    mark: if cfg!(target_os = "macos") {
+                        0
+                    } else {
+                        0x0048_5932
+                    },
                     resolver: addr,
                 };
                 let result = egress.resolve("alias.example", 443).await;

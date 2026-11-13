@@ -20,7 +20,7 @@ pub fn default_transport_config(keep_alive: bool) -> Arc<TransportConfig> {
     transport_config(keep_alive, CongestionSettings::default())
 }
 
-/// Builds Hysteria transport defaults with the selected fallback congestion controller.
+/// Builds Hysteria transport with the selected congestion controller and negotiated low-latency ACKs.
 #[must_use]
 pub fn transport_config(keep_alive: bool, congestion: CongestionSettings) -> Arc<TransportConfig> {
     let mut transport = TransportConfig::default();
@@ -32,6 +32,11 @@ pub fn transport_config(keep_alive: bool, congestion: CongestionSettings) -> Arc
         .datagram_receive_buffer_size(Some(DATAGRAM_RECEIVE_BUFFER))
         .assume_peer_max_datagram_frame_size(Some(VarInt::from_u32(u32::from(u16::MAX))))
         .congestion_controller_factory(Arc::new(AdaptiveCongestionConfig::new(congestion)));
+    let mut ack_frequency = quinn::AckFrequencyConfig::default();
+    // Keep the default ACK ratio, but avoid a 25 ms wait for a short final flight.
+    ack_frequency.ack_eliciting_threshold(VarInt::from_u32(1));
+    ack_frequency.max_ack_delay(Some(Duration::from_millis(1)));
+    transport.ack_frequency_config(Some(ack_frequency));
     if keep_alive {
         transport.keep_alive_interval(Some(Duration::from_secs(10)));
     }

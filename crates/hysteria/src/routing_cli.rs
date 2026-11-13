@@ -23,16 +23,22 @@ impl CapabilitiesOptions {
             "schema_version":1, "core_version":env!("CARGO_PKG_VERSION"), "platform":std::env::consts::OS,
             "dns_capture_probe":cfg!(target_os="linux"), "configuration_check":true, "route_explain":true, "route_trace":true, "route_lint":true, "routing_templates":["proxy-all","lan-bypass","block-udp443"],
             "profiles":{"schema_version":1,"scope":"user","implicit_default":false,"import_source":"stdin-uri"},
-            "routing":{"version":1,"actions":["proxy","direct","reject"],"matchers":["domain","suffix","ip","cidr","lan","loopback","all","set"],"protocols":["tcp","udp"],"inbounds":if cfg!(target_os="linux") { vec!["socks5","http","tcpForwarding","udpForwarding","tun"] } else { vec!["socks5","http","tcpForwarding","udpForwarding"] },"local_rule_sets":true,"remote_rule_sets":false,"dns_for_matching":false,"process_matching":false,"geoip":false,"geosite":false,"live_reload":true},
-            "tun":{"compiled":cfg!(any(target_os="linux", target_os="macos", target_os="windows")),"routing_supported":cfg!(target_os="linux"),"fake_dns":cfg!(target_os="linux"),"system_dns_configuration":false,"read_only_preflight":cfg!(target_os="linux"),"permission_check":"not_performed"},
+            "routing":{"version":1,"actions":["proxy","direct","reject"],"matchers":["domain","suffix","ip","cidr","lan","loopback","all","set"],"protocols":["tcp","udp"],"inbounds":if cfg!(target_os="linux") { vec!["socks5","http","tcpForwarding","udpForwarding","tun"] } else { vec!["socks5","http","tcpForwarding","udpForwarding"] },"local_rule_sets":true,"remote_rule_sets":false,"dns_for_matching":false,"process_matching":cfg!(target_os="macos"),"process_inbounds":if cfg!(target_os="macos") { vec!["http-tcp","socks5-tcp"] } else { vec![] },"process_matchers":["process-name","process-path"],"process_unknown":"reject","process_tun":false,"process_udp":false,"geoip":false,"geosite":false,"live_reload":true},
+            "socket_options":{"bind_interface":cfg!(any(target_os="linux", target_os="macos")),"fwmark":cfg!(target_os="linux"),"fd_control_unix_socket":cfg!(target_os="linux"),"protects_system_dns":false,"interface_loss_stops_client":cfg!(target_os="macos")},
+            "tun":{"session_tracking":cfg!(target_os="macos"),"parent_loss_shutdown":cfg!(target_os="macos"),"route_journal":cfg!(target_os="macos"),"route_recovery":cfg!(target_os="macos"),"compiled":cfg!(any(target_os="linux", target_os="macos", target_os="windows")),"routing_supported":cfg!(target_os="linux"),"fake_dns":cfg!(target_os="linux"),"system_dns_configuration":false,"read_only_preflight":cfg!(target_os="linux"),"permission_check":"not_performed"},
             "control":{"transport":"cli-json","stdio":crate::client_stdio::capabilities(),"routing_apply":true,"persistent_ipc":false,"events":true,"event_transport":"stdout-ndjson","event_schema_version":1,"configuration_apply":false,"privileged_helper":false,"embedded":{"api_version":1,"tcp_connections":true,"traffic_sample":true,"status":true,"routing_stats":true,"events":true,"shutdown":true,"routing_apply":true,"routing_explain":true,"routing_history":true}}
         });
         match self.output {
             OutputFormat::Json => write_json(&report),
             OutputFormat::Text => {
                 println!(
-                    "Client capabilities\n  Platform          {}\n  API schema        1\n  Routing           v1: proxy / direct / reject\n  Entries           SOCKS5, HTTP, TCP/UDP forwarding\n  GUI integration   client --control stdio; offline check / route explain\n  Process routing   Not available\n  TUN routing       {}\n  Live control      Owned stdin/stdout JSON session\n  Permissions       Not checked",
+                    "Client capabilities\n  Platform          {}\n  API schema        1\n  Routing           v1: proxy / direct / reject\n  Entries           SOCKS5, HTTP, TCP/UDP forwarding\n  GUI integration   client --control stdio; offline check / route explain\n  Process routing   {}\n  TUN routing       {}\n  Live control      Owned stdin/stdout JSON session\n  Permissions       Not checked",
                     std::env::consts::OS,
+                    if cfg!(target_os = "macos") {
+                        "Local HTTP/SOCKS TCP (exact name/path)"
+                    } else {
+                        "Not available"
+                    },
                     if cfg!(target_os = "linux") {
                         "Protected Linux egress"
                     } else {

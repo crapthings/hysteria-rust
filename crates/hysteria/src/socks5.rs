@@ -36,6 +36,8 @@ pub(crate) async fn serve(config: Socks5Config, client: Arc<ClientHandle>) -> Re
     client.local_ready("socks5");
     loop {
         let (stream, _) = listener.accept().await?;
+        // Proxy replies and payload must not wait for a delayed ACK of an earlier small write.
+        stream.set_nodelay(true)?;
         let config = config.clone();
         let client = Arc::clone(&client);
         tokio::spawn(async move {
@@ -115,7 +117,11 @@ async fn authenticate_userpass(stream: &mut TcpStream, config: &Socks5Config) ->
 
 async fn handle_connect(mut stream: TcpStream, client: &ClientHandle, address: &str) -> Result<()> {
     let mut tunnel = match client
-        .tcp_named(address, crate::client_connections::TcpInbound::Socks5)
+        .tcp_local(
+            address,
+            crate::client_connections::TcpInbound::Socks5,
+            &stream,
+        )
         .await
     {
         Ok(tunnel) => tunnel,

@@ -151,7 +151,7 @@ async fn mixed_routes() {
             rejected_udp.local_addr().unwrap().port()
         ),
     ];
-    let mut client=spawn(directory.path(),"client",serde_json::json!({"server":server_addr.to_string(),"auth":"secret","tls":{"ca":cert,"sni":"localhost"},"socks5":{"listen":socks.to_string()},"routing":{"version":1,"default":"proxy","rules":rules}}),"SOCKS5 proxy listening").await;
+    let mut client=spawn(directory.path(),"client",serde_json::json!({"server":server_addr.to_string(),"auth":"secret","tls":{"ca":cert,"sni":"localhost"},"quic":{"sockopts":{"bindInterface":if cfg!(target_os="macos") { "lo0" } else { "" }}},"socks5":{"listen":socks.to_string()},"routing":{"version":1,"default":"proxy","rules":rules}}),"SOCKS5 proxy listening").await;
     let (stream, reply) = socks_command(socks, direct_tcp, 1).await;
     assert_eq!(reply[1], 0);
     echo_stream(stream).await;
@@ -317,4 +317,38 @@ async fn local_rule_set_snapshot() {
     assert_ne!(reply[1], 0);
     client.kill().await.unwrap();
     task.abort();
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn process_name_and_path_route_real_local_proxy_connections() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        for matcher in [format!("process-name:{}", executable.file_name().unwrap().to_str().unwrap()), format!("process-path:{}", executable.display())] {
+            for action in ["direct", "reject"] {
+                let directory = tempfile::tempdir().unwrap();
+                let (target, task) = tcp_echo().await;
+                let socks = free_tcp();
+                let http = free_tcp();
+                let mut child = spawn(directory.path(), "client", serde_json::json!({
+                    "server":"127.0.0.1:9", "auth":"test", "tls":{"insecure":true},
+                    "socks5":{"listen":socks.to_string()}, "http":{"listen":http.to_string()},
+                    "routing":{"version":1,"default":if action == "direct" { "reject" } else { "direct" },"rules":[format!("{action}({matcher})")]}
+                }), "HTTP proxy listening").await;
+                let (stream, reply) = socks_command(socks, target, 1).await;
+                if action == "direct" { assert_eq!(reply[1], 0, "{matcher}: {}", fs::read_to_string(directory.path().join("client.log")).unwrap()); echo_stream(stream).await; }
+                else { assert_ne!(reply[1], 0); }
+                let mut stream = TcpStream::connect(http).await.unwrap();
+                stream.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes()).await.unwrap();
+                let mut response = Vec::new();
+                while !response.ends_with(b"\r\n\r\n") {
+                    response.push(stream.read_u8().await.unwrap());
+                    assert!(response.len() < 4096);
+                }
+                assert_eq!(response.starts_with(b"HTTP/1.1 200"), action == "direct");
+                if action == "direct" { echo_stream(stream).await; }
+                child.kill().await.unwrap(); task.abort();
+            }
+        }
+    }).await.unwrap();
 }

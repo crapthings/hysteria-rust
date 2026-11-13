@@ -83,6 +83,9 @@ impl Router {
     }
 }
 fn covers(earlier: &Rule, later: &Rule) -> bool {
+    if earlier.process != later.process {
+        return false;
+    }
     let start = |rule: &Rule| if rule.first == 0 { 1 } else { rule.first };
     let end = |rule: &Rule| if rule.first == 0 { u16::MAX } else { rule.last };
     if earlier.protocol != AclProtocol::Both && earlier.protocol != later.protocol {
@@ -125,6 +128,9 @@ fn covers(earlier: &Rule, later: &Rule) -> bool {
 
 #[cfg(test)]
 fn covers_reference(earlier: &Rule, later: &Rule) -> bool {
+    if earlier.process != later.process {
+        return false;
+    }
     let start = |rule: &Rule| if rule.first == 0 { 1 } else { rule.first };
     let end = |rule: &Rule| if rule.first == 0 { u16::MAX } else { rule.last };
     if earlier.protocol != AclProtocol::Both && earlier.protocol != later.protocol {

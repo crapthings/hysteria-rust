@@ -29,7 +29,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
-    net::{TcpListener, UdpSocket, lookup_host},
+    net::{TcpListener, TcpStream, UdpSocket, lookup_host},
     sync::{Mutex, mpsc},
 };
 
@@ -379,15 +379,56 @@ async fn serve_client_inner(
     packets: Option<crate::packet_tunnel::PacketEndpoint>,
 ) -> Result<()> {
     config.validate()?;
-    tokio::pin!(shutdown);
+    #[cfg(target_os = "macos")]
+    let interface = if config.quic.sockopts.bind_interface.is_empty() {
+        None
+    } else {
+        Some(
+            crate::client_interface::InterfaceGuard::capture(
+                config.quic.sockopts.bind_interface.clone(),
+            )
+            .await?,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let parent = config
+        .tun
+        .as_ref()
+        .and_then(|tun| tun.session.as_ref())
+        .and_then(|session| session.parent_pid)
+        .map(crate::tun_session::macos::ParentGuard::capture)
+        .transpose()
+        .map_err(|error| CliError::from(error).at_stage(crate::error::ErrorCode::TunParent))?;
+    let parent_lost = async {
+        #[cfg(target_os = "macos")]
+        if let Some(parent) = &parent {
+            return parent
+                .wait_for_loss()
+                .await
+                .map_err(|error| error.at_stage(crate::error::ErrorCode::TunParent));
+        }
+        std::future::pending::<Result<()>>().await
+    };
+    let interface_lost = async {
+        #[cfg(target_os = "macos")]
+        if let Some(interface) = &interface {
+            return interface.wait_for_loss().await;
+        }
+        std::future::pending::<Result<()>>().await
+    };
+    tokio::pin!(shutdown, interface_lost, parent_lost);
     let client = tokio::select! {
         biased;
         () = &mut shutdown => { events.emit("stopping", None, None); return Ok(()); },
+        result = &mut interface_lost => { result?; return Err(CliError::new("interface monitor stopped")); },
+        result = &mut parent_lost => { result?; return Err(CliError::new("TUN parent monitor stopped")); },
         result = ClientHandle::new_observed(config.clone(), update_checks, events.clone()) => result?,
     };
     let mut tasks = spawn_client_tasks(config, &client, packets);
     let result = tokio::select! {
         () = &mut shutdown => Ok(()),
+        result = &mut interface_lost => result,
+        result = &mut parent_lost => result,
         task = tasks.join_next() => match task {
             Some(Ok(result)) => result,
             Some(Err(_)) => Err(CliError::new("forwarding task failed")),
@@ -395,10 +436,8 @@ async fn serve_client_inner(
         },
     };
     events.emit("stopping", None, None);
-    tasks.abort_all();
     client.close().await;
-    while tasks.join_next().await.is_some() {}
-    result
+    finish_client_tasks(&mut tasks, result).await
 }
 
 struct ConnectedClient {
@@ -642,14 +681,58 @@ impl ClientHandle {
         Box<dyn hysteria_transport::ProxyStream>,
         hysteria_transport::TransportError,
     > {
+        self.tcp_with_process(address, inbound, None).await
+    }
+    pub(crate) async fn tcp_local(
+        &self,
+        address: &str,
+        inbound: crate::client_connections::TcpInbound,
+        stream: &TcpStream,
+    ) -> std::result::Result<
+        Box<dyn hysteria_transport::ProxyStream>,
+        hysteria_transport::TransportError,
+    > {
+        let required = self.telemetry().map_or_else(
+            || {
+                self.routing
+                    .as_ref()
+                    .is_some_and(|r| r.requires_process(crate::routing::Protocol::Tcp))
+            },
+            |t| t.routing.requires_process(),
+        );
+        let process = if required {
+            match (stream.peer_addr(), stream.local_addr()) {
+                (Ok(peer), Ok(local)) => crate::client_process::lookup(peer, local).await,
+                _ => None,
+            }
+        } else {
+            None
+        };
+        self.tcp_with_process(address, inbound, process).await
+    }
+    async fn tcp_with_process(
+        &self,
+        address: &str,
+        inbound: crate::client_connections::TcpInbound,
+        process: Option<crate::client_process::ProcessIdentity>,
+    ) -> std::result::Result<
+        Box<dyn hysteria_transport::ProxyStream>,
+        hysteria_transport::TransportError,
+    > {
         let address = self.destination(address)?;
-        let selection = self.route_selection(&address, crate::routing::Protocol::Tcp)?;
+        let selection = self.route_selection_with_process(
+            &address,
+            crate::routing::Protocol::Tcp,
+            process.as_ref(),
+        )?;
         selection.record();
         let registration = if selection.decision.outbound == crate::routing::Action::Reject {
             None
         } else {
-            self.telemetry()
-                .and_then(|t| t.connections.register(inbound, &address, &selection))
+            self.telemetry().and_then(|t| {
+                t.connections
+                    .register_with_process(inbound, &address, &selection, process)
+            })
         };
         let dial = self.dial_tcp(&address, &selection.decision);
         if let Some(registration) = registration {
@@ -752,20 +835,31 @@ impl ClientHandle {
         crate::client_routing::RouteSelection,
         hysteria_transport::TransportError,
     > {
+        self.route_selection_with_process(address, protocol, None)
+    }
+    fn route_selection_with_process(
+        &self,
+        address: &str,
+        protocol: crate::routing::Protocol,
+        process: Option<&crate::client_process::ProcessIdentity>,
+    ) -> std::result::Result<
+        crate::client_routing::RouteSelection,
+        hysteria_transport::TransportError,
+    > {
         if *self.stop_signal.borrow() {
             return Err(hysteria_transport::TransportError::Closed);
         }
         if let Some(telemetry) = self.telemetry() {
             if let Some(selection) = telemetry
                 .routing
-                .decide(address, protocol)
+                .decide_with_process(address, protocol, process)
                 .map_err(|e| hysteria_transport::TransportError::Configuration(e.to_string()))?
             {
                 return Ok(selection);
             }
         } else if let Some(router) = &self.routing {
             return router
-                .decide(address, protocol)
+                .decide_with_process(address, protocol, process)
                 .map(crate::client_routing::RouteSelection::uncounted)
                 .map_err(|e| hysteria_transport::TransportError::Configuration(e.to_string()));
         }
@@ -1598,18 +1692,15 @@ fn client_udp_socket(
         socket.set_only_v6(false)?;
     }
     socket.bind(&address.into())?;
+    if !options.bind_interface.is_empty() {
+        crate::client_socket::bind_interface(
+            &socket2::SockRef::from(&socket),
+            address.is_ipv6(),
+            &options.bind_interface,
+        )?;
+    }
     #[cfg(target_os = "linux")]
     {
-        if !options.bind_interface.is_empty() {
-            socket
-                .bind_device(Some(options.bind_interface.as_bytes()))
-                .map_err(|error| {
-                    CliError::new(format!(
-                        "failed to apply quic.sockopts.bindInterface {:?}: {error}",
-                        options.bind_interface
-                    ))
-                })?;
-        }
         if let Some(mark) = options.firewall_mark {
             socket.set_mark(mark).map_err(|error| {
                 CliError::new(format!(
@@ -1622,7 +1713,9 @@ fn client_udp_socket(
         }
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = options;
+    if options.firewall_mark.is_some() || !options.fd_control_unix_socket.is_empty() {
+        return Err(CliError::new("socket marks and FD control require Linux"));
+    }
     Ok(socket.into())
 }
 
@@ -1667,6 +1760,47 @@ fn send_fd_to_control_socket(socket: &Socket, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Stop listeners cooperatively while allowing TUN to finish its explicit route cleanup.
+fn spawn_stoppable(
+    tasks: &mut tokio::task::JoinSet<Result<()>>,
+    client: &Arc<ClientHandle>,
+    task: impl Future<Output = Result<()>> + Send + 'static,
+) {
+    let client = Arc::clone(client);
+    tasks.spawn(async move {
+        tokio::select! { biased; () = client.stopped() => Ok(()), result = task => result }
+    });
+}
+
+/// Surface cleanup failures; only force cancellation after the shutdown deadline.
+async fn finish_client_tasks(
+    tasks: &mut tokio::task::JoinSet<Result<()>>,
+    mut result: Result<()>,
+) -> Result<()> {
+    let drained = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(task) = tasks.join_next().await {
+            match task {
+                Ok(Err(error)) => result = Err(error),
+                Err(error) => {
+                    result = Err(CliError::new(format!(
+                        "client shutdown task failed: {error}"
+                    )));
+                }
+                Ok(Ok(())) => {}
+            }
+        }
+    })
+    .await;
+    if drained.is_err() {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        return Err(CliError::new(
+            "client cleanup timed out; network recovery is not confirmed",
+        ));
+    }
+    result
+}
+
 fn spawn_client_tasks(
     config: ClientConfig,
     client: &Arc<ClientHandle>,
@@ -1674,31 +1808,53 @@ fn spawn_client_tasks(
 ) -> tokio::task::JoinSet<Result<()>> {
     let mut tasks = tokio::task::JoinSet::new();
     for forwarding in config.tcp_forwarding {
-        tasks.spawn(run_tcp_forwarding(forwarding, Arc::clone(client)));
+        spawn_stoppable(
+            &mut tasks,
+            client,
+            run_tcp_forwarding(forwarding, Arc::clone(client)),
+        );
     }
     for forwarding in config.udp_forwarding {
-        tasks.spawn(run_udp_forwarding(forwarding, Arc::clone(client)));
+        spawn_stoppable(
+            &mut tasks,
+            client,
+            run_udp_forwarding(forwarding, Arc::clone(client)),
+        );
     }
     if let Some(proxy) = config.socks5 {
-        tasks.spawn(crate::socks5::serve(proxy, Arc::clone(client)));
+        spawn_stoppable(
+            &mut tasks,
+            client,
+            crate::socks5::serve(proxy, Arc::clone(client)),
+        );
     }
     if let Some(proxy) = config.http {
-        tasks.spawn(crate::http_proxy::serve(proxy, Arc::clone(client)));
+        spawn_stoppable(
+            &mut tasks,
+            client,
+            crate::http_proxy::serve(proxy, Arc::clone(client)),
+        );
     }
     if let Some(proxy) = config.tcp_redirect {
-        tasks.spawn(crate::transparent::serve_redirect(
-            proxy,
-            Arc::clone(client),
-        ));
+        spawn_stoppable(
+            &mut tasks,
+            client,
+            crate::transparent::serve_redirect(proxy, Arc::clone(client)),
+        );
     }
     if let Some(proxy) = config.tcp_tproxy {
-        tasks.spawn(crate::transparent::serve_tproxy(proxy, Arc::clone(client)));
+        spawn_stoppable(
+            &mut tasks,
+            client,
+            crate::transparent::serve_tproxy(proxy, Arc::clone(client)),
+        );
     }
     if let Some(proxy) = config.udp_tproxy {
-        tasks.spawn(crate::transparent::serve_udp_tproxy(
-            proxy,
-            Arc::clone(client),
-        ));
+        spawn_stoppable(
+            &mut tasks,
+            client,
+            crate::transparent::serve_udp_tproxy(proxy, Arc::clone(client)),
+        );
     }
     if let Some(tun) = config.tun {
         if let Some(packets) = packets {
@@ -1722,6 +1878,7 @@ async fn run_tcp_forwarding(config: TcpForwarding, client: Arc<ClientHandle>) ->
     client.local_ready("tcp_forwarding");
     loop {
         let (mut local, _) = listener.accept().await?;
+        local.set_nodelay(true)?;
         let client = Arc::clone(&client);
         let remote = config.remote.clone();
         tokio::spawn(async move {
@@ -2357,3 +2514,108 @@ mod fake_ip_routing_tests {
 #[cfg(test)]
 #[path = "runtime_recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_socket_tests {
+    use super::*;
+    #[test]
+    fn scoped_dual_stack_quic_socket_reaches_ipv4_loopback() {
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let options = ClientQuicSocketOptions {
+            bind_interface: "lo0".into(),
+            ..Default::default()
+        };
+        let sender = client_udp_socket("[::]:0".parse().unwrap(), &options).unwrap();
+        let target = SocketAddr::new(
+            IpAddr::V6(std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped()),
+            receiver.local_addr().unwrap().port(),
+        );
+        sender.send_to(b"mapped", target).unwrap();
+        let mut bytes = [0; 16];
+        let count = receiver.recv(&mut bytes).unwrap();
+        assert_eq!(&bytes[..count], b"mapped");
+    }
+    #[test]
+    fn quic_sockets_and_recreated_hop_sockets_keep_interface_scope() {
+        let options = ClientQuicSocketOptions {
+            bind_interface: "lo0".into(),
+            ..Default::default()
+        };
+        let expected = std::num::NonZeroU32::new(nix::net::if_::if_nametoindex("lo0").unwrap());
+        for address in ["127.0.0.1:0", "[::1]:0"] {
+            let address: SocketAddr = address.parse().unwrap();
+            for _ in 0..2 {
+                let socket = client_udp_socket(address, &options).unwrap();
+                let bound = socket2::SockRef::from(&socket);
+                assert_eq!(
+                    if address.is_ipv6() {
+                        bound.device_index_v6()
+                    } else {
+                        bound.device_index_v4()
+                    }
+                    .unwrap(),
+                    expected
+                );
+            }
+        }
+        let address = "127.0.0.1:0".parse().unwrap();
+        let missing = ClientQuicSocketOptions {
+            bind_interface: "hy2_missing".into(),
+            ..Default::default()
+        };
+        assert!(client_udp_socket(address, &missing).is_err());
+        let marked = ClientQuicSocketOptions {
+            firewall_mark: Some(1),
+            ..options.clone()
+        };
+        assert!(client_udp_socket(address, &marked).is_err());
+        let fd = ClientQuicSocketOptions {
+            fd_control_unix_socket: "/tmp/unused".into(),
+            ..options
+        };
+        assert!(client_udp_socket(address, &fd).is_err());
+    }
+}
+
+#[cfg(test)]
+mod shutdown_task_tests {
+    use super::*;
+    #[tokio::test]
+    async fn cleanup_failure_is_not_reported_as_successful_shutdown() {
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(async { Err(CliError::new("fixture route cleanup failed")) });
+        let error = finish_client_tasks(&mut tasks, Ok(())).await.unwrap_err();
+        assert!(error.to_string().contains("fixture route cleanup failed"));
+        assert!(tasks.is_empty());
+    }
+    #[tokio::test]
+    async fn successful_cleanup_preserves_the_original_failure() {
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(async { Ok(()) });
+        let error = finish_client_tasks(&mut tasks, Err(CliError::new("fixture interface lost")))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("fixture interface lost"));
+    }
+    #[tokio::test]
+    async fn unresponsive_cleanup_times_out_and_is_not_success() {
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(std::future::pending::<Result<()>>());
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            finish_client_tasks(&mut tasks, Ok(())),
+        )
+        .await
+        .unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cleanup timed out")
+        );
+        assert!(tasks.is_empty());
+    }
+}

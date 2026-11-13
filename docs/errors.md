@@ -62,6 +62,15 @@ retain their existing report interfaces; doctor check identifiers
 and statuses remain its structured interface. The global diagnostic flag adds
 causes to top-level failures and `check` errors; it does not expand doctor items.
 
+## Native TUN development categories
+
+Current development source additionally distinguishes `capture_conflict`,
+`tun_address_conflict`, `tun_parent`, `tun_device`, `tun_identity`, `tun_routes`
+and `tun_route_inspection`. These identify operation boundaries, not a guarantee
+that permissions caused the failure. `runtime_failure` remains the fallback for
+unclassified operations. GUI consumers should tolerate unknown future codes and
+avoid forwarding raw configuration or untrusted peer text into privileged logs.
+
 ## Compatibility
 
 Exit codes remain: 0 success, 1 execution/report failure, 2 clap usage failure,

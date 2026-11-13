@@ -67,6 +67,7 @@ pub struct RoutingStats {
 }
 
 pub(crate) struct Telemetry {
+    process_routing_supported: bool,
     status: watch::Sender<ClientStatus>,
     events: broadcast::Sender<Observation>,
     pub(crate) routing: LiveRouting,
@@ -95,6 +96,7 @@ impl Telemetry {
             traffic.sample().session_id,
         ));
         Ok(Self {
+            process_routing_supported: config.supports_process_routing(),
             status: watch::channel(status).0,
             events: broadcast::channel(128).0,
             routing: LiveRouting::new(config.routing.as_ref())?,
@@ -278,6 +280,9 @@ impl ClientControl {
         candidate: PreparedRouting,
         expected_revision: u64,
     ) -> std::result::Result<u64, RoutingUpdateError> {
+        if candidate.requires_process() && !self.telemetry.process_routing_supported {
+            return Err(RoutingUpdateError::UnsupportedProcessRouting);
+        }
         self.events.apply_routing(candidate, expected_revision)
     }
     /// Idempotent request. Await `ClientRuntime::run` for completed cleanup and errors.
@@ -359,6 +364,37 @@ mod tests {
     use super::*;
     fn config() -> ClientConfig {
         serde_json::from_value(serde_json::json!({"server":"127.0.0.1:1","auth":"secret","socks5":{"listen":"127.0.0.1:0"},"routing":{"version":1,"rules":["reject(all)"]}})).unwrap()
+    }
+    #[tokio::test]
+    async fn process_updates_reject_unsupported_inbounds_without_changing_revision() {
+        let mut cfg = config();
+        cfg.socks5.as_mut().unwrap().listen = "0.0.0.0:0".into();
+        let (control, _runtime) = ClientRuntime::prepare(cfg, false).unwrap();
+        let candidate = PreparedRouting::load(
+            serde_json::from_value(serde_json::json!({
+                "version":1,"default":"proxy","rules":["direct(process-name:Browser)"]
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            control.apply_routing(candidate, 1),
+            Err(RoutingUpdateError::UnsupportedProcessRouting)
+        );
+    }
+    #[test]
+    fn process_configuration_requires_supported_local_listeners() {
+        for address in ["0.0.0.0:1080", "localhost:1080", "[::]:1080"] {
+            let mut cfg = config();
+            cfg.socks5.as_mut().unwrap().listen = address.into();
+            cfg.routing.as_mut().unwrap().rules = vec!["direct(process-name:Browser)".into()];
+            assert!(cfg.validate().is_err());
+        }
+        let mut cfg = config();
+        cfg.routing.as_mut().unwrap().rules = vec!["direct(process-name:Browser)".into()];
+        assert_eq!(cfg.validate().is_ok(), cfg!(target_os = "macos"));
     }
     #[test]
     fn lagging_and_dropped_subscribers_do_not_stop_observation() {

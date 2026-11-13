@@ -103,7 +103,7 @@ handover and long-running use still need platform validation.
 ## Documentation
 
 - [CLI reference](docs/cli.md): setup, diagnostics, services, monitoring, ECH and JSON output.
-- [Compatibility](PORT_STATUS.md) · [Changelog](CHANGELOG.md) · [Roadmap](docs/cli-roadmap.md).
+- [Compatibility](PORT_STATUS.md) · [Changelog](CHANGELOG.md) · [Validation and remaining work](docs/validation.md).
 - [ACME DNS providers](docs/acme-dns-providers.md) · [Experimental Chrome QUIC profile](docs/chrome-quic-port.md).
 - [Validation status](docs/validation.md): coverage and remaining platform checks.
 

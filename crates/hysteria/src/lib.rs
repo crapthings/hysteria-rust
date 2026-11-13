@@ -7,6 +7,7 @@ pub mod client_connections;
 pub mod client_control;
 pub mod client_egress;
 pub mod client_events;
+pub mod client_process;
 mod client_routing;
 mod client_stream;
 pub mod client_traffic;
@@ -42,3 +43,20 @@ mod error;
 pub use error::{CliError, ErrorCode};
 
 pub type Result<T> = std::result::Result<T, CliError>;
+
+mod client_socket;
+
+#[cfg(target_os = "macos")]
+mod macos_route_cleanup;
+
+#[cfg(target_os = "macos")]
+mod client_interface;
+
+#[cfg(target_os = "macos")]
+mod macos_route_journal;
+pub mod tun_recovery;
+
+#[cfg(target_os = "macos")]
+mod macos_route_selection;
+
+pub mod tun_session;
