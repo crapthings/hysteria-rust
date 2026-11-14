@@ -49,6 +49,7 @@ impl<T> Drop for Flow<T> {
 pub(crate) struct RoutedUdp {
     client: Arc<ClientHandle>,
     proxy: Option<Flow<Packet>>,
+    pooled: HashMap<String, Flow<Packet>>,
     direct: HashMap<String, Flow<Vec<u8>>>,
     bindings: HashMap<String, Binding>,
     sender: mpsc::Sender<Packet>,
@@ -61,6 +62,7 @@ impl ClientUdpSession {
         Self::Routed(Box::new(RoutedUdp {
             client,
             proxy: None,
+            pooled: HashMap::new(),
             direct: HashMap::new(),
             bindings: HashMap::new(),
             sender,
@@ -115,7 +117,7 @@ impl RoutedUdp {
             .map_or(latest, |binding| binding.selection.clone());
         selection.record();
         if selection.decision.outbound != Action::Reject
-            && self.client.telemetry().is_some()
+            && (self.client.telemetry().is_some() || self.client.has_pool())
             && !self.bindings.contains_key(&target)
             && self.bindings.len() >= MAX_TARGETS
         {
@@ -128,6 +130,7 @@ impl RoutedUdp {
         }
         match selection.decision.outbound {
             Action::Reject => Ok(()),
+            Action::Proxy if self.client.has_pool() => self.send_pooled(data, target, selection),
             Action::Proxy => {
                 if self
                     .proxy
@@ -200,8 +203,49 @@ impl RoutedUdp {
             }
         }
     }
+    fn send_pooled(
+        &mut self,
+        data: &[u8],
+        target: String,
+        selection: crate::client_routing::RouteSelection,
+    ) -> Result<(), TransportError> {
+        if !self.pooled.contains_key(&target) {
+            if self.pooled.len() >= MAX_FLOWS {
+                return Err(TransportError::Io("pool UDP flow limit reached".into()));
+            }
+            // Select synchronously before accepting the first datagram; never reselect this flow.
+            let lease = self.client.pool_lease(&target, &selection.decision)?;
+            let (sender, receiver) = mpsc::channel(16);
+            let replies = self.sender.clone();
+            let client = Arc::clone(&self.client);
+            let reported = Arc::clone(&self.reported);
+            let task = tokio::spawn(async move {
+                let telemetry = client.telemetry().cloned();
+                report(
+                    pool_proxy_flow(lease, client, receiver, replies).await,
+                    &reported,
+                    telemetry.as_deref(),
+                );
+            });
+            self.pooled.insert(target.clone(), Flow { sender, task });
+        }
+        let flow = self
+            .pooled
+            .get(&target)
+            .ok_or(TransportError::SessionClosed)?;
+        if flow.task.is_finished() {
+            return Err(TransportError::SessionClosed);
+        }
+        let sender = flow.sender.clone();
+        self.bind_target(&target, selection);
+        enqueue(
+            &sender,
+            (data.to_vec(), target),
+            self.client.telemetry().map(Arc::as_ref),
+        )
+    }
     fn bind_target(&mut self, target: &str, selection: crate::client_routing::RouteSelection) {
-        if self.client.telemetry().is_none() {
+        if self.client.telemetry().is_none() && !self.client.has_pool() {
             return;
         }
         let binding = self.bindings.entry(target.to_owned()).or_insert_with(|| {
@@ -214,7 +258,7 @@ impl RoutedUdp {
         binding.last_sent = tokio::time::Instant::now();
     }
     fn expire_bindings(&mut self) {
-        if self.client.telemetry().is_none() {
+        if self.client.telemetry().is_none() && !self.client.has_pool() {
             return;
         }
         let proxy_alive = self.proxy.as_ref().is_some_and(|f| !f.task.is_finished());
@@ -225,11 +269,19 @@ impl RoutedUdp {
                         .direct
                         .get(target)
                         .is_some_and(|f| !f.task.is_finished()),
-                    Action::Proxy => proxy_alive,
+                    Action::Proxy => {
+                        if self.client.has_pool() {
+                            self.pooled.contains_key(target)
+                        } else {
+                            proxy_alive
+                        }
+                    }
                     Action::Reject => false,
                 }
         });
         self.direct
+            .retain(|target, _| self.bindings.contains_key(target));
+        self.pooled
             .retain(|target, _| self.bindings.contains_key(target));
     }
 }
@@ -281,6 +333,43 @@ async fn direct_flow(
         }
     }
 }
+async fn pool_proxy_flow(
+    lease: crate::client_pool::ClientLineLease,
+    client: Arc<ClientHandle>,
+    mut packets: mpsc::Receiver<Packet>,
+    replies: mpsc::Sender<Packet>,
+) -> Result<(), TransportError> {
+    let mut session = tokio::time::timeout(Duration::from_secs(10), lease.udp())
+        .await
+        .map_err(|_| TransportError::Io("pool UDP connection timed out".into()))??;
+    loop {
+        let keep = tokio::time::timeout(IDLE, async {
+            tokio::select! {
+                () = client.stopped() => Ok(false),
+                packet = packets.recv() => match packet {
+                    Some((data, address)) => {
+                        session.send(&data, &address).await?;
+                        if let Some(t) = client.telemetry() { t.traffic.proxy.upload(data.len()); }
+                        Ok(true)
+                    }
+                    None => Ok(false),
+                },
+                reply = session.receive() => {
+                    let packet = reply?;
+                    if let Some(t) = client.telemetry() { t.traffic.proxy.download(packet.0.len()); }
+                    enqueue(&replies, packet, client.telemetry().map(Arc::as_ref))?;
+                    Ok(true)
+                }
+            }
+        }).await;
+        match keep {
+            Ok(Ok(true)) => {}
+            Ok(Err(error)) => return Err(error),
+            _ => return Ok(()),
+        }
+    }
+}
+
 async fn proxy_flow(
     client: Arc<ClientHandle>,
     mut packets: mpsc::Receiver<Packet>,
@@ -502,5 +591,53 @@ mod observation_tests {
         );
         report(Ok(()), &reported, Some(&telemetry));
         assert_eq!(telemetry.udp_worker_failures.load(Ordering::Relaxed), 2);
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+    #[tokio::test]
+    async fn pooled_udp_bounds_and_failed_flow_do_not_reselect() {
+        let config = serde_yaml_ng::from_str(
+            r"
+server: legacy.invalid:443
+auth: unused
+http: {listen: '127.0.0.1:18080'}
+proxyPool:
+  version: 1
+  default: group
+  lines: {one: {server: '127.0.0.1:9', auth: fixture}}
+  groups: {group: {members: [one], policy: round-robin}}
+",
+        )
+        .unwrap();
+        let handle = ClientHandle::new_observed(
+            config,
+            false,
+            crate::client_events::ClientEvents::default(),
+        )
+        .await
+        .unwrap();
+        let mut session = ClientUdpSession::routed(Arc::clone(&handle));
+        for port in 1000..1064 {
+            session
+                .send(b"fixture", &format!("127.0.0.1:{port}"))
+                .await
+                .unwrap();
+        }
+        assert!(session.send(b"fixture", "127.0.0.1:1064").await.is_err());
+        let ClientUdpSession::Routed(ref mut routed) = session else {
+            panic!("routed session expected")
+        };
+        assert_eq!(routed.pooled.len(), 64);
+        routed.pooled.get("127.0.0.1:1000").unwrap().task.abort();
+        tokio::task::yield_now().await;
+        assert!(session.send(b"later", "127.0.0.1:1000").await.is_err());
+        let ClientUdpSession::Routed(ref routed) = session else {
+            panic!("routed session expected")
+        };
+        assert_eq!(routed.pooled.len(), 64);
+        handle.close().await;
     }
 }

@@ -344,6 +344,8 @@ pub struct MasqueradeString {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientConfig {
     #[serde(default)]
+    pub proxy_pool: Option<crate::client_pool_config::ClientPoolConfig>,
+    #[serde(default)]
     pub routing: Option<crate::routing::RoutingConfig>,
     pub server: String,
     pub auth: String,
@@ -1105,9 +1107,40 @@ impl ClientConfig {
     ///
     /// Returns an error for missing, invalid, or unsupported values.
     pub fn validate(&self) -> Result<()> {
+        if let Some(pool) = &self.proxy_pool {
+            pool.validate()?;
+            if self.tun.is_some()
+                || self.tcp_redirect.is_some()
+                || self.tcp_tproxy.is_some()
+                || self.udp_tproxy.is_some()
+                || !self.tcp_forwarding.is_empty()
+                || !self.udp_forwarding.is_empty()
+                || (self.http.is_none() && self.socks5.is_none())
+            {
+                return Err(CliError::new(
+                    "proxyPool currently requires local HTTP/SOCKS without TUN or forwarding",
+                ));
+            }
+        }
+
         self.validate_connection()?;
         if let Some(routing) = &self.routing {
             let router = crate::routing::Router::compile(routing)?;
+            for destination in router.proxy_destinations() {
+                let exists = self
+                    .proxy_pool
+                    .as_ref()
+                    .is_some_and(|pool| match destination {
+                        crate::routing::ProxyDestination::Line(id) => pool.lines.contains_key(id),
+                        crate::routing::ProxyDestination::Group(id) => pool.groups.contains_key(id),
+                    });
+                if !exists {
+                    return Err(CliError::new(
+                        "routing refers to an unknown client pool destination",
+                    ));
+                }
+            }
+
             if router.requires_process(crate::routing::Protocol::Tcp)
                 && !self.supports_process_routing()
             {

@@ -76,6 +76,8 @@ def main():
                         help="compile Swift sources with -parse-as-library")
     parser.add_argument("--network-extension", action="store_true",
                         help="link the macOS NetworkExtension framework")
+    parser.add_argument("--static-library", action="store_true",
+                        help="link macOS system dependencies for the static packet library")
     args = parser.parse_args()
     library_dir = args.library_dir.resolve(strict=True)
     hysteria = args.hysteria.resolve(strict=True)
@@ -89,6 +91,8 @@ def main():
         sources = args.swift_source or [ROOT / "tests/swift/PacketBridgeSmoke.swift"]
         swift_options = (["-parse-as-library"] if args.swift_parse_as_library else [])
         swift_options += (["-framework", "NetworkExtension"] if args.network_extension else [])
+        if args.static_library:
+            swift_options += ["-framework", "Security", "-framework", "SystemConfiguration", "-liconv", "-lresolv"]
         subprocess.run([
             "swiftc", *swift_options, *(str(source.resolve(strict=True)) for source in sources),
             "-import-objc-header", str(header),

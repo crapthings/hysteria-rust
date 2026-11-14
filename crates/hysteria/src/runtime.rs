@@ -525,6 +525,10 @@ impl DisconnectNotice {
 
 /// A shared client connection that can connect on first use and reconnect after closure.
 pub(crate) struct ClientHandle {
+    proxy_pool: Option<(
+        crate::client_pool::ClientPool,
+        std::collections::BTreeMap<String, crate::client_groups::ClientGroupSelector>,
+    )>,
     events: crate::client_events::ClientEvents,
     fake_dns: Option<Arc<crate::fake_dns::FakeDns>>,
     stop_signal: tokio::sync::watch::Sender<bool>,
@@ -549,12 +553,39 @@ impl ClientHandle {
         update_checks: bool,
         events: crate::client_events::ClientEvents,
     ) -> Result<Arc<Self>> {
-        let lazy = config.lazy || config.routing.is_some();
+        let lazy = config.lazy || config.routing.is_some() || config.proxy_pool.is_some();
+        let proxy_pool = if let Some(pool) = &config.proxy_pool {
+            pool.validate()?;
+            let selector = pool
+                .groups
+                .iter()
+                .map(|(id, group)| Ok((id.clone(), group.selector()?)))
+                .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+            let lines = pool
+                .lines
+                .iter()
+                .map(|(id, line)| (id.clone(), line.clone()))
+                .collect();
+            let mut handles = Box::pin(crate::client_pool::ClientPool::new(lines)).await?;
+            if let Some(health) = &pool.health {
+                handles.enable_health(health.clone()).await?;
+            }
+            Some((handles, selector))
+        } else {
+            None
+        };
         let routing = config
             .routing
             .as_ref()
             .map(crate::routing::Router::compile)
             .transpose()?;
+        let routing = if routing.is_none() && config.proxy_pool.is_some() {
+            Some(crate::routing::Router::compile(
+                &crate::routing::RoutingConfig::default(),
+            )?)
+        } else {
+            routing
+        };
         let fake_dns = config
             .tun
             .as_ref()
@@ -564,6 +595,7 @@ impl ClientHandle {
             .map(Arc::new);
         let (stop_signal, _) = tokio::sync::watch::channel(false);
         let handle = Arc::new(Self {
+            proxy_pool,
             events,
             fake_dns,
             stop_signal,
@@ -785,6 +817,19 @@ impl ClientHandle {
             }
             crate::routing::Action::Proxy => {}
         }
+        if self.proxy_pool.is_some() {
+            let lease = self.pool_lease(address, decision)?;
+            let stream = Box::pin(lease.tcp(address)).await?;
+            return Ok(crate::client_stream::MeteredStream::wrap(
+                stream,
+                self.telemetry().map(|t| Arc::clone(&t.traffic.proxy)),
+            ));
+        }
+        if decision.proxy_destination.is_some() {
+            return Err(hysteria_transport::TransportError::Configuration(
+                "named destination requires proxyPool".into(),
+            ));
+        }
         let client = self
             .client()
             .await
@@ -801,10 +846,52 @@ impl ClientHandle {
         })
     }
 
+    pub(crate) fn has_pool(&self) -> bool {
+        self.proxy_pool.is_some()
+    }
+
+    pub(crate) fn pool_lease(
+        &self,
+        address: &str,
+        decision: &crate::routing::Decision,
+    ) -> std::result::Result<crate::client_pool::ClientLineLease, hysteria_transport::TransportError>
+    {
+        let (pool, selectors) = self.proxy_pool.as_ref().ok_or_else(|| {
+            hysteria_transport::TransportError::Configuration("missing proxyPool".into())
+        })?;
+        let key = address.to_ascii_lowercase();
+        let selected = match &decision.proxy_destination {
+            Some(crate::routing::ProxyDestination::Line(id)) => pool.line(id),
+            destination => {
+                let name = match destination {
+                    Some(crate::routing::ProxyDestination::Group(id)) => id.as_str(),
+                    _ => self
+                        .config
+                        .proxy_pool
+                        .as_ref()
+                        .expect("pool configuration")
+                        .default
+                        .as_str(),
+                };
+                selectors
+                    .get(name)
+                    .ok_or_else(|| CliError::new("unknown client pool group"))
+                    .and_then(|selector| pool.lease(selector, &key, |_| true))
+            }
+        };
+        selected
+            .map_err(|error| hysteria_transport::TransportError::Configuration(error.to_string()))
+    }
+
     pub(crate) async fn proxy_udp(
         &self,
     ) -> std::result::Result<hysteria_transport::UdpSession, hysteria_transport::TransportError>
     {
+        if self.proxy_pool.is_some() {
+            return Err(hysteria_transport::TransportError::Protocol(
+                "proxyPool UDP is not integrated".into(),
+            ));
+        }
         let client = self
             .client()
             .await
@@ -849,15 +936,15 @@ impl ClientHandle {
         if *self.stop_signal.borrow() {
             return Err(hysteria_transport::TransportError::Closed);
         }
-        if let Some(telemetry) = self.telemetry() {
-            if let Some(selection) = telemetry
+        if let Some(telemetry) = self.telemetry()
+            && let Some(selection) = telemetry
                 .routing
                 .decide_with_process(address, protocol, process)
                 .map_err(|e| hysteria_transport::TransportError::Configuration(e.to_string()))?
-            {
-                return Ok(selection);
-            }
-        } else if let Some(router) = &self.routing {
+        {
+            return Ok(selection);
+        }
+        if let Some(router) = &self.routing {
             return router
                 .decide_with_process(address, protocol, process)
                 .map(crate::client_routing::RouteSelection::uncounted)
@@ -872,6 +959,7 @@ impl ClientHandle {
                 port: 0,
                 protocol,
                 outbound: crate::routing::Action::Proxy,
+                proxy_destination: None,
                 matched_rule: None,
                 reason: "routing_disabled",
                 dns_performed: false,
@@ -882,7 +970,7 @@ impl ClientHandle {
         self: &Arc<Self>,
     ) -> std::result::Result<crate::client_udp::ClientUdpSession, hysteria_transport::TransportError>
     {
-        if self.routing.is_some() {
+        if self.routing.is_some() || self.has_pool() {
             Ok(crate::client_udp::ClientUdpSession::routed(Arc::clone(
                 self,
             )))
@@ -993,21 +1081,33 @@ impl ClientHandle {
         crate::client_stream::stopped(self.stop_signal.subscribe()).await;
     }
 
-    async fn close(&self) {
+    pub(crate) fn request_stop(&self) {
         self.stop_signal.send_replace(true);
-        if let Some(dns) = &self.fake_dns {
-            let dns = Arc::clone(dns);
-            match tokio::task::spawn_blocking(move || dns.close()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => eprintln!("failed to release Fake-IP cache: {error}"),
-                Err(_) => eprintln!("Fake-IP shutdown worker failed"),
+        if let Some((pool, _)) = &self.proxy_pool {
+            pool.request_stop();
+        }
+    }
+
+    pub(crate) fn close(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            self.request_stop();
+            if let Some((pool, _)) = &self.proxy_pool {
+                Box::pin(pool.close()).await;
             }
-        }
-        let mut state = self.state.lock().await;
-        state.closed = true;
-        if let Some(connected) = state.connected.take() {
-            close_connected(&connected, b"client stopped");
-        }
+            if let Some(dns) = &self.fake_dns {
+                let dns = Arc::clone(dns);
+                match tokio::task::spawn_blocking(move || dns.close()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => eprintln!("failed to release Fake-IP cache: {error}"),
+                    Err(_) => eprintln!("Fake-IP shutdown worker failed"),
+                }
+            }
+            let mut state = self.state.lock().await;
+            state.closed = true;
+            if let Some(connected) = state.connected.take() {
+                close_connected(&connected, b"client stopped");
+            }
+        })
     }
 }
 
@@ -1165,6 +1265,11 @@ struct ClientTarget {
 }
 
 async fn resolve_client_target(config: &ClientConfig) -> Result<ClientTarget> {
+    if config.proxy_pool.is_some() {
+        return Err(CliError::new(
+            "proxyPool requires the local TCP proxy entrypoint; single-server dialing is disabled",
+        ));
+    }
     if config.server.starts_with("realm:") || config.server.starts_with("realm+http:") {
         return resolve_realm_target(config).await;
     }
@@ -2090,6 +2195,26 @@ mod chrome_interop;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn pool_config_never_bootstraps_the_legacy_server() {
+        let config: ClientConfig = serde_yaml_ng::from_str(
+            r"
+server: legacy.invalid:443
+auth: unused
+http: {listen: '127.0.0.1:18080'}
+proxyPool:
+  version: 1
+  default: group
+  lines: {one: {server: '127.0.0.1:50000', auth: fixture}}
+  groups: {group: {members: [one], policy: manual, selected: one}}
+",
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert!(resolve_client_target(&config).await.is_err());
+        assert!(connect_client(&config).await.is_err());
+    }
+
     use hysteria_transport::bind_obfuscated_endpoint;
 
     #[tokio::test]

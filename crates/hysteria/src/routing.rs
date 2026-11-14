@@ -67,7 +67,16 @@ enum ProcessMatcher {
     Path(String),
 }
 
+/// Explicit client-pool destination; distinct from server-side outbounds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", content = "id", rename_all = "lowercase")]
+pub enum ProxyDestination {
+    Line(String),
+    Group(String),
+}
+
 struct Rule {
+    destination: Option<ProxyDestination>,
     process: Option<ProcessMatcher>,
     action: Action,
     matchers: Arc<[HostMatcher]>,
@@ -137,6 +146,9 @@ impl Rule {
         } else {
             None
         };
+        if parsed.destination.is_some() && parsed.filter.is_empty() {
+            protocol = AclProtocol::Tcp;
+        }
         if process.is_some() {
             if parsed.filter.is_empty() {
                 protocol = AclProtocol::Tcp;
@@ -168,6 +180,7 @@ impl Rule {
         Ok(Self {
             process,
             action: parsed.action,
+            destination: parsed.destination,
             protocol,
             first,
             last,
@@ -178,6 +191,7 @@ impl Rule {
 }
 
 struct ParsedRule<'a> {
+    destination: Option<ProxyDestination>,
     action: Action,
     matcher: &'a str,
     filter: &'a str,
@@ -206,13 +220,32 @@ impl<'a> ParsedRule<'a> {
         if matcher.is_empty() {
             return Err(invalid());
         }
+        let destination = if let Some(id) = action.trim().strip_prefix("line:") {
+            Some(ProxyDestination::Line(id.into()))
+        } else {
+            action
+                .trim()
+                .strip_prefix("group:")
+                .map(|id| ProxyDestination::Group(id.into()))
+        };
+        if let Some(ProxyDestination::Line(id) | ProxyDestination::Group(id)) = &destination
+            && (id.is_empty()
+                || id.len() > 64
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c)))
+        {
+            return Err(CliError::new("invalid named client destination"));
+        }
         let action = match action.trim() {
             "proxy" => Action::Proxy,
             "direct" => Action::Direct,
             "reject" => Action::Reject,
+            _ if destination.is_some() => Action::Proxy,
             _ => return Err(invalid()),
         };
         Ok(Self {
+            destination,
             action,
             matcher,
             filter,
@@ -234,6 +267,8 @@ pub struct Decision {
     pub host: String,
     pub port: u16,
     pub outbound: Action,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_destination: Option<ProxyDestination>,
     /// One-based rule index; null means the default was used.
     pub matched_rule: Option<usize>,
     pub reason: &'static str,
@@ -285,6 +320,12 @@ impl Router {
             rules,
             default: config.default,
         })
+    }
+
+    pub(crate) fn proxy_destinations(&self) -> impl Iterator<Item = &ProxyDestination> {
+        self.rules
+            .iter()
+            .filter_map(|rule| rule.destination.as_ref())
     }
 
     /// Locates the matched rule-set entry for offline diagnostics; no extra work on the forwarding path.
@@ -366,6 +407,7 @@ impl Router {
             host,
             port,
             outbound: found.map_or(self.default, |(_, rule)| rule.action),
+            proxy_destination: found.and_then(|(_, rule)| rule.destination.clone()),
             matched_rule: found.map(|(i, _)| i + 1),
             reason: if found.is_some() {
                 "first_matching_rule"

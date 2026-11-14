@@ -22,6 +22,7 @@ impl CapabilitiesOptions {
         let report = serde_json::json!({
             "schema_version":1, "core_version":env!("CARGO_PKG_VERSION"), "platform":std::env::consts::OS,
             "dns_capture_probe":cfg!(target_os="linux"), "configuration_check":true, "route_explain":true, "route_trace":true, "route_lint":true, "routing_templates":["proxy-all","lan-bypass","block-udp443"],
+            "proxy_pool": hysteria_cli::client_pool_config::capabilities(),
             "profiles":{"schema_version":1,"scope":"user","implicit_default":false,"import_source":"stdin-uri"},
             "routing":{"version":1,"actions":["proxy","direct","reject"],"matchers":["domain","suffix","ip","cidr","lan","loopback","all","set"],"protocols":["tcp","udp"],"inbounds":if cfg!(target_os="linux") { vec!["socks5","http","tcpForwarding","udpForwarding","tun"] } else { vec!["socks5","http","tcpForwarding","udpForwarding"] },"local_rule_sets":true,"remote_rule_sets":false,"dns_for_matching":false,"process_matching":cfg!(target_os="macos"),"process_inbounds":if cfg!(target_os="macos") { vec!["http-tcp","socks5-tcp"] } else { vec![] },"process_matchers":["process-name","process-path"],"process_unknown":"reject","process_tun":false,"process_udp":false,"geoip":false,"geosite":false,"live_reload":true},
             "socket_options":{"bind_interface":cfg!(any(target_os="linux", target_os="macos")),"fwmark":cfg!(target_os="linux"),"fd_control_unix_socket":cfg!(target_os="linux"),"protects_system_dns":false,"interface_loss_stops_client":cfg!(target_os="macos")},
